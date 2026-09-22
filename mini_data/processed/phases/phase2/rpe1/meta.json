@@ -1,0 +1,12 @@
+{
+  "source": "/data/han/projects/VCC/repo/mini_data/processed/replogle/rpe1_raw_singlecell.h5ad",
+  "source_rel": "../../../replogle/rpe1_raw_singlecell.h5ad",
+  "context": "rpe1",
+  "n_cells": 4592,
+  "n_controls": 1000,
+  "n_targets": 150,
+  "n_panel": 812,
+  "n_rest": 432,
+  "library_size": "obs UMI_count",
+  "normalization": "log1p(counts / library_size * 1e4)"
+}

@@ -61,8 +61,9 @@ CPU PyTorch. Every test and the full pipeline must pass here.
 **Server (user, later):** Linux with an NVIDIA GPU, conda env `vcc`
 (Python 3.11, anndata, scanpy, h5py, pyarrow, polars, scipy, scikit-learn,
 PyTorch with CUDA, lightning). GPU memory is not yet known: make batch sizes,
-model width and gene-chunk sizes configurable, default to settings that fit a
-24 GB GPU, and use mixed precision when CUDA is available.
+model width and gene-chunk sizes configurable, default to settings that fit
+within the GPU memory cap of section 1.2 (half of a 24 GB GPU unless the user
+changes it), and use mixed precision when CUDA is available.
 
 **Configs** (create both):
 
@@ -123,6 +124,66 @@ the cloud. Code must work with and without it on `PATH`.
   expected file present, columns and gene orders consistent, and the sizes it
   found (cells, genes, targets per source) printed for the user to confirm.
 
+### 1.2 The server is shared — be a good neighbour
+
+The server (192 cores, GPUs) is shared with the user's labmates. The pipeline
+must never flood it: take the resources it needs and leave everything else
+free. The user starts every session with:
+
+```bash
+# CPU courtesy — 192 cores, be a good neighbor
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMBA_NUM_THREADS=1
+
+# GPU
+export CUDA_VISIBLE_DEVICES=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+Put exactly this block in `scripts/server_env.sh`, plus two lines the block
+lacks: `POLARS_MAX_THREADS` and `RAYON_NUM_THREADS` (polars, used by
+`cell-eval2`, otherwise starts one thread per core), both set to
+`resources.cpu_threads` (default 4). The README tells the user to
+`source scripts/server_env.sh` before any run.
+
+Rules for the code:
+- **Never override these variables.** Respect whatever the environment says.
+  If one is unset when `python -m vcc` starts, set a conservative default with
+  `os.environ.setdefault(...)` **before** importing numpy, torch, polars or
+  scanpy (thread pools are fixed at import), and log the effective values at
+  the start of every run.
+- **CPU:** `torch.set_num_threads` and every worker pool (DataLoader
+  `num_workers`, joblib, multiprocessing, cell-eval2's own parallelism) come from
+  config: `resources.cpu_threads` (default 4) and `resources.num_workers`
+  (default 2). No `n_jobs=-1`, no pool sized by `os.cpu_count()`, anywhere.
+- **GPU:** use only the device(s) in `CUDA_VISIBLE_DEVICES`, addressed as
+  `cuda:0` — never pick a physical index, never touch other GPUs, never
+  reassign `CUDA_VISIBLE_DEVICES`. One GPU process at a time. Cap memory with
+  `torch.cuda.set_per_process_memory_fraction(resources.gpu_memory_fraction)`
+  (default 0.5), and size default batches to fit well inside that cap. Nothing
+  may preallocate the whole GPU (no cupy or JAX memory pools; `cell-eval2`
+  runs on CPU, section 1). Call `torch.cuda.empty_cache()` between stages so
+  memory the pipeline no longer needs is returned to others. If a batch does
+  not fit, fail with a clear message naming the config key to lower — never
+  retry by grabbing more memory.
+- **RAM:** stay under `resources.max_ram_gb` (default 64): derive chunk and
+  block sizes from it, stream large files (section 3.3), and free big arrays
+  as soon as a stage is done.
+- **Disk:** write only under `output_root`; delete temporary files when a
+  stage finishes.
+- **Long runs:** README runs `all` as
+  `nice -n 10 ionice -c3 python -m vcc all --config configs/server.yaml`,
+  so interactive work by others keeps priority.
+- **Default training budgets** are chosen to respect these limits and the
+  ~12-hour target of section 0; anything heavier is opt-in via config.
+
+Add a `resources:` block to both configs with these keys and defaults
+(`device: cpu` for `mini.yaml`).
+
 ---
 
 ## 2. Repository layout
@@ -144,6 +205,7 @@ vcc/            the package (data/, priors/, models/, phases/, eval/, submit/, r
 configs/        mini.yaml, server.yaml
 tests/          pytest, run on mini_data
 README.md       exact commands for the server, expected outputs and runtimes
+scripts/        server_env.sh (section 1.2)
 DECISIONS.md
 ```
 
@@ -729,8 +791,9 @@ Commit after each. From M1 on, keep `pytest` passing; from M5 on, keep
   report with no **fail** in check 1, and a results summary.
 - `checklist.json` lists every section-4.8 item as `done`, or as a `deviation`
   that is also explained in `DECISIONS.md`; the corresponding test passes.
-- README explains, for the server: environment setup check (including that
-  `vcc` and `cell-eval2` are installed), the `all` command, the `vcc prep
+- README explains, for the server: `source scripts/server_env.sh`, the
+  environment setup check (including that `vcc` and `cell-eval2` are
+  installed), the `all` command, the `vcc prep
   --dry-run` check and the packaging command, how to run stages separately, where outputs go, how to switch to
   the final-test round (new `vcc_root`, new target list), and what to look at
   in the rehearsal and sanity reports before submitting.

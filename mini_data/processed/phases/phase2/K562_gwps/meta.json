@@ -1,0 +1,12 @@
+{
+  "source": "/data/han/projects/VCC/repo/mini_data/processed/replogle/K562_gwps_raw_singlecell.h5ad",
+  "source_rel": "../../../replogle/K562_gwps_raw_singlecell.h5ad",
+  "context": "K562_gwps",
+  "n_cells": 6314,
+  "n_controls": 1000,
+  "n_targets": 177,
+  "n_panel": 716,
+  "n_rest": 414,
+  "library_size": "obs UMI_count",
+  "normalization": "log1p(counts / library_size * 1e4)"
+}
