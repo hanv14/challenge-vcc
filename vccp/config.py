@@ -241,6 +241,115 @@ def _check_phase(name: str, steps: int, batch_size: int, val_fraction: float) ->
 
 
 @dataclass(frozen=True)
+class Phase3:
+    """Adapting on the challenge controls, and predicting (CLAUDE.md §4.7)."""
+
+    #: Steps of controls-only adaptation per challenge context.
+    adapt_steps: int = 300
+    batch_size: int = 32
+    #: A challenge context arrives as control cells and nothing else, so the
+    #: core stays frozen here whatever Phase 2 did (DECISIONS.md D3).
+    unfreeze_core: bool = False
+    #: Where the knockdown prior's fold_expr comes from when the target is
+    #: not in any Replogle bulk file.
+    knockdown_source: str = "pooled"
+    #: The prior is applied only where the target gene is detectably
+    #: expressed in that context's controls (DECISIONS.md D8). Same floor as
+    #: sanity check 3.
+    knockdown_min_control_cpm: float = 1.0
+
+    def validate(self) -> None:
+        if self.adapt_steps < 1:
+            raise ConfigError("phase3.adapt_steps must be at least 1")
+        if self.batch_size < 1:
+            raise ConfigError("phase3.batch_size must be at least 1")
+        if self.knockdown_source not in ("pooled", "per_target_only"):
+            raise ConfigError(
+                "phase3.knockdown_source must be 'pooled' or 'per_target_only'"
+            )
+        if self.knockdown_min_control_cpm < 0:
+            raise ConfigError("phase3.knockdown_min_control_cpm must not be negative")
+
+
+@dataclass(frozen=True)
+class Predict:
+    """Generating the submitted cells (CLAUDE.md §4.7)."""
+
+    #: The generator is a swappable component; this names it.
+    generator: str = "count_space"
+    #: Targets predicted before the block is flushed to disk.
+    target_chunk: int = 1
+    #: Control cells held in memory per context while generating.
+    max_control_cells: int = 0
+
+    def validate(self) -> None:
+        if self.target_chunk < 1:
+            raise ConfigError("predict.target_chunk must be at least 1")
+
+
+@dataclass(frozen=True)
+class Rehearsal:
+    """Phase 3's procedure, run where the answers are known (CLAUDE.md §4.6)."""
+
+    #: Held-out targets scored per variant. Capped so DE scoring stays fast.
+    max_targets: int = 100
+    #: Steps for the controls-only adaptation each variant runs.
+    adapt_steps: int = 150
+    #: Steps for the Phase 2 arms the rehearsal retrains under its own scopes.
+    phase2_steps: int = 300
+    #: Real cells kept per target when scoring (0 = all of them).
+    cells_per_target: int = 0
+    #: Control cells sampled for the scoring side (0 = all of them).
+    max_control_cells: int = 2000
+    #: Fraction of a screen's rest genes hidden by variant 3.
+    unseen_gene_fraction: float = 0.1
+    #: Screens variant 3 runs on. It retrains Phase 2 per screen, so one is
+    #: usually enough to see whether the answer is positive.
+    unseen_genes_contexts: int = 1
+    #: Per-target predicted fold changes stored in the report, for the
+    #: predicted-vs-true scatter plots of §5.
+    n_saved_predictions: int = 5
+    #: Grid searched for the generator's two calibration settings (§4.7).
+    calibration_thresholds: tuple[float, ...] = (0.0, 0.05, 0.1, 0.25)
+    calibration_scales: tuple[float, ...] = (0.25, 0.5, 1.0, 1.5)
+
+    def validate(self) -> None:
+        if self.max_targets < 2:
+            raise ConfigError("rehearsal.max_targets must be at least 2")
+        for key in ("adapt_steps", "phase2_steps"):
+            if getattr(self, key) < 1:
+                raise ConfigError(f"rehearsal.{key} must be at least 1")
+        if not 0.0 < self.unseen_gene_fraction < 1.0:
+            raise ConfigError("rehearsal.unseen_gene_fraction must be in (0, 1)")
+        if not self.calibration_thresholds or not self.calibration_scales:
+            raise ConfigError("rehearsal calibration grids must not be empty")
+        if any(t < 0 for t in self.calibration_thresholds):
+            raise ConfigError("rehearsal.calibration_thresholds must not be negative")
+        if any(s <= 0 for s in self.calibration_scales):
+            raise ConfigError("rehearsal.calibration_scales must be positive")
+
+
+@dataclass(frozen=True)
+class Eval:
+    """The official scorer (CLAUDE.md §6)."""
+
+    #: Pinned explicitly: the preset ships `auto`, and which DE engine a host
+    #: happens to have would otherwise change the numbers (§1).
+    de_backend: str = "pdex"
+    #: Build the leaderboard's 0 = baseline / 1 = replicate scale where the
+    #: data allow it. Reference points of the scorer only — never predictions,
+    #: never submitted, never used to train or choose the model (§6).
+    build_scale: bool = True
+
+    def validate(self) -> None:
+        allowed = {"auto", "pdex", "scanpy", "deseq2", "gpudge"}
+        if self.de_backend not in allowed:
+            raise ConfigError(
+                f"eval.de_backend must be one of {sorted(allowed)} (got {self.de_backend!r})"
+            )
+
+
+@dataclass(frozen=True)
 class Config:
     """The whole configuration, as loaded from a YAML file.
 
@@ -261,6 +370,10 @@ class Config:
     train: Train = field(default_factory=Train)
     phase1: Phase1 = field(default_factory=Phase1)
     phase2: Phase2 = field(default_factory=Phase2)
+    phase3: Phase3 = field(default_factory=Phase3)
+    predict: Predict = field(default_factory=Predict)
+    rehearsal: Rehearsal = field(default_factory=Rehearsal)
+    eval: Eval = field(default_factory=Eval)
 
     source: Path | None = None
     repo_root: Path | None = None
@@ -293,6 +406,10 @@ class Config:
         self.train.validate()
         self.phase1.validate()
         self.phase2.validate()
+        self.phase3.validate()
+        self.predict.validate()
+        self.rehearsal.validate()
+        self.eval.validate()
 
 
 def _resolve(value: str, base: Path) -> Path:
@@ -340,6 +457,10 @@ def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config
         ("train", Train),
         ("phase1", Phase1),
         ("phase2", Phase2),
+        ("phase3", Phase3),
+        ("predict", Predict),
+        ("rehearsal", Rehearsal),
+        ("eval", Eval),
     ):
         section_raw = raw.pop(name, {}) or {}
         if not isinstance(section_raw, dict):

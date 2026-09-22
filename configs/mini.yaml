@@ -32,3 +32,12 @@ phase2:
   steps: 150
   batch_size: 16
   cells_per_draw: 8
+
+rehearsal:
+  max_targets: 20
+  adapt_steps: 40
+  phase2_steps: 60
+
+phase3:
+  adapt_steps: 60
+  batch_size: 16

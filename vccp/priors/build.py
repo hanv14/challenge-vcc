@@ -120,6 +120,24 @@ class RoleLayout:
             "total_width": self.total_width,
         }
 
+    def structure(self) -> dict:
+        """Only what a trained `W` depends on: where each block sits and how
+        wide it is. Coverage counts and sampling seeds are provenance, not
+        structure, so they stay out of the layout hash."""
+        return {
+            "total_width": self.total_width,
+            "blocks": [
+                {
+                    "name": b.name,
+                    "offset": b.offset,
+                    "width": b.width,
+                    "flag_column": b.flag_column,
+                    "column_names": list(b.column_names),
+                }
+                for b in self.blocks
+            ],
+        }
+
     @classmethod
     def from_dict(cls, spec: dict) -> RoleLayout:
         return cls(
@@ -152,11 +170,16 @@ class PriorFeatures:
 
         Covers every block's name, width, offset and column labels in both
         roles — everything a trained `W` depends on. It deliberately does not
-        cover the prior *values*, so re-running the priors with the same
-        sources and config keeps a checkpoint loadable.
+        cover the prior *values* or how many genes a block covered, so that
+        re-running the priors with the same sources and config, or rebuilding
+        them under a rehearsal scope that hides some of them (§4.1), keeps a
+        checkpoint loadable.
         """
         payload = json.dumps(
-            {role: layout.as_dict() for role, layout in sorted(self.layouts.items())},
+            {
+                role: layout.structure()
+                for role, layout in sorted(self.layouts.items())
+            },
             sort_keys=True,
         )
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -237,6 +260,65 @@ def _standardize(result: BlockResult) -> np.ndarray:
     return features
 
 
+def conform_results(
+    results: list[BlockResult], reference: RoleLayout, n_genes: int
+) -> list[BlockResult]:
+    """Place a scoped rebuild into the layout of the run's own priors.
+
+    A rehearsal scope hides a source — the held-out screen's responses, or a
+    whole screen — and a block with nothing left to read is simply not built.
+    Left alone that would shift every offset after it, and the Phase 1 core
+    trained against the run's priors could no longer be loaded at all.
+
+    So an excluded block keeps its columns and is **zero-filled with its
+    missing flag set for every gene** — which is exactly what §4.1 says a
+    block does for a gene its source does not cover, applied to a source that
+    now covers nothing. The scoped priors then carry the same layout, and
+    what the scope removed is visible as missing rather than as a shift.
+    """
+    reference_names = {spec.name for spec in reference.blocks}
+    extra = [result.name for result in results if result.name not in reference_names]
+    if extra:
+        raise ValueError(
+            f"the scoped build produced block(s) {extra} that the reference layout "
+            "does not have; a scope may only hide sources, never add them"
+        )
+
+    built = {result.name: result for result in results}
+    conformed: list[BlockResult] = []
+    for spec in reference.blocks:
+        result = built.get(spec.name)
+        if result is None:
+            conformed.append(
+                BlockResult(
+                    name=spec.name,
+                    features=np.zeros((n_genes, spec.width), dtype=np.float32),
+                    covered=np.zeros(n_genes, dtype=bool),
+                    column_names=list(spec.column_names),
+                    source_context=spec.source_context,
+                    reads_responses=spec.reads_responses,
+                    detail={"conformed": "not built under this scope: zero-filled with "
+                            "the missing flag set for every gene"},
+                )
+            )
+            continue
+
+        features = result.features
+        if features.shape[1] != spec.width:
+            # A rebuild on less data can yield fewer components. Pad to the
+            # reference width so `W`'s columns keep their meaning.
+            padded = np.zeros((n_genes, spec.width), dtype=np.float32)
+            keep = min(features.shape[1], spec.width)
+            padded[:, :keep] = features[:, :keep]
+            features = padded
+        conformed.append(
+            dataclasses.replace(
+                result, features=features, column_names=list(spec.column_names)
+            )
+        )
+    return conformed
+
+
 def _assemble_role(results: list[BlockResult], n_genes: int) -> tuple[np.ndarray, RoleLayout]:
     """Concatenate the blocks of one role, each followed by its missing flag."""
     columns: list[np.ndarray] = []
@@ -274,8 +356,18 @@ def _assemble_role(results: list[BlockResult], n_genes: int) -> tuple[np.ndarray
     return np.concatenate(columns, axis=1).astype(np.float32), RoleLayout(specs, position)
 
 
-def build_priors(cfg: Config, scope: PriorScope = FULL_SCOPE, blocks=None) -> PriorFeatures:
-    """Build both role priors under `scope`."""
+def build_priors(
+    cfg: Config,
+    scope: PriorScope = FULL_SCOPE,
+    blocks=None,
+    reference_layouts: dict[str, RoleLayout] | None = None,
+) -> PriorFeatures:
+    """Build both role priors under `scope`.
+
+    `reference_layouts` are the layouts of the run's own priors. The rehearsal
+    passes them so that a leakage-scoped rebuild lands in the same columns and
+    the Phase 1 core stays loadable (see `conform_results`).
+    """
     log = get_logger()
     paths = DataPaths(cfg)
     axis = reference.load_gene_names(paths.gene_names)
@@ -338,6 +430,8 @@ def build_priors(cfg: Config, scope: PriorScope = FULL_SCOPE, blocks=None) -> Pr
     priors, layouts = {}, {}
     for role in ROLES:
         role_results = [result for block, result in produced if role in block.roles]
+        if reference_layouts is not None:
+            role_results = conform_results(role_results, reference_layouts[role], len(axis))
         matrix, layout = _assemble_role(role_results, len(axis))
         priors[role] = matrix
         layouts[role] = layout

@@ -204,6 +204,43 @@ class RunPaths:
         return self.phase_dir(phase) / "curves.csv"
 
     @property
+    def rehearsal_dir(self) -> Path:
+        return self.root / "rehearsal"
+
+    @property
+    def rehearsal_report(self) -> Path:
+        return self.rehearsal_dir / "report.json"
+
+    @property
+    def rehearsal_summary(self) -> Path:
+        return self.rehearsal_dir / "summary.txt"
+
+    def rehearsal_scale(self, variant: str, context: str) -> Path:
+        """Where one dataset's leaderboard-scale bundle is written."""
+        return self.rehearsal_dir / "scale" / f"{variant}_{context}"
+
+    @property
+    def phase3_policy(self) -> Path:
+        return self.root / "phase3_policy.json"
+
+    def phase3_adapt(self, context: str) -> Path:
+        return self.phase_dir("phase3") / f"adapt_{context}.json"
+
+    def phase3_knockdown(self, context: str) -> Path:
+        return self.phase_dir("phase3") / f"knockdown_{context}.csv"
+
+    @property
+    def predictions_dir(self) -> Path:
+        return self.root / "predictions" / "model"
+
+    def prediction_block(self, context: str, target: str) -> Path:
+        return self.predictions_dir / context / f"{target}.npz"
+
+    @property
+    def prediction_index(self) -> Path:
+        return self.predictions_dir / "index.json"
+
+    @property
     def reports(self) -> Path:
         return self.root / "reports"
 

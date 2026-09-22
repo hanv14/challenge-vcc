@@ -38,7 +38,10 @@ CHECK_DATA = "check-data"
 PRIORS = "priors"
 PHASE1 = "phase1"
 PHASE2 = "phase2"
+REHEARSAL = "rehearsal"
+PHASE3 = "phase3"
 FORGETTING = "forgetting"
+PREDICT = "predict"
 
 
 def _stage_check_data(cfg: Config) -> Any:
@@ -65,6 +68,24 @@ def _stage_phase2(cfg: Config) -> Any:
     return run_phase2(cfg)
 
 
+def _stage_rehearsal(cfg: Config) -> Any:
+    from .rehearsal.stage import run_rehearsal
+
+    return run_rehearsal(cfg)
+
+
+def _stage_phase3(cfg: Config) -> Any:
+    from .phases.phase3 import run_phase3
+
+    return run_phase3(cfg)
+
+
+def _stage_predict(cfg: Config) -> Any:
+    from .predict.run import run_predict
+
+    return run_predict(cfg)
+
+
 def _stage_forgetting(cfg: Config) -> Any:
     from .phases.forgetting import run_forgetting
 
@@ -77,9 +98,12 @@ STAGES: dict[str, StageFn] = {
     PRIORS: _stage_priors,
     PHASE1: _stage_phase1,
     PHASE2: _stage_phase2,
-    # Scores whatever cores exist, so it is meaningful after Phase 2 and
-    # again once Phase 3 lands.
+    REHEARSAL: _stage_rehearsal,
+    PHASE3: _stage_phase3,
+    # After Phase 3, so it scores Phase 1's validation under all three cores
+    # — which is what checklist item 7 asks for.
     FORGETTING: _stage_forgetting,
+    PREDICT: _stage_predict,
 }
 
 

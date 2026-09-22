@@ -122,6 +122,45 @@ class ReplogleContext:
     def control_cells(self, n: int | None = None, rng=None):
         return self.reader.controls(n, rng)
 
+    @cached_property
+    def source_path(self) -> Path:
+        """The single-cell file, by whichever of `meta.json`'s two paths resolves."""
+        source = Path(self.meta["source"])
+        if not source.exists() and self.meta.get("source_rel"):
+            source = (self.directory / self.meta["source_rel"]).resolve()
+        if not source.exists():
+            raise FileNotFoundError(
+                f"{self.directory / 'meta.json'} points at {source}, which does not exist"
+            )
+        return source
+
+    def raw_counts(self, rows) -> np.ndarray:
+        """Raw integer counts for `rows`, over this screen's measured genes.
+
+        `ReplogleCells` returns log1p(CP10K), which is what the model reads;
+        the cell generator works in **count space** (CLAUDE.md §4.7) and the
+        official metrics take raw counts on both sides (§6), so the rehearsal
+        needs the untransformed values too. Read from the same file and the
+        same columns, one block of rows at a time — the K562 genome-wide file
+        is ~2 million cells on the server.
+        """
+        import anndata as ad
+
+        rows = np.atleast_1d(np.asarray(rows))
+        order = np.argsort(rows)
+        ascending = rows[order]
+
+        backed = ad.read_h5ad(self.source_path, backed="r")
+        try:
+            block = backed.X[ascending]
+        finally:
+            if backed.file is not None:
+                backed.file.close()
+
+        dense = block.toarray() if hasattr(block, "toarray") else np.asarray(block)
+        dense = dense[:, self.genes["source_col"].to_numpy()]
+        return np.rint(dense[np.argsort(order)]).astype(np.int64)
+
 
 def load_replogle_context(directory: Path) -> ReplogleContext:
     meta_path = directory / "meta.json"

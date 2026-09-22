@@ -62,7 +62,9 @@ class ChallengeControls:
         backed = ad.read_h5ad(self.path, backed="r")
         try:
             source = backed.X if layer is None else backed.layers[layer]
-            block = source if rows is None else source[np.sort(np.asarray(rows))]
+            # `source` is a backed dataset, not an array: it has to be sliced
+            # before it becomes one, even when every row is wanted.
+            block = source[:] if rows is None else source[np.sort(np.asarray(rows))]
             dense = block.toarray() if hasattr(block, "toarray") else np.asarray(block)
         finally:
             if backed.file is not None:

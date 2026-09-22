@@ -9,7 +9,7 @@ the user on review**, and each now records the decision taken. Section 9 lists t
 points where those decisions depart from `CLAUDE.md` as written — these are also recorded in
 `DECISIONS.md` and go into the final message.
 
-**Status: M0, M1, M2 and M3 complete.** Sections 1–7 are the build plan; module names in §2 that do
+**Status: M0, M1, M2, M3 and M4 complete.** Sections 1–7 are the build plan; module names in §2 that do
 not exist yet are what later milestones will add.
 
 ---
@@ -108,14 +108,15 @@ config hash; a stage is skipped when that file exists and the hash matches, unle
 
 ```
 runs/<run_name>/
-  config.yaml  seeds.json  log.txt  .stages/
+  config.yaml  log.txt  .stages/
   priors/      prior_features.npz  coverage.csv  checks.json
   checkpoints/ core_phase1.pt core_phase2.pt core_phase2_frozen_core.pt core_phase3.pt
   phase1/      metrics.json  curves.csv
   phase2/      metrics.json  curves.csv
-  rehearsal/   report.json  summary.txt
+  rehearsal/   report.json  summary.txt  scale/<variant>_<context>/
   phase3_policy.json
   phase3/      adapt_<context>.json  knockdown_<context>.csv
+  predictions/model/index.json                    (what was predicted, per block)
   predictions/model/<context>/<target>.npz        (per-target blocks, chunked)
   submission/  prediction.h5ad                    (the deliverable; the user packages it)
   sanity/      report.json  summary.txt
@@ -283,8 +284,10 @@ target cohort capped by `rehearsal.max_targets` (default 100):
 
 **Arm comparability** (decided at review, §8.6/1): within a variant, the method, the upper
 bound and the floor use the **same resampled control cells and the same generator settings**,
-with the seed fixed per `(variant, target)` in `seeds.json`, so the arms differ only in the
-predicted fold changes. A test asserts the three arms draw identical control-cell indices.
+with the seed fixed per `(variant, target)` — derived from the run seed, the variant and the
+target name (`rehearsal/common.py:arm_seed`), so it needs no file and is the same on a
+rerun — so the arms differ only in the predicted fold changes. A test asserts the three arms
+draw identical control-cell indices.
 
 **Panel-assisted scoring** (decided at review, §8.6/2): variants 1 and 3 predict only part of
 the genes. A full profile is assembled as *true panel values + predicted rest*, pushed
@@ -296,10 +299,28 @@ half and the rest half. The upper bound and floor arms go through the identical 
 
 `rehearsal/calibrate.py` fits the two generator settings — the confidence threshold below
 which a predicted change is zeroed, and the global effect-size scale — on variant 2 by grid
-search (`rehearsal.calibration_grid`, default 4 × 4 = 16 scorings), maximizing the objective
+search (`rehearsal.calibration_thresholds` × `rehearsal.calibration_scales`, default
+4 × 4 = 16 scorings), maximizing the objective
 defined in §8.4, and writes `phase3_policy.json` with those two numbers, the objective used,
 and the list of modules Phase 3 may adapt. `rehearsal/report.json` holds every variant, arm
 and metric; `rehearsal/summary.txt` is the readable version.
+
+**The leaderboard's 0–1 scale** (§6) is attempted on the cross-context variant, whose arms
+are whole cells: `eval/scale.py` builds the generic-response baseline (the 0 end) and the
+split-half replicate anchor (the 1 end) with `cell-eval2`'s own tools, packaged as a *real
+bundle*, using the competition's own split count and base seed; every arm is then placed on
+it with `score_metrics(..., real_bundle=...)`. Where `cell-eval2` refuses the pair — which it
+does on data too small for one of the ends — its own message is recorded as the reason and
+the six raw values are reported alone, as §6 permits. `eval.build_scale` turns the attempt
+off. These two ends are reference points of the scorer: never predictions, never submitted,
+and never used to train or choose the model (the calibration maximizes the no-change
+objective instead).
+
+**Leakage and the prior layout.** Each variant rebuilds the priors under its own
+`PriorScope`, and those rebuilds are conformed to the run's own block layout: a block the
+scope leaves with nothing to read keeps its columns, zero-filled, with its missing flag set
+(DECISIONS.md D32). Without that the Phase 1 core could not be loaded into the rehearsal's
+arm at all, and the rehearsal would measure a model that never saw Phase 1.
 
 ### 4.5 Items 11–12 — Phase 3 and prediction
 
@@ -315,13 +336,15 @@ verified frozen. `phase3/adapt_<context>.json` records the loss before and after
 3. `predict/knockdown.py` applies the target gene's own knockdown prior — per-target
    `fold_expr` from Replogle bulk when available (median over that gene's promoter rows),
    otherwise the pooled median over every Replogle bulk file present
-   (`phase3.knockdown.source`, default `pooled`). Two rules decided at review (§8.7):
+   (`phase3.knockdown_source`, default `pooled`). Two rules decided at review (§8.7):
    * the **resolved source is recorded per target** (`pooled` or `per_target:<screen>`) in
      `phase3/knockdown_<context>.csv` and shown in the knockdown figure, because a
      `fold_expr` measured in K562 or RPE1 need not transfer to an unidentified context;
    * the prior is applied **only where the target gene is detectably expressed** in that
-     context's controls (mean CP10K above `phase3.knockdown.min_control_cpm`, defaulting to
-     the same floor as sanity check 3); below that floor the gene is left unchanged.
+     context's controls (mean CP10K above `phase3.knockdown_min_control_cpm`, defaulting to
+     the same floor as sanity check 3); below that floor the gene is left unchanged. The
+     gate measures the per-gene **mean CP10K** over the held control cells, not `ctrl_mean`
+     (which is the mean of `log1p(CP10K)` and sits far below it) — DECISIONS.md D35.
 4. `predict/generator.py` draws a **fresh independent** sample of that context's control
    cells (with replacement if needed — never one block reused across targets, which the
    expression metric's across-perturbation budget penalizes), applies the predicted per-gene
@@ -438,9 +461,21 @@ All tests run on `mini_data`, on CPU, and are fast. Beyond the per-element tests
   (`ADNP-1`), a missing target, a wrong cell count, a non-integer value, a negative value, a
   non-finite value, a cell above 1,000,000 counts, explicit stored zeros, dense storage,
   wrong gene order.
-* `test_official_scorer.py` — the wrapper returns all six metrics plus the two `nsig`
-  diagnostics on a tiny prediction; skipped **with a clear reason** if `cell_eval2` cannot be
-  imported.
+* `test_official.py` — the wrapper returns all six metrics plus the two `nsig` diagnostics on
+  a tiny prediction; the preset's loose ends (DE backend, device, thread counts) are pinned;
+  the real controls are added for scoring without touching the prediction; the leaderboard
+  scale builds from the real data alone and reports a reason when it cannot. The whole module
+  is skipped **with a clear reason** if `cell_eval2` cannot be imported.
+* `test_generator.py` — the threshold is applied before the scale; a gene below it comes back
+  bit-for-bit as the control; counts stay non-negative whole numbers; thinning never
+  increases a gene; stochastic rounding is unbiased; each target draws its own control cells
+  and the three arms of a variant draw the same ones; the knockdown prior's resolved source
+  is recorded and its floor respected.
+* `test_rehearsal.py` — all three variants run with a method, an upper bound and a floor; the
+  two partial variants are never keyed as end-to-end; the policy forbids adapting the
+  perturbation module and Phase 3 refuses one that permits it; every context reports its
+  adaptation loss before and after; every (context, target) comes out as `cells_per_pert`
+  sparse, integral, distinct cells with no explicit zeros.
 * `test_sanity.py` — one test per check, each feeding a deliberately broken prediction (NaNs,
   wrong cell counts, target gene not reduced, all targets identical, all cells identical,
   worse than no change, no DE calls at all), plus a prediction with an absurd fold change to
@@ -459,7 +494,7 @@ All tests run on `mini_data`, on CPU, and are fast. Beyond the per-element tests
 | M1 | configs, `scripts/server_env.sh`, every loader of §3, `check-data`, CLI skeleton | `pytest` green; `python -m vccp check-data --config configs/mini.yaml` passes ✅ |
 | M2 | prior blocks 1–6 (7 gated), both roles, embedding module, prior checks | items 1–4 artifacts exist ✅ |
 | M3 | gene-token core, adapters, freeze check, forgetting guard + core-freeze ablation, Phase 1, Phase 2 | items 5–9 artifacts exist ✅ |
-| M4 | three rehearsal variants, calibration, `phase3_policy.json`, Phase 3, prediction, generator | items 10–12 artifacts exist |
+| M4 | three rehearsal variants, calibration, `phase3_policy.json`, Phase 3, prediction, generator | items 10–12 artifacts exist ✅ |
 | M5 | submission writer, validator, sanity, summary, `checklist.json` | `python -m vccp all --config configs/mini.yaml` green |
 | M6 | README, DECISIONS.md, final message | definition of done in §9 of CLAUDE.md |
 

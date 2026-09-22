@@ -92,6 +92,10 @@ class ContextTensors:
     #: drowns it.
     mapping_no_change: float = 1.0
     perturbation_no_change: float = 1.0
+    #: Which columns of the screen's rest block this context uses. None means
+    #: all of them; the rehearsal's "unseen genes" variant narrows it to hide
+    #: a gene from training (§4.6 variant 3).
+    rest_positions: np.ndarray | None = None
 
     @property
     def n_panel(self) -> int:
@@ -100,6 +104,18 @@ class ContextTensors:
     @property
     def n_rest(self) -> int:
         return int(self.rest_idx.shape[0])
+
+    def draw_controls(self, n: int, rng, device: str):
+        """`(panel, rest)` for `n` control cells — the `ControlSource`
+        interface the shared adaptation routine takes (`phases/adapt.py`)."""
+        return draw_cells(self, None, n, rng, device)
+
+    def draw_perturbed(self, target: str, n: int, rng, device: str):
+        return draw_cells(self, target, n, rng, device)
+
+    def raw_control_counts(self, rows) -> np.ndarray:
+        """Raw counts for control rows, over this screen's measured genes."""
+        return self.context.raw_counts(rows)
 
 
 def load_contexts(cfg: Config, device: str, gene_index: dict | None = None) -> dict[str, ContextTensors]:
@@ -200,6 +216,8 @@ def draw_cells(
     else:
         panel, rest = tensors.context.cells_for_target(target, n, rng)
 
+    if tensors.rest_positions is not None:
+        rest = rest[:, tensors.rest_positions]
     panel = (panel - tensors.panel_mean) / tensors.panel_std
     rest = (rest - tensors.rest_mean) / tensors.rest_std
     return (

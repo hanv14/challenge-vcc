@@ -37,6 +37,14 @@ def tiny(cfg, tmp_path):
         train=dataclasses.replace(
             cfg.train, output_genes_per_step=8, log_every=1, core_freeze_ablation=False
         ),
+        rehearsal=dataclasses.replace(
+            cfg.rehearsal, max_targets=2, adapt_steps=1, phase2_steps=1,
+            calibration_thresholds=(0.0,), calibration_scales=(1.0,),
+        ),
+        phase3=dataclasses.replace(cfg.phase3, adapt_steps=1, batch_size=2),
+        # The leaderboard scale runs the scorer six more times per dataset;
+        # what it does is tested where it belongs, not in the CLI's plumbing.
+        eval=dataclasses.replace(cfg.eval, build_scale=False),
     )
 
 

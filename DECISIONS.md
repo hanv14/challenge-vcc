@@ -503,3 +503,100 @@ are counted.
 (B, 1) against a (B, G) error; counting the mask's own entries divided a sum
 over B x G terms by B, inflating that loss by the number of genes. Found by a
 test whose expected value I had to work out by hand.
+
+---
+
+## M4 — rehearsal, Phase 3, prediction
+
+### D31. A target with no embedding is predicted as no change, not skipped
+
+**Decision.** If a perturbation in `pert_counts.csv` is not a challenge gene,
+the vocabulary has no target-role embedding for it, so no perturbation token
+can be formed. That target still gets its `cells_per_pert` cells — drawn from
+the context's controls with a fold change of exactly 1 everywhere — and the
+prediction index lists it under `targets_without_token`.
+
+**Reason.** The submission must contain every perturbation of
+`pert_counts.csv` in every context (§8); failing the run, or omitting the
+target, would make the whole submission invalid because of one label. A
+no-change prediction is the honest answer for a perturbation the model was
+given no way to represent, and §4.7 notes the metrics treat no change as
+neutral rather than as an error.
+
+**Alternative.** Raise. Rejected: it turns a one-label data surprise in the
+final round into a total failure, and it is exactly the kind of thing that
+surfaces at 2am before a deadline. The label is reported instead.
+
+### D32. A rehearsal-scoped prior rebuild lands in the run's own layout
+
+**Decision.** `build_priors(..., reference_layouts=...)` places a scoped
+rebuild into the layout of the run's own priors: a block the scope leaves
+with nothing to read keeps its columns, zero-filled, with its missing flag
+set for every gene. The layout hash covers only structure — block names,
+widths, offsets and column labels — not coverage counts or sampling seeds.
+
+**Reason.** The rehearsal rebuilds the priors without the held-out targets
+and contexts (§4.1's leakage rule). A dropped block shifts every offset after
+it, so the Phase 1 core — trained against the run's priors — could not be
+loaded into the rehearsal's arm at all, and the rehearsal would measure a
+model that never saw Phase 1. Zero-filling is what §4.1 already prescribes
+for a source that does not cover a gene, applied to a source that now covers
+nothing; the scope's effect then shows up as a set missing flag rather than
+as a silent shift.
+
+**Alternative.** Train the rehearsal's arm from scratch. Rejected: it would
+measure a different method from the one that is submitted.
+
+### D33. The scorer never asks for more threads than polars has
+
+**Decision.** `eval/official.py` requests `min(resources.cpu_threads,
+polars.thread_pool_size())`.
+
+**Reason.** `cell-eval2` gathers with polars, whose pool size is fixed at
+import from `POLARS_MAX_THREADS` — by `scripts/server_env.sh` on the server,
+by the conservative default `vccp/__main__.py` sets when the environment is
+silent. Asking for more than the pool holds raises ("The number of threads
+must be between 1 and 1"), and raising the pool to fit the config would
+override what the environment said, which §1.2 forbids.
+
+### D34. The leaderboard's 0–1 scale is attempted, and its refusal is reported
+
+**Decision.** `eval/scale.py` builds both ends of §6's scale with
+`cell-eval2`'s own tools — the generic-response baseline for 0, the
+split-half replicate anchor for 1, packaged as a *real bundle* — on the
+cross-context rehearsal dataset, and places every arm on it with
+`score_metrics(..., real_bundle=...)`. Where `cell-eval2` refuses the pair,
+its own message is recorded as the reason and the six raw values stand alone.
+
+**Reason.** §6 asks for the scale "where the data allow" and for a statement
+where they do not. An assertion that the data do not allow it, written
+without trying, is a guess: on `mini_data` the pair builds on one of the two
+screens and is refused on the other, for a specific reason
+(`expr_distance_unbiased` summing non-positive over the reference panel) that
+no amount of reasoning would have produced. The competition's own anchor rule
+(`cell_eval2.competition`) supplies the split count and base seed, so the
+scale is the leaderboard's rather than ours.
+
+**Alternative.** Shell out to the `cell-eval2` CLI as §6's wording suggests.
+Rejected: the Python entry points are the same code, and a subprocess would
+have to be parsed rather than read.
+
+### D35. The knockdown gate measures mean CP10K, not `ctrl_mean`
+
+**Decision.** "Detectably expressed in this context's controls" is evaluated
+as the per-gene **mean CP10K** over the held control cells, computed as a
+matrix–vector product so no cells × genes float array is materialized.
+
+**Reason.** `ctrl_mean` is the mean of `log1p(CP10K)`, which the zeros pull
+far below the mean CP10K the specification names (§6.1 check 3, §4.7). Gating
+on it applied the knockdown prior to 5 of 30 targets per context on
+`mini_data`; on the quantity the specification actually names, 29 of 30.
+
+### D36. Phase 1 validation is re-scored after Phase 3, so `forgetting` runs last but one
+
+**Decision.** The `forgetting` stage runs after `phase3` and before
+`predict`.
+
+**Reason.** Checklist item 7 asks for Phase 1 validation re-scored "after
+Phase 2 and after Phase 3". The stage scores every core checkpoint that
+exists, so running it after Phase 3 is what makes the Phase 3 column real.
