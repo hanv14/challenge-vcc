@@ -1,0 +1,113 @@
+# Conda environment for single-cell perturbation prediction
+#
+# Create with:
+#   mamba env create -f environment.yml     # (or: conda env create -f environment.yml)
+#   conda activate vcc
+#
+# Then install PyTorch separately — see notes at the bottom of this file.
+
+name: vcc
+
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  - python=3.11
+
+  # ---------- core numerics ----------
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - numba                    # scanpy/UMAP acceleration
+
+  # ---------- single-cell stack ----------
+  - anndata
+  - scanpy
+  - h5py                     # .h5ad backing store
+  - zarr                     # chunked on-disk arrays; good for out-of-core
+  - python-igraph
+  - leidenalg
+
+  # ---------- large / out-of-core data ----------
+  - dask
+  - pyarrow                  # parquet for metadata tables
+  - polars                   # fast metadata wrangling (LINCS sig_info etc.)
+
+  # ---------- gene sets / pathway scoring ----------
+  - gseapy                   # GMT parsing, enrichment
+  - statsmodels
+
+  # ---------- plotting ----------
+  - matplotlib
+  - seaborn
+
+  # ---------- notebooks & dev ----------
+  - jupyterlab
+  - ipykernel
+  - ipywidgets
+  - tqdm
+  - rich
+
+  # ---------- config / reproducibility ----------
+  - hydra-core
+  - omegaconf
+  - pyyaml
+
+  # ---------- code quality ----------
+  - ruff
+  - pytest
+  - pre-commit
+
+  # ---------- pip-only packages ----------
+  - pip
+  - pip:
+      - decoupler            # pathway / TF activity scoring from gene sets
+      - cmapPy               # read LINCS L1000 .gctx files
+      - scvi-tools           # VAE machinery for single-cell; useful for the
+                             #   "predict 400 cells, not 1 mean" problem
+      - wandb                # experiment tracking (or swap for mlflow)
+      - jsonargparse
+
+# ---------------------------------------------------------------------------
+# PyTorch — install AFTER creating the environment (Linux + NVIDIA)
+# ---------------------------------------------------------------------------
+# PyTorch no longer ships conda packages, so install it with pip inside the
+# activated env. The pip wheels bundle their own CUDA runtime, so you do NOT
+# need a matching system CUDA toolkit — only a recent enough NVIDIA driver.
+#
+#   conda activate vcc
+#   nvidia-smi                                  # note the driver / CUDA version
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   pip install lightning torchmetrics
+#
+# Verify before you trust it:
+#   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), \
+#              torch.cuda.get_device_name(0))"
+#
+# Check https://pytorch.org/get-started/locally/ for the current CUDA tag —
+# cu124 is a reasonable default but the matrix moves. If your driver is old,
+# step down to cu121 rather than upgrading the driver.
+#
+# ---------------------------------------------------------------------------
+# Optional additions, once you know you need them
+# ---------------------------------------------------------------------------
+#   pip install fair-esm              # protein language model gene embeddings
+#   pip install torch-geometric       # only if you go the explicit-graph route
+#   pip install pertpy                # perturbation analysis utilities
+#
+# GPU-accelerated scanpy (Linux + NVIDIA only — that's you):
+#   mamba install -c rapidsai -c conda-forge -c nvidia rapids-singlecell
+# Install it into a SEPARATE env first and check it works. It pins numpy,
+# cupy and CUDA versions hard, and dropping it into this env can force a
+# painful re-solve. Only worth it if preprocessing becomes the bottleneck.
+#
+# ---------------------------------------------------------------------------
+# Notes
+# ---------------------------------------------------------------------------
+# - Versions are deliberately unpinned so the solver can find a consistent set.
+#   Once it resolves, freeze it:  conda env export --no-builds > environment.lock.yml
+# - Use mamba if available; the conda solver is slow on an env this size.
+# - Register the kernel for Jupyter:
+#       python -m ipykernel install --user --name vcc --display-name "Python (vcc)"
