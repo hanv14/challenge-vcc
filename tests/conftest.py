@@ -92,6 +92,25 @@ def mini_cfg(tmp_path: Path) -> Config:
     return dataclasses.replace(cfg, output_root=tmp_path / "runs")
 
 
+@pytest.fixture(scope="session")
+def session_cfg(tmp_path_factory) -> Config:
+    """A mini config whose run directory survives the whole session.
+
+    Building the priors takes a few seconds, so the stages that need them
+    share one build rather than repeating it per test.
+    """
+    cfg = load_config(MINI_CONFIG)
+    return dataclasses.replace(cfg, output_root=tmp_path_factory.mktemp("runs"))
+
+
+@pytest.fixture(scope="session")
+def built_priors(session_cfg):
+    """The full-scope priors, built once."""
+    from vccp.priors.build import build_priors
+
+    return build_priors(session_cfg)
+
+
 @pytest.fixture
 def mirrored_cfg(tmp_path: Path) -> Config:
     """Like `mini_cfg`, but reading a symlink mirror the test may break."""

@@ -35,6 +35,7 @@ from .runtime import (
 StageFn = Callable[[Config], Any]
 
 CHECK_DATA = "check-data"
+PRIORS = "priors"
 
 
 def _stage_check_data(cfg: Config) -> Any:
@@ -43,9 +44,16 @@ def _stage_check_data(cfg: Config) -> Any:
     return check_data(cfg)
 
 
+def _stage_priors(cfg: Config) -> Any:
+    from .priors.stage import run_priors
+
+    return run_priors(cfg)
+
+
 #: Stage name -> implementation, in the order `all` runs them.
 STAGES: dict[str, StageFn] = {
     CHECK_DATA: _stage_check_data,
+    PRIORS: _stage_priors,
 }
 
 

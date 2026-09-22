@@ -153,7 +153,7 @@ class RunPaths:
         self.root = cfg.run_dir
 
     def ensure(self) -> None:
-        for directory in (self.root, self.stages, self.reports):
+        for directory in (self.root, self.stages, self.reports, self.priors):
             directory.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -170,6 +170,22 @@ class RunPaths:
 
     def stage_marker(self, stage: str) -> Path:
         return self.stages / f"{stage}.done"
+
+    @property
+    def priors(self) -> Path:
+        return self.root / "priors"
+
+    @property
+    def prior_features(self) -> Path:
+        return self.priors / "prior_features.npz"
+
+    @property
+    def prior_coverage(self) -> Path:
+        return self.priors / "coverage.csv"
+
+    @property
+    def prior_checks(self) -> Path:
+        return self.priors / "checks.json"
 
     @property
     def reports(self) -> Path:

@@ -9,7 +9,7 @@ the user on review**, and each now records the decision taken. Section 9 lists t
 points where those decisions depart from `CLAUDE.md` as written — these are also recorded in
 `DECISIONS.md` and go into the final message.
 
-**Status: M0 and M1 complete.** Sections 1–7 are the build plan; module names in §2 that do
+**Status: M0, M1 and M2 complete.** Sections 1–7 are the build plan; module names in §2 that do
 not exist yet are what later milestones will add.
 
 ---
@@ -434,7 +434,7 @@ All tests run on `mini_data`, on CPU, and are fast. Beyond the per-element tests
 |---|---|---|
 | M0 | this file | committed, reviewed ✅ |
 | M1 | configs, `scripts/server_env.sh`, every loader of §3, `check-data`, CLI skeleton | `pytest` green; `python -m vccp check-data --config configs/mini.yaml` passes ✅ |
-| M2 | prior blocks 1–6 (7 gated), both roles, embedding module, prior checks | items 1–4 artifacts exist |
+| M2 | prior blocks 1–6 (7 gated), both roles, embedding module, prior checks | items 1–4 artifacts exist ✅ |
 | M3 | gene-token core, adapters, freeze check, forgetting guard + core-freeze ablation, Phase 1, Phase 2 | items 5–9 artifacts exist |
 | M4 | three rehearsal variants, calibration, `phase3_policy.json`, Phase 3, prediction, generator | items 10–12 artifacts exist |
 | M5 | submission writer, validator, sanity, summary, `checklist.json` | `python -m vccp all --config configs/mini.yaml` green |

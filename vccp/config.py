@@ -48,6 +48,71 @@ class Resources:
 
 
 @dataclass(frozen=True)
+class Priors:
+    """Gene vocabulary and prior blocks (CLAUDE.md §4.1)."""
+
+    #: Each prior block is reduced to this many components before it is
+    #: standardized and concatenated.
+    block_dim: int = 32
+    #: Cells sampled per source when estimating a co-expression block. The
+    #: estimate is over genes, so more cells buy accuracy, not coverage.
+    coexpr_max_cells: int = 20000
+    #: Power iterations in the randomized SVD. More is more accurate and
+    #: costs one streaming pass over the cells each.
+    coexpr_n_iter: int = 2
+    #: Gene-group families smaller than this carry no usable signal.
+    hgnc_min_group_size: int = 2
+    #: Protein language model embeddings (block 7). Built only when this
+    #: points at a file that exists; never downloaded (CLAUDE.md §4.1).
+    plm_path: str | None = None
+    #: Rows read at a time when streaming cells for a co-expression block.
+    cell_block_size: int = 2048
+    #: Nearest neighbours examined by the prior checks.
+    check_n_neighbors: int = 10
+    #: Targets sampled for the response-correlation check. The check is over
+    #: pairs, so this caps a quadratic; the server has thousands of targets.
+    check_max_targets: int = 500
+    #: Gene-group name fragments the neighbour check looks for, matched
+    #: case-insensitively against HGNC `gene_group`.
+    check_families: tuple[str, ...] = (
+        "ribosomal",
+        "proteasome",
+        "mitochondrial complex",
+        "mitochondrial respiratory chain",
+    )
+
+    def validate(self) -> None:
+        if self.block_dim < 1:
+            raise ConfigError("priors.block_dim must be at least 1")
+        if self.coexpr_max_cells < 2:
+            raise ConfigError("priors.coexpr_max_cells must be at least 2")
+        if self.coexpr_n_iter < 0:
+            raise ConfigError("priors.coexpr_n_iter must not be negative")
+        if self.cell_block_size < 1:
+            raise ConfigError("priors.cell_block_size must be at least 1")
+        if self.check_n_neighbors < 1:
+            raise ConfigError("priors.check_n_neighbors must be at least 1")
+        if self.check_max_targets < 2:
+            raise ConfigError("priors.check_max_targets must be at least 2")
+
+
+@dataclass(frozen=True)
+class Model:
+    """The shared gene-token model (CLAUDE.md §4.2)."""
+
+    #: Width of a gene embedding: `W . prior(g) + delta(g)`.
+    embedding_dim: int = 128
+    #: L2 pull on the free per-gene vector, which starts at zero.
+    delta_l2: float = 1e-4
+
+    def validate(self) -> None:
+        if self.embedding_dim < 1:
+            raise ConfigError("model.embedding_dim must be at least 1")
+        if self.delta_l2 < 0:
+            raise ConfigError("model.delta_l2 must not be negative")
+
+
+@dataclass(frozen=True)
 class Config:
     """The whole configuration, as loaded from a YAML file.
 
@@ -63,6 +128,8 @@ class Config:
     run_name: str = "run"
     seed: int = 0
     resources: Resources = field(default_factory=Resources)
+    priors: Priors = field(default_factory=Priors)
+    model: Model = field(default_factory=Model)
 
     source: Path | None = None
     repo_root: Path | None = None
@@ -90,11 +157,23 @@ class Config:
         if not self.run_name:
             raise ConfigError("run_name must not be empty")
         self.resources.validate()
+        self.priors.validate()
+        self.model.validate()
 
 
 def _resolve(value: str, base: Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (base / path)
+
+
+def _build_section(cls: type, given: dict[str, Any]):
+    """Build a config section, keeping tuple fields tuples so the whole
+    config stays hashable and comparable."""
+    coerced = dict(given)
+    for f in dataclasses.fields(cls):
+        if f.name in coerced and isinstance(coerced[f.name], list):
+            coerced[f.name] = tuple(coerced[f.name])
+    return cls(**coerced)
 
 
 def _reject_unknown(section: str, given: dict[str, Any], cls: type) -> None:
@@ -119,11 +198,13 @@ def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config
 
     base = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parent.parent
 
-    resources_raw = raw.pop("resources", {}) or {}
-    if not isinstance(resources_raw, dict):
-        raise ConfigError(f"{path}: 'resources' must be a mapping")
-    _reject_unknown("resources", resources_raw, Resources)
-    resources = Resources(**resources_raw)
+    sections = {}
+    for name, cls in (("resources", Resources), ("priors", Priors), ("model", Model)):
+        section_raw = raw.pop(name, {}) or {}
+        if not isinstance(section_raw, dict):
+            raise ConfigError(f"{path}: {name!r} must be a mapping")
+        _reject_unknown(name, section_raw, cls)
+        sections[name] = _build_section(cls, section_raw)
 
     # `source` and `repo_root` are set by the loader, never by the file.
     for reserved in ("source", "repo_root"):
@@ -139,9 +220,9 @@ def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config
         data_root=_resolve(raw.pop("data_root"), base),
         vcc_root=_resolve(raw.pop("vcc_root"), base),
         output_root=_resolve(raw.pop("output_root"), base),
-        resources=resources,
         source=path.resolve(),
         repo_root=base,
+        **sections,
         **raw,
     )
     cfg.validate()

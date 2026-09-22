@@ -206,3 +206,104 @@ propagate into the priors and the loss.
 **Alternative.** Drop zero-variance genes. Rejected: they are still genes the
 submission must predict, and dropping them would make the gene axis
 context-dependent.
+
+---
+
+## M2 — gene vocabulary and priors
+
+### D14. A source that exists per screen becomes one block per screen
+
+**Decision.** `replogle_coexpr` and `pert_phenotype_replogle` produce one
+sub-block per Replogle screen (`replogle_coexpr:K562_gwps`,
+`replogle_coexpr:rpe1`, …), each with its own coverage mask and missing flag,
+rather than one pooled block.
+
+**Reason.** The screens measure different gene sets, and principal directions
+from two different decompositions are not in the same basis — pooling them
+would put unrelated numbers in the same coordinate and call it a feature. A
+gene measured in two screens gets features from both; a gene measured in one
+gets that one and a missing flag for the other. It also means the server's
+third screen (`K562_essential`) widens the prior automatically.
+
+**Alternative.** Restrict the block to the genes every screen measures.
+Rejected: it throws away coverage for genes measured in only one screen, which
+is most of them.
+
+### D15. Co-expression never forms a gene-gene matrix
+
+**Decision.** Blocks 1 and 2 stream cells from disk in `priors.cell_block_size`
+blocks and take a randomized SVD of the standardized data matrix, whose right
+singular vectors are the principal directions of the gene-gene correlation.
+
+**Reason.** A gene-gene correlation matrix is 18,533² on the server — 1.4 GB
+before its eigendecomposition, and far more during it. The randomized method
+holds only `(n_cells x k)` and `(n_genes x k)`, and `priors.coexpr_max_cells`
+caps the first.
+
+**Alternative.** Materialize the correlation matrix within `max_ram_gb`.
+Rejected: it fits only just, and would not survive a larger control cohort.
+
+### D16. Which blocks serve which role
+
+**Decision.** Co-expression, HGNC groups and (if configured) the PLM block
+serve **both** roles. The knockdown phenotype blocks serve the **target** role
+only. Nothing serves the feature role alone, so the target-role prior is the
+wider of the two.
+
+**Reason.** §4.1 asks for a feature-role and a target-role prior. How a gene
+behaves and what it belongs to describe it either way; what its knockdown does
+to everything else describes it only as a target. Each role has its own `W`,
+so a shared block can still be read differently by the two.
+
+**Alternative.** Give each block to exactly one role. Rejected: it would deny
+the perturbation token any knowledge of what the target gene *is*, which is
+most of what is known about a target the screens never touched.
+
+### D17. Response profiles are standardized per target before decomposition
+
+**Decision.** In the knockdown-phenotype blocks, each target's response vector
+is z-scored across genes before the decomposition, so two targets are alike
+when their responses point the same way rather than when they are the same
+size.
+
+**Reason.** §3.3: LINCS is CRISPR knockout, the challenge is interference —
+"directions and affected genes transfer well; magnitudes and the target gene's
+own level do not". Encoding magnitude into the target-role prior would encode
+the part that does not transfer.
+
+**Alternative.** Keep the raw magnitude. Rejected for the reason above; the
+magnitude is re-fitted where it belongs, by Phase 2 and by the generator's
+effect-size scale.
+
+### D18. The neighbour check runs per HGNC group, not per configured pattern
+
+**Decision.** `priors.check_families` holds name fragments, but the check
+evaluates every HGNC gene group matching a fragment **separately**, and skips
+any with fewer than three members present, reporting the reason.
+
+**Reason.** The first version pooled every group matching a pattern, which put
+"Mitochondrial complex I assembly complex" and "Mitochondrial complex IV:
+cytochrome c oxidase subunits" in one family and scored 0.0x enrichment. Those
+are different machines and their subunits have no reason to be neighbours —
+the check was asking a question with no right answer. Per group, on mini_data:
+Proteasome 159x, Mitochondrial respiratory chain complex assembly factors
+196x, Large ribosomal subunit biogenesis complex 17x, 3 of 3 scored groups
+enriched, and the four small complexes explicitly skipped.
+
+**Alternative.** Hand-list the complexes. Rejected: it would be a hardcoded
+biology table that mini_data and the server would disagree about.
+
+### D19. The missing flag is 1.0 for missing
+
+**Decision.** Each block contributes its `block_dim` standardized columns plus
+one flag column that is **1.0 where the block does not cover the gene** and
+0.0 where it does; uncovered genes' feature columns are exactly zero.
+
+**Reason.** A standardized feature of zero is the block's mean, not an absence.
+Without the flag the model cannot tell "this source says this gene is typical"
+from "this source has never seen this gene" — and on the server the second is
+true of roughly 10,000 genes.
+
+**Alternative.** Impute the missing values. Rejected: an imputed
+co-expression profile for a gene measured nowhere is a fabrication, and the
+free per-gene `delta` is the mechanism the specification gives for that case.
