@@ -36,6 +36,9 @@ StageFn = Callable[[Config], Any]
 
 CHECK_DATA = "check-data"
 PRIORS = "priors"
+PHASE1 = "phase1"
+PHASE2 = "phase2"
+FORGETTING = "forgetting"
 
 
 def _stage_check_data(cfg: Config) -> Any:
@@ -50,10 +53,33 @@ def _stage_priors(cfg: Config) -> Any:
     return run_priors(cfg)
 
 
+def _stage_phase1(cfg: Config) -> Any:
+    from .phases.phase1 import run_phase1
+
+    return run_phase1(cfg)
+
+
+def _stage_phase2(cfg: Config) -> Any:
+    from .phases.phase2 import run_phase2
+
+    return run_phase2(cfg)
+
+
+def _stage_forgetting(cfg: Config) -> Any:
+    from .phases.forgetting import run_forgetting
+
+    return run_forgetting(cfg)
+
+
 #: Stage name -> implementation, in the order `all` runs them.
 STAGES: dict[str, StageFn] = {
     CHECK_DATA: _stage_check_data,
     PRIORS: _stage_priors,
+    PHASE1: _stage_phase1,
+    PHASE2: _stage_phase2,
+    # Scores whatever cores exist, so it is meaningful after Phase 2 and
+    # again once Phase 3 lands.
+    FORGETTING: _stage_forgetting,
 }
 
 

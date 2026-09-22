@@ -153,7 +153,7 @@ class RunPaths:
         self.root = cfg.run_dir
 
     def ensure(self) -> None:
-        for directory in (self.root, self.stages, self.reports, self.priors):
+        for directory in (self.root, self.stages, self.reports, self.priors, self.checkpoints):
             directory.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -188,8 +188,32 @@ class RunPaths:
         return self.priors / "checks.json"
 
     @property
+    def checkpoints(self) -> Path:
+        return self.root / "checkpoints"
+
+    def core_checkpoint(self, phase: str) -> Path:
+        return self.checkpoints / f"core_{phase}.pt"
+
+    def phase_dir(self, phase: str) -> Path:
+        return self.root / phase
+
+    def phase_metrics(self, phase: str) -> Path:
+        return self.phase_dir(phase) / "metrics.json"
+
+    def phase_curves(self, phase: str) -> Path:
+        return self.phase_dir(phase) / "curves.csv"
+
+    @property
     def reports(self) -> Path:
         return self.root / "reports"
+
+    @property
+    def frozen_check(self) -> Path:
+        return self.reports / "frozen_check.json"
+
+    @property
+    def forgetting(self) -> Path:
+        return self.reports / "forgetting.json"
 
     @property
     def check_data_report(self) -> Path:

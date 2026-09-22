@@ -401,3 +401,105 @@ is on the banned list as mini_data's `cells_per_pert`. Weakening the scan
 would have cost more than the annotation. Making the exemption explicit and
 greppable means it is a claim a reviewer can see and disagree with, rather
 than something the scanner quietly allows.
+
+---
+
+## M3 — the shared model, Phases 1 and 2
+
+### D25. Every head predicts a change, and starts at exactly zero
+
+**Decision.** The output heads' final linear layers are zero-initialized, so
+an untrained model predicts no change at all. Phase 1's perturbed-profile head
+and Phase 2's perturbation module both add their output to a control baseline
+rather than predicting an absolute level.
+
+**Reason.** A perturbed profile is mostly its own control, and pushing that
+through a 64-latent bottleneck spends the whole model on copying its input —
+measured: the decoder reaches only 0.23 Pearson trying to reproduce a random
+input it was just given. The bottleneck exists for the *response* (§4.2), and
+control-SD units (§3.2) already express everything as a change. Zero-init then
+makes "this perturbation did nothing" the starting point, which is also what
+the challenge's metrics reward a prediction for not knowing (§4.7: a gene with
+no confident change keeps a fold change of exactly 1) — an untrained head
+cannot start out worse than the no-change baseline. On mini this moved
+Phase 1's held-out `pert_pearson` from 0.047 to 0.100.
+
+**Alternative.** Predict absolute levels and let the model learn the identity
+part. Rejected on the measurement above.
+
+**Consequence, accepted.** At exactly zero the chain rule gives zero, so for
+one step no gradient flows *through* a head to what feeds it. The head's own
+gradient lifts it off zero immediately, so this is a one-step delay, not a
+blockage; the tests that check gradients flow through a head nudge it first
+and say why.
+
+### D26. Both Phase 2 losses are divided by their own no-change baseline
+
+**Decision.** The mapping loss and the perturbation loss are each divided by
+what predicting no change scores on them, measured on the training split.
+
+**Reason.** They are in the same units but at different scales: the mapping
+predicts single cells (variance ~1.0 in control-SD units) while the
+perturbation module predicts a pseudobulk mean over cells (variance ~0.04).
+With equal weights the mapping was twenty times the size of the perturbation
+term and simply drowned it. Normalized, both read as a fraction of the
+variance there was to explain, `loss_mapping` and `loss_perturbation` mean
+what they say, and the scales will differ again on the server.
+
+### D27. The perturbation module's baseline is the stored control pseudobulk
+
+**Decision.** The control profile fed to the perturbation module — its input
+and the baseline its predicted change is added to — is the screen's control
+pseudobulk, not a fresh draw of control cells.
+
+**Reason.** A bug found by checking whether the module beat predicting no
+change on its own *training* targets, which it did not. The mean of n cells in
+control-SD units carries noise of variance 1/n: at 8 cells that is 0.129,
+against a pseudobulk response of 0.037 in K562_gwps — three and a half times
+the signal, injected by the baseline before the model predicted anything, and
+matching the observed error ratio of 2.7 almost exactly. With the stored
+pseudobulk (variance 0.00000 by construction) the module goes below the
+no-change line on both splits.
+
+**What caught it.** Reporting `pert_mse_no_change` next to `pert_mse`, and
+then the train/validation split of the same ratio. A raw MSE would have looked
+like a small number and hidden this.
+
+### D28. Output genes are subsampled per training step
+
+**Decision.** `train.output_genes_per_step` decodes a fresh random subset of
+the output genes each step (default 2,048; 256 on mini). Evaluation always
+uses every gene.
+
+**Reason.** The loss is a mean over genes, so a subsample estimates it without
+bias, and the decoder's cost is linear in the number of genes decoded. On the
+server the alternative is decoding 18,533 genes per step. On mini it took
+Phase 1 from 822 ms/step to 340.
+
+**Exception.** Phase 1's signature is decoded over the whole input set even
+when the loss scores a subsample, because step 2 consumes it as a per-gene
+input channel — a partial signature would change what step 2 sees.
+
+### D29. Only targets that are challenge genes condition the perturbation module
+
+**Decision.** Phase 1 trains on the LINCS rows whose target is a challenge
+gene (177 of 688 on mini); Phase 2 splits its target pools, using every
+target's cells for the Siamese mapping and only challenge-gene targets for the
+perturbation module (36 of 142 training targets in K562_gwps).
+
+**Reason.** The perturbation token is the target's target-role embedding, and
+the vocabulary covers the challenge genes (§3.1). A target outside that axis
+has no embedding, so its rows would train the model to ignore the
+perturbation token. The mapping needs no token, so it keeps all the cells.
+Both counts are reported in the phase metrics; on the server the overlap is
+far better (272 of 300 validation targets are in K562_gwps).
+
+### D30. A `masked_mse` with a per-row mask counts entries, not rows
+
+**Decision.** The mask is broadcast to the error's shape before its entries
+are counted.
+
+**Reason.** A bug. Phase 1's `gmt` loss masks by row, so the mask arrives as
+(B, 1) against a (B, G) error; counting the mask's own entries divided a sum
+over B x G terms by B, inflating that loss by the number of genes. Found by a
+test whose expected value I had to work out by hand.

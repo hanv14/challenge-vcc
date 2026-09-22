@@ -15,3 +15,20 @@ resources:
   num_workers: 2
   gpu_memory_fraction: 0.5
   max_ram_gb: 64
+
+# Budgets. Small enough that `all` finishes in minutes on CPU; the server
+# config keeps the defaults. Nothing in the code path differs — only these
+# numbers (CLAUDE.md §0).
+train:
+  output_genes_per_step: 256
+  log_every: 25
+  ablation_steps_fraction: 0.5
+
+phase1:
+  steps: 120
+  batch_size: 16
+
+phase2:
+  steps: 150
+  batch_size: 16
+  cells_per_draw: 8

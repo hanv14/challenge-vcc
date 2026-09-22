@@ -19,13 +19,32 @@ def argv(tmp_path):
     return ["--config", str(MINI_CONFIG), "--run-name", "t"], tmp_path
 
 
-def run(stage, extra=(), *, tmp_path):
-    """Run the CLI with `output_root` redirected, via the run-name override."""
+def tiny(cfg, tmp_path):
+    """The mini config with training budgets cut to the bone.
+
+    These tests are about the CLI's plumbing — stage selection, resume,
+    `--force`, `--skip-check` — not about training. Running `all` at the mini
+    config's real budgets made them the slowest thing in the suite by an
+    order of magnitude, and told us nothing the phase tests do not.
+    """
     import dataclasses
 
+    return dataclasses.replace(
+        cfg,
+        output_root=tmp_path / "runs",
+        phase1=dataclasses.replace(cfg.phase1, steps=1, batch_size=2),
+        phase2=dataclasses.replace(cfg.phase2, steps=1, batch_size=2, cells_per_draw=2),
+        train=dataclasses.replace(
+            cfg.train, output_genes_per_step=8, log_every=1, core_freeze_ablation=False
+        ),
+    )
+
+
+def run(stage, extra=(), *, tmp_path):
+    """Run the CLI with `output_root` redirected, via the run-name override."""
     from vccp.config import load_config
 
-    cfg = dataclasses.replace(load_config(MINI_CONFIG), output_root=tmp_path / "runs")
+    cfg = tiny(load_config(MINI_CONFIG), tmp_path)
     run_paths = RunPaths(cfg)
     run_paths.ensure()
 
