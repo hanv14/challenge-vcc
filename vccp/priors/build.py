@@ -14,6 +14,9 @@ model gets both and combines them.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,15 +55,77 @@ def default_blocks() -> list:
 
 
 @dataclass
-class RoleLayout:
-    """Where each block sits in a role's prior vector."""
+class BlockSpec:
+    """One block's place in a role's prior vector.
 
-    block_names: list[str]
-    offsets: list[int]
-    widths: list[int]
-    #: Column holding the missing flag for each block.
-    flag_columns: list[int]
+    Written into `coverage.csv` and into `prior_features.npz` so that a
+    checkpoint can be matched to the layout it was trained with. The block
+    set is not fixed — the server's third Replogle screen adds two blocks —
+    so the layout has to travel with the artifact rather than be assumed.
+    """
+
+    name: str
+    offset: int
+    #: Feature columns, not counting the missing flag.
+    width: int
+    #: Column holding this block's missing flag.
+    flag_column: int
+    column_names: list[str]
+    n_covered: int
+    fraction_covered: float
+    source_context: str | None = None
+    reads_responses: bool = False
+    sampling_seed: int | None = None
+
+    def as_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+@dataclass
+class RoleLayout:
+    """Where every block sits in a role's prior vector."""
+
+    blocks: list[BlockSpec]
     total_width: int
+
+    # Convenience views, so callers need not unpack `blocks` every time.
+    @property
+    def block_names(self) -> list[str]:
+        return [b.name for b in self.blocks]
+
+    @property
+    def offsets(self) -> list[int]:
+        return [b.offset for b in self.blocks]
+
+    @property
+    def widths(self) -> list[int]:
+        return [b.width for b in self.blocks]
+
+    @property
+    def flag_columns(self) -> list[int]:
+        return [b.flag_column for b in self.blocks]
+
+    @property
+    def column_names(self) -> list[str]:
+        """One label per column of the role's prior, flags included."""
+        names: list[str] = []
+        for block in self.blocks:
+            names.extend(f"{block.name}/{column}" for column in block.column_names)
+            names.append(f"{block.name}/is_missing")
+        return names
+
+    def as_dict(self) -> dict:
+        return {
+            "blocks": [b.as_dict() for b in self.blocks],
+            "total_width": self.total_width,
+        }
+
+    @classmethod
+    def from_dict(cls, spec: dict) -> RoleLayout:
+        return cls(
+            blocks=[BlockSpec(**b) for b in spec["blocks"]],
+            total_width=spec["total_width"],
+        )
 
 
 @dataclass
@@ -72,6 +137,8 @@ class PriorFeatures:
     layouts: dict[str, RoleLayout]
     coverage: pd.DataFrame
     scope: PriorScope
+    #: The run seed the sampling seeds were derived from.
+    seed: int = 0
 
     @property
     def n_genes(self) -> int:
@@ -80,25 +147,41 @@ class PriorFeatures:
     def width(self, role: str) -> int:
         return int(self.priors[role].shape[1])
 
+    def layout_hash(self) -> str:
+        """A digest of the layout, for matching a checkpoint to its priors.
+
+        Covers every block's name, width, offset and column labels in both
+        roles — everything a trained `W` depends on. It deliberately does not
+        cover the prior *values*, so re-running the priors with the same
+        sources and config keeps a checkpoint loadable.
+        """
+        payload = json.dumps(
+            {role: layout.as_dict() for role, layout in sorted(self.layouts.items())},
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    def build_meta(self) -> dict:
+        return {
+            "n_genes": self.n_genes,
+            "seed": self.seed,
+            "scope": self.scope.describe(),
+            "layout_hash": self.layout_hash(),
+            "roles": {role: self.width(role) for role in sorted(self.priors)},
+        }
+
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "gene_symbols": np.asarray(self.gene_symbols, dtype=object),
             "layout_json": np.asarray(
-                json.dumps(
-                    {
-                        role: {
-                            "block_names": layout.block_names,
-                            "offsets": layout.offsets,
-                            "widths": layout.widths,
-                            "flag_columns": layout.flag_columns,
-                            "total_width": layout.total_width,
-                        }
-                        for role, layout in self.layouts.items()
-                    }
-                )
+                json.dumps({role: layout.as_dict() for role, layout in self.layouts.items()})
             ),
-            "scope_json": np.asarray(json.dumps(self.scope.describe())),
+            "scope_json": np.asarray(json.dumps(self.scope.as_dict())),
+            "build_meta_json": np.asarray(json.dumps(self.build_meta())),
+            "coverage_json": np.asarray(
+                self.coverage.to_json(orient="records") if not self.coverage.empty else "[]"
+            ),
         }
         for role, matrix in self.priors.items():
             payload[f"prior_{role}"] = matrix
@@ -108,13 +191,31 @@ class PriorFeatures:
     def load(cls, path: Path) -> PriorFeatures:
         loaded = np.load(path, allow_pickle=True)
         layouts_raw = json.loads(str(loaded["layout_json"]))
-        return cls(
+        meta = json.loads(str(loaded["build_meta_json"]))
+        scope_raw = json.loads(str(loaded["scope_json"]))
+        coverage = pd.read_json(io.StringIO(str(loaded["coverage_json"])), orient="records")
+
+        features = cls(
             gene_symbols=[str(s) for s in loaded["gene_symbols"]],
             priors={role: loaded[f"prior_{role}"] for role in ROLES if f"prior_{role}" in loaded},
-            layouts={role: RoleLayout(**spec) for role, spec in layouts_raw.items()},
-            coverage=pd.DataFrame(),
-            scope=FULL_SCOPE,
+            layouts={role: RoleLayout.from_dict(spec) for role, spec in layouts_raw.items()},
+            coverage=coverage,
+            scope=PriorScope(
+                exclude_targets=frozenset(scope_raw["exclude_targets"]),
+                exclude_contexts=frozenset(scope_raw["exclude_contexts"]),
+                exclude_response_contexts=frozenset(scope_raw["exclude_response_contexts"]),
+                restricted_genes=frozenset(scope_raw["restricted_genes"]),
+                restricted_genes_source=scope_raw["restricted_genes_source"],
+                label=scope_raw["label"],
+            ),
+            seed=int(meta["seed"]),
         )
+        if features.layout_hash() != meta["layout_hash"]:
+            raise ValueError(
+                f"{path}: the stored layout hash {meta['layout_hash']} does not match "
+                f"the layout it holds ({features.layout_hash()})"
+            )
+        return features
 
 
 def _standardize(result: BlockResult) -> np.ndarray:
@@ -139,7 +240,7 @@ def _standardize(result: BlockResult) -> np.ndarray:
 def _assemble_role(results: list[BlockResult], n_genes: int) -> tuple[np.ndarray, RoleLayout]:
     """Concatenate the blocks of one role, each followed by its missing flag."""
     columns: list[np.ndarray] = []
-    names, offsets, widths, flags = [], [], [], []
+    specs: list[BlockSpec] = []
     position = 0
 
     for result in results:
@@ -147,21 +248,30 @@ def _assemble_role(results: list[BlockResult], n_genes: int) -> tuple[np.ndarray
         # 1.0 means "this block does not cover this gene", so the model can
         # tell a real zero from an absent source.
         missing = (~result.covered).astype(np.float32)[:, None]
+        width = standardized.shape[1]
 
         columns.append(standardized)
         columns.append(missing)
-        names.append(result.name)
-        offsets.append(position)
-        widths.append(standardized.shape[1])
-        flags.append(position + standardized.shape[1])
-        position += standardized.shape[1] + 1
+        specs.append(
+            BlockSpec(
+                name=result.name,
+                offset=position,
+                width=width,
+                flag_column=position + width,
+                column_names=list(result.column_names),
+                n_covered=result.n_covered,
+                fraction_covered=round(result.n_covered / n_genes, 6),
+                source_context=result.source_context,
+                reads_responses=result.reads_responses,
+                sampling_seed=result.sampling_seed,
+            )
+        )
+        position += width + 1
 
     if not columns:
-        return np.zeros((n_genes, 0), dtype=np.float32), RoleLayout([], [], [], [], 0)
+        return np.zeros((n_genes, 0), dtype=np.float32), RoleLayout([], 0)
 
-    return np.concatenate(columns, axis=1).astype(np.float32), RoleLayout(
-        names, offsets, widths, flags, position
-    )
+    return np.concatenate(columns, axis=1).astype(np.float32), RoleLayout(specs, position)
 
 
 def build_priors(cfg: Config, scope: PriorScope = FULL_SCOPE, blocks=None) -> PriorFeatures:
@@ -191,6 +301,9 @@ def build_priors(cfg: Config, scope: PriorScope = FULL_SCOPE, blocks=None) -> Pr
                     "fraction_covered": 0.0,
                     "width": 0,
                     "reads_responses": block.reads_responses,
+                    "source_context": None,
+                    "sampling_seed": None,
+                    "column_names": "",
                     "detail": "",
                 }
             )
@@ -215,6 +328,9 @@ def build_priors(cfg: Config, scope: PriorScope = FULL_SCOPE, blocks=None) -> Pr
                     "fraction_covered": round(fraction, 6),
                     "width": int(result.features.shape[1]),
                     "reads_responses": block.reads_responses,
+                    "source_context": result.source_context,
+                    "sampling_seed": result.sampling_seed,
+                    "column_names": "|".join(result.column_names),
                     "detail": json.dumps(result.detail, default=str),
                 }
             )
@@ -226,7 +342,10 @@ def build_priors(cfg: Config, scope: PriorScope = FULL_SCOPE, blocks=None) -> Pr
         priors[role] = matrix
         layouts[role] = layout
         log.info(
-            "  %s-role prior: %d blocks, width %d", role, len(layout.block_names), layout.total_width
+            "  %s-role prior: %d blocks, width %d",
+            role,
+            len(layout.blocks),
+            layout.total_width,
         )
 
     for role, matrix in priors.items():
@@ -238,10 +357,33 @@ def build_priors(cfg: Config, scope: PriorScope = FULL_SCOPE, blocks=None) -> Pr
         if not np.isfinite(matrix).all():
             raise RuntimeError(f"the {role}-role prior holds non-finite values")
 
-    return PriorFeatures(
+    coverage = pd.DataFrame(coverage_rows)
+    coverage = _add_layout_columns(coverage, layouts)
+
+    features = PriorFeatures(
         gene_symbols=axis,
         priors=priors,
         layouts=layouts,
-        coverage=pd.DataFrame(coverage_rows),
+        coverage=coverage,
         scope=scope,
+        seed=cfg.seed,
     )
+    log.info("  layout hash: %s", features.layout_hash())
+    return features
+
+
+def _add_layout_columns(coverage: pd.DataFrame, layouts: dict[str, RoleLayout]) -> pd.DataFrame:
+    """Record each block's column range per role, so `coverage.csv` alone is
+    enough to read a prior matrix back."""
+    if coverage.empty:
+        return coverage
+    for role, layout in sorted(layouts.items()):
+        positions = {spec.name: spec for spec in layout.blocks}
+        coverage[f"{role}_offset"] = [
+            positions[name].offset if name in positions else None for name in coverage["block"]
+        ]
+        coverage[f"{role}_flag_column"] = [
+            positions[name].flag_column if name in positions else None
+            for name in coverage["block"]
+        ]
+    return coverage

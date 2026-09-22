@@ -58,6 +58,9 @@ class _LincsLayerBlock:
                 name=self.name,
                 features=features,
                 covered=covered,
+                column_names=[f"pc{i}" for i in range(components.shape[1])],
+                source_context=None,
+                reads_responses=True,
                 detail={
                     "source": f"phase1_lincs.h5ad layers[{self.layer!r}]",
                     "n_rows": int(rows.sum()),

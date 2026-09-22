@@ -163,3 +163,83 @@ def test_sparse_svd_on_a_membership_matrix():
     assert ratio.sum() <= 1.0 + 1e-6
     # The two genes outside both families carry no membership.
     assert np.allclose(features[10:], 0.0)
+
+
+# --------------------------------------------------------------------------- #
+# direction / magnitude separation, for the knockdown phenotype blocks
+# --------------------------------------------------------------------------- #
+def test_rowwise_standardize_separates_direction_from_size():
+    from vccp.priors.decompose import rowwise_standardize
+
+    direction = np.array([1.0, -1.0, 0.5, -0.5], dtype=np.float32)
+    matrix = np.stack([direction * 10.0, direction * 0.01])
+
+    standardized, rms = rowwise_standardize(matrix)
+
+    # Same direction, wildly different size: the directions coincide and the
+    # size survives only in `rms`.
+    assert np.allclose(standardized[0], standardized[1], atol=1e-5)
+    assert rms[0] > 100 * rms[1]
+
+
+def test_rowwise_standardize_survives_a_flat_row():
+    from vccp.priors.decompose import rowwise_standardize
+
+    standardized, rms = rowwise_standardize(np.ones((2, 5), dtype=np.float32))
+    assert np.isfinite(standardized).all()
+    assert np.allclose(rms, 0.0)
+
+
+def test_magnitude_weights_halve_at_the_floor():
+    from vccp.priors.decompose import magnitude_weights
+
+    weights = magnitude_weights(np.array([0.0, 1.0, 100.0]), floor=1.0)
+    assert weights[0] == pytest.approx(0.0)
+    assert weights[1] == pytest.approx(0.5)
+    assert weights[2] > 0.99
+
+
+def test_weighted_basis_is_set_by_the_targets_that_responded():
+    """The point of the weighting: a crowd of null responses must not bend
+    the basis toward its own noise (D17)."""
+    from vccp.priors.decompose import (
+        magnitude_weights,
+        rowwise_standardize,
+        weighted_direction_basis,
+    )
+
+    rng = np.random.default_rng(0)
+    axis = rng.standard_normal(40)
+    strong = np.outer(np.ones(3), axis) * 3 + 0.1 * rng.standard_normal((3, 40))
+    null = 0.01 * rng.standard_normal((20, 40))
+    profiles = np.vstack([strong, null]).astype(np.float32)
+
+    _, rms = rowwise_standardize(profiles)
+    weights = magnitude_weights(rms, 0.5 * float(np.median(rms)))
+
+    _, _, weighted_basis = weighted_direction_basis(profiles, 4, weights)
+    _, _, flat_basis = weighted_direction_basis(profiles, 4, None)
+
+    unit_axis = axis / np.linalg.norm(axis)
+    assert abs(weighted_basis[:, 0] @ unit_axis) > abs(flat_basis[:, 0] @ unit_axis)
+
+
+def test_every_row_is_projected_into_the_basis_including_the_weak_ones():
+    """Weighting chooses the basis; it does not drop rows."""
+    from vccp.priors.decompose import weighted_direction_basis
+
+    rng = np.random.default_rng(1)
+    profiles = rng.standard_normal((12, 30)).astype(np.float32)
+    weights = np.concatenate([np.ones(6), np.full(6, 1e-6)]).astype(np.float32)
+
+    features, _, _ = weighted_direction_basis(profiles, 4, weights)
+    assert features.shape[0] == profiles.shape[0]
+    assert np.isfinite(features).all()
+    assert np.abs(features[6:]).sum() > 0, "down-weighted rows still get features"
+
+
+def test_weighted_basis_rejects_mismatched_weights():
+    from vccp.priors.decompose import weighted_direction_basis
+
+    with pytest.raises(ValueError, match="one entry per row"):
+        weighted_direction_basis(np.zeros((5, 3), np.float32), 2, np.ones(4))

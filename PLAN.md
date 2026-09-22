@@ -180,17 +180,40 @@ multi-hot → truncated SVD, accepting either `hgnc_complete_set.txt` or `hgnc_s
 units plus LINCS `sig`; (7) protein-LM embeddings, built only when `priors.plm_path` points
 at an existing file, never downloaded.
 
+The knockdown-phenotype blocks carry **direction and size separately**: the response is
+z-scored per target for the direction decomposition, and the magnitude comes back as its own
+feature alongside the source's quality signals (Replogle `fold_expr`,
+`anderson_darling_counts`, cell count; LINCS `cc_q75_median`, number of signatures). Without
+that, a near-null response — which most knockdowns are — normalizes into a confident-looking
+random direction. The direction basis is learned from the targets that did respond
+(`priors.phenotype_weight_by_magnitude`) and every target is then projected into it;
+`priors/checks.json` reports the fraction of targets below
+`priors.phenotype_magnitude_floor` and, next to it, how far magnitude merely tracks
+sequencing depth.
+
 `models/embedding.py` implements `embedding(g) = W · prior(g) + δ(g)` with one shared `W`
-per role, `δ` initialized to zero and L2-regularized (`priors.delta_l2`).
+per role, `δ` initialized to zero and L2-regularized (`model.delta_l2`).
+
+**The layout travels with the artifact.** The block set is not fixed — the server's third
+Replogle screen adds two blocks — so `coverage.csv` and `prior_features.npz` both record
+every block's name, width, column labels, column offsets per role, coverage and the seed its
+cell sampling used, plus a `layout_hash` that a checkpoint is matched against.
 
 **Leakage** (`priors/scope.py`): a `PriorScope(exclude_targets, exclude_contexts,
 controls_only_genes)` parameterizes every block; blocks 3, 4 and 6 are rebuilt under the
 rehearsal's scope, blocks 1, 2, 5 are response-free and reused except that block 2 drops the
 held-out context. Each scope hashes to a cache key so a rehearsal fold rebuilds only what it
-must. `priors/checks.py` writes nearest-neighbour results for the complex families named in
+must. `priors/leakage.py` states, per rehearsal variant and per Replogle context, which blocks are
+**rebuilt**, **dropped** or **reused** under that variant's scope, and writes it to
+`priors/checks.json`; `tests/test_leakage.py` rebuilds under each scope and asserts the plan
+matches what really happens. Variant 2's asymmetry is the case that matters: the held-out
+screen's *responses* are dropped while its *control* co-expression is reused, because
+"adapt using only its controls" is the variant.
+
+`priors/checks.py` writes nearest-neighbour results for the complex families named in
 §4.1 (ribosomal, proteasome, mitochondrial respiratory chain — membership read from HGNC
-`gene_group`, not hardcoded gene lists) and the correlation between target-role embedding
-similarity and Replogle knockdown-response similarity.
+`gene_group`, not hardcoded gene lists), the correlation between target-role embedding
+similarity and Replogle knockdown-response similarity, and the magnitude report above.
 
 ### 4.2 Items 5–7 — the shared model, adapters, forgetting guard
 

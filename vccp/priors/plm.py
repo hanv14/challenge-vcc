@@ -99,6 +99,9 @@ class ProteinLanguageModel:
                 name=self.name,
                 features=features,
                 covered=covered,
+                column_names=[f"e{i}" for i in range(features.shape[1])],
+                source_context=None,
+                reads_responses=False,
                 detail={
                     "source": str(path),
                     "n_symbols_in_file": len(symbols),

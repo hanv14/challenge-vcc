@@ -176,6 +176,37 @@ def load_pseudobulk(directory: Path, control_label: str) -> tuple[pd.DataFrame, 
     return adata.obs.copy(), X, adata.var.copy()
 
 
+def load_bulk_quality(bulk_h5ad: Path, columns: tuple[str, ...]) -> pd.DataFrame:
+    """Per-target quality signals from a `*_raw_bulk.h5ad`.
+
+    A gene can have several rows — one per promoter — so they are reduced by
+    median. Unlike `load_fold_expr`, a `fold_expr` of exactly zero is kept
+    here: as a *quality* signal it means the knockdown was complete, which is
+    the most reliable case, not a missing one.
+    """
+    import anndata as ad
+
+    backed = ad.read_h5ad(bulk_h5ad, backed="r")
+    try:
+        obs = backed.obs.copy()
+    finally:
+        if backed.file is not None:
+            backed.file.close()
+
+    if "target_gene" not in obs.columns:
+        raise ValueError(f"{bulk_h5ad}: no 'target_gene' column in obs")
+
+    available = [c for c in columns if c in obs.columns]
+    if not available:
+        return pd.DataFrame(index=pd.Index([], name="target_gene"))
+
+    frame = pd.DataFrame({"target_gene": obs["target_gene"].astype(str)})
+    for column in available:
+        values = pd.to_numeric(obs[column], errors="coerce")
+        frame[column] = np.where(np.isfinite(values), values, np.nan)
+    return frame.groupby("target_gene").median(numeric_only=True)
+
+
 def load_fold_expr(bulk_h5ad: Path) -> pd.Series:
     """Knockdown efficiency per target from a `*_raw_bulk.h5ad`.
 

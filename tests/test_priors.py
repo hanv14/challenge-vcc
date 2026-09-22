@@ -340,3 +340,190 @@ def test_block_result_zeroes_uncovered_rows():
 def test_block_result_rejects_a_mismatched_mask():
     with pytest.raises(ValueError, match="coverage mask"):
         BlockResult("t", np.ones((5, 3)), np.ones(4, dtype=bool))
+
+
+# --------------------------------------------------------------------------- #
+# D17 — magnitude and reliability alongside direction
+# --------------------------------------------------------------------------- #
+def phenotype_specs(features):
+    return [
+        spec
+        for spec in features.layouts[TARGET].blocks
+        if spec.name.startswith("pert_phenotype")
+    ]
+
+
+def test_phenotype_blocks_carry_magnitude_and_quality_scalars(built_priors):
+    """Z-scoring the response hides how big it was, so the size and the
+    source's own quality signals come back as their own features (D17)."""
+    specs = phenotype_specs(built_priors)
+    assert specs
+
+    for spec in specs:
+        assert "log1p_magnitude" in spec.column_names
+        directions = [c for c in spec.column_names if c.startswith("dir")]
+        scalars = [c for c in spec.column_names if not c.startswith("dir")]
+        assert len(directions) > 0
+        assert len(scalars) >= 2, f"{spec.name}: expected quality signals beyond magnitude"
+        assert spec.width == len(spec.column_names)
+
+
+def test_replogle_phenotype_uses_the_bulk_quality_signals(built_priors):
+    for spec in phenotype_specs(built_priors):
+        if ":" not in spec.name:
+            continue
+        assert "fold_expr" in spec.column_names
+        assert "log1p_anderson_darling" in spec.column_names
+        assert "log1p_n_cells" in spec.column_names
+
+
+def test_lincs_phenotype_uses_the_signature_quality_signals(built_priors):
+    lincs = [s for s in phenotype_specs(built_priors) if s.name.endswith("_lincs")]
+    assert lincs
+    for spec in lincs:
+        assert "cc_q75" in spec.column_names
+        assert "log1p_n_sigs" in spec.column_names
+
+
+def test_a_null_response_is_distinguishable_from_a_strong_one(session_cfg):
+    """The failure D17 guards against: after z-scoring, a near-null response
+    is a confident random direction. The magnitude feature must separate
+    them even when their directions do not."""
+    from vccp.priors.phenotype import _PhenotypeBlock
+
+    inputs = block_inputs(session_cfg)
+    rng = np.random.default_rng(0)
+    shared = rng.standard_normal(60).astype(np.float32)
+
+    targets = inputs.axis[:6]
+    profiles = np.stack(
+        [shared * scale for scale in (5.0, 4.0, 3.0, 0.01, 0.008, 0.012)]
+    ).astype(np.float32)
+
+    result = _PhenotypeBlock()._assemble(
+        inputs, "test_block", list(targets), profiles, {}, {"context": None}
+    )
+    magnitude_column = result.column_names.index("log1p_magnitude")
+    positions = [inputs.index[t] for t in targets]
+    magnitudes = result.features[positions, magnitude_column]
+
+    assert magnitudes[:3].min() > magnitudes[3:].max(), "magnitude must separate them"
+    assert result.detail["magnitude"]["fraction_below_floor"] == pytest.approx(0.5)
+
+
+def test_magnitude_detail_is_reported_per_block(built_priors):
+    for _, row in built_priors.coverage.iterrows():
+        if not row["built"] or not str(row["block"]).startswith("pert_phenotype"):
+            continue
+        magnitude = json.loads(row["detail"])["magnitude"]
+        assert 0.0 <= magnitude["fraction_below_floor"] <= 1.0
+        assert magnitude["floor"] > 0
+        assert set(magnitude["rms_percentiles"]) == {"p5", "p25", "p50", "p75", "p95"}
+
+
+def test_magnitude_weighting_can_be_turned_off(session_cfg):
+    off = dataclasses.replace(
+        session_cfg,
+        priors=dataclasses.replace(session_cfg.priors, phenotype_weight_by_magnitude=False),
+    )
+    results = ReplogleKnockdownPhenotype().build(block_inputs(off))
+    assert results
+    for result in results:
+        assert result.detail["magnitude"]["weighted_by_magnitude"] is False
+
+
+# --------------------------------------------------------------------------- #
+# reproducibility — the layout travels with the artifact
+# --------------------------------------------------------------------------- #
+def test_layout_records_name_dimensions_offsets_coverage_and_seed(built_priors):
+    """The block set is not fixed — the server's third screen adds blocks —
+    so a checkpoint has to be matchable to the layout it was trained with."""
+    for role in (FEATURE, TARGET):
+        layout = built_priors.layouts[role]
+        assert layout.blocks
+        for spec in layout.blocks:
+            assert spec.name
+            assert spec.width == len(spec.column_names)
+            assert spec.flag_column == spec.offset + spec.width
+            assert 0 <= spec.fraction_covered <= 1.0
+            assert spec.n_covered >= 0
+        assert len(layout.column_names) == layout.total_width
+
+
+def test_sampling_seeds_are_recorded_for_every_sampling_block(built_priors):
+    sampled = built_priors.coverage[
+        built_priors.coverage["block"].str.contains("coexpr") & built_priors.coverage["built"]
+    ]
+    assert not sampled.empty
+    assert sampled["sampling_seed"].notna().all()
+
+
+def test_sampling_seeds_are_stable_and_block_specific(session_cfg):
+    inputs = block_inputs(session_cfg)
+    again = block_inputs(session_cfg)
+
+    assert inputs.block_seed("challenge_coexpr") == again.block_seed("challenge_coexpr")
+    assert inputs.block_seed("challenge_coexpr") != inputs.block_seed("replogle_coexpr:x")
+
+
+def test_sampling_seeds_differ_under_a_different_scope(session_cfg):
+    a = block_inputs(session_cfg)
+    b = block_inputs(session_cfg, PriorScope(exclude_targets=frozenset({"X"}), label="b"))
+    assert a.block_seed("challenge_coexpr") != b.block_seed("challenge_coexpr")
+
+
+def test_coverage_csv_alone_locates_every_block(built_priors):
+    coverage = built_priors.coverage
+    for role in (FEATURE, TARGET):
+        assert f"{role}_offset" in coverage.columns
+        assert f"{role}_flag_column" in coverage.columns
+
+    built = coverage[coverage["built"]]
+    for _, row in built.iterrows():
+        assert row["column_names"]
+        assert len(str(row["column_names"]).split("|")) == row["width"]
+
+
+def test_layout_hash_changes_when_the_block_set_changes(built_priors):
+    original = built_priors.layout_hash()
+
+    trimmed = dataclasses.replace(
+        built_priors,
+        layouts={
+            role: dataclasses.replace(layout, blocks=layout.blocks[:-1])
+            for role, layout in built_priors.layouts.items()
+        },
+    )
+    assert trimmed.layout_hash() != original
+
+
+def test_saved_priors_carry_the_layout_and_the_scope(tmp_path, built_priors):
+    path = tmp_path / "prior_features.npz"
+    built_priors.save(path)
+    loaded = PriorFeatures.load(path)
+
+    assert loaded.layout_hash() == built_priors.layout_hash()
+    assert loaded.seed == built_priors.seed
+    assert loaded.scope.label == built_priors.scope.label
+    assert not loaded.coverage.empty
+    for role in (FEATURE, TARGET):
+        assert loaded.layouts[role].column_names == built_priors.layouts[role].column_names
+        assert [s.sampling_seed for s in loaded.layouts[role].blocks] == [
+            s.sampling_seed for s in built_priors.layouts[role].blocks
+        ]
+
+
+def test_a_tampered_layout_hash_is_rejected(tmp_path, built_priors):
+    import json as json_mod
+
+    path = tmp_path / "prior_features.npz"
+    built_priors.save(path)
+
+    loaded = dict(np.load(path, allow_pickle=True))
+    meta = json_mod.loads(str(loaded["build_meta_json"]))
+    meta["layout_hash"] = "0" * 16
+    loaded["build_meta_json"] = np.asarray(json_mod.dumps(meta))
+    np.savez_compressed(path, **loaded)
+
+    with pytest.raises(ValueError, match="layout hash"):
+        PriorFeatures.load(path)

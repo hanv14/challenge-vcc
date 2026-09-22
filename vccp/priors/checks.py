@@ -21,6 +21,8 @@ families are too small to say anything, which is itself worth seeing.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 
@@ -32,6 +34,7 @@ from ..logging_utils import get_logger
 from ..paths import DataPaths
 from .build import FEATURE, TARGET, PriorFeatures
 from .hgnc_block import GROUP_SEPARATOR, _symbol_lookup
+from .leakage import rehearsal_rebuild_plan
 
 #: A family needs at least this many members present for "are they each
 #: other's neighbours?" to be a question with an answer.
@@ -225,6 +228,49 @@ def response_correlation_check(cfg: Config, features: PriorFeatures) -> dict:
     }
 
 
+def magnitude_check(cfg: Config, features: PriorFeatures) -> dict:
+    """How many knockdowns barely did anything.
+
+    The phenotype blocks z-score each response before the direction
+    decomposition, which turns a near-null response into a confident-looking
+    random direction. The magnitude and quality scalars are how the model
+    tells the two apart; this reports how much of the target set is in that
+    position, per source, so the reader knows how much weight the direction
+    features deserve.
+    """
+    rows = []
+    for _, row in features.coverage.iterrows():
+        if not row["built"] or not str(row["block"]).startswith("pert_phenotype"):
+            continue
+        detail = json.loads(row["detail"]) if row["detail"] else {}
+        magnitude = detail.get("magnitude")
+        if not magnitude:
+            continue
+        rows.append(
+            {
+                "block": str(row["block"]),
+                "n_targets": detail.get("n_targets"),
+                **magnitude,
+                "quality_columns": detail.get("quality_columns", []),
+                "n_imputed_quality_values": detail.get("n_imputed_quality_values", {}),
+            }
+        )
+
+    return {
+        "description": "fraction of targets whose knockdown response is below "
+        "priors.phenotype_magnitude_floor x the source's median response magnitude; "
+        "their direction features are noise, and the magnitude and quality scalars "
+        "in the same block are what says so",
+        "caveat": "where magnitude correlates with the source's depth signal, the "
+        "fraction below the floor reflects how many cells a target had rather than "
+        "how little its knockdown did; the depth signal is a feature of the same "
+        "block so the model can discount it",
+        "floor_fraction_of_median": cfg.priors.phenotype_magnitude_floor,
+        "weighted_by_magnitude": cfg.priors.phenotype_weight_by_magnitude,
+        "blocks": rows,
+    }
+
+
 def _pairwise_upper(square: np.ndarray) -> np.ndarray:
     """The strict upper triangle of a similarity matrix, flattened."""
     rows, cols = np.triu_indices(square.shape[0], k=1)
@@ -236,6 +282,10 @@ def run_checks(cfg: Config, features: PriorFeatures) -> dict:
 
     neighbours = neighbour_check(cfg, features)
     responses = response_correlation_check(cfg, features)
+    magnitudes = magnitude_check(cfg, features)
+    leakage = rehearsal_rebuild_plan(
+        features, list(DataPaths(cfg).discover_phase2_contexts())
+    )
 
     log.info("prior checks — complex neighbours (feature role):")
     scored = [e for e in neighbours["families"] if e["status"] == "ok"]
@@ -272,7 +322,42 @@ def run_checks(cfg: Config, features: PriorFeatures) -> dict:
                 entry["n_targets"],
             )
 
-    return {"neighbour_check": neighbours, "response_correlation_check": responses}
+    log.info("prior checks — knockdown magnitude (target role):")
+    for entry in magnitudes["blocks"]:
+        depth = entry.get("magnitude_vs_depth_correlation")
+        confound = (
+            f", corr(magnitude, {entry.get('depth_signal')}) = {depth:+.2f}"
+            if depth is not None
+            else ""
+        )
+        log.info(
+            "  %-34s %3d targets, %4.1f%% below the floor (%.3f = %.2f x median %.3f)%s%s",
+            entry["block"],
+            entry["n_targets"] or 0,
+            100 * entry["fraction_below_floor"],
+            entry["floor"],
+            entry["floor_fraction_of_median"],
+            entry["median_rms"],
+            confound,
+            ", basis weighted" if entry["weighted_by_magnitude"] else "",
+        )
+
+    log.info("prior checks — rehearsal rebuild plan (leakage, §4.1):")
+    for name, plan in sorted(leakage["variants"].items()):
+        log.info(
+            "  %-28s %d rebuilt, %d dropped, %d reused",
+            name,
+            plan["n_rebuilt"],
+            plan["n_dropped"],
+            plan["n_reused"],
+        )
+
+    return {
+        "neighbour_check": neighbours,
+        "response_correlation_check": responses,
+        "magnitude_check": magnitudes,
+        "rehearsal_rebuild_plan": leakage,
+    }
 
 
 def summarize(checks: dict) -> pd.DataFrame:
@@ -282,4 +367,6 @@ def summarize(checks: dict) -> pd.DataFrame:
         rows.append({"check": "neighbours", "subject": entry["family"], **entry})
     for entry in checks["response_correlation_check"]["contexts"]:
         rows.append({"check": "response_correlation", "subject": entry["context"], **entry})
+    for entry in checks.get("magnitude_check", {}).get("blocks", []):
+        rows.append({"check": "magnitude", "subject": entry["block"], **entry})
     return pd.DataFrame(rows)

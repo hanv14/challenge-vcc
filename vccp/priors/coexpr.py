@@ -64,10 +64,11 @@ class ChallengeControlCoexpression:
 
         # Share the cell budget across the contexts that are in scope.
         per_context = max(2, cfg.priors.coexpr_max_cells // len(contexts))
+        rng, seed = inputs.block_rng(self.name)
         plan = []
         for context, path in sorted(contexts.items()):
             controls = challenge_data.load_challenge_controls(path, context)
-            rows = _sample_rows(controls.n_cells, per_context, inputs.rng)
+            rows = _sample_rows(controls.n_cells, per_context, rng)
             mean, std = controls.control_stats()
             plan.append((controls, rows, mean, std))
 
@@ -89,7 +90,7 @@ class ChallengeControlCoexpression:
             n_genes,
             cfg.priors.block_dim,
             n_iter=cfg.priors.coexpr_n_iter,
-            rng=inputs.rng,
+            rng=rng,
         )
 
         covered = np.ones(n_genes, dtype=bool)
@@ -99,10 +100,15 @@ class ChallengeControlCoexpression:
                 name=self.name,
                 features=components,
                 covered=covered,
+                column_names=[f"pc{i}" for i in range(components.shape[1])],
+                source_context=None,
+                reads_responses=False,
+                sampling_seed=seed,
                 detail={
                     "source": "challenge control cells",
                     "contexts": sorted(contexts),
                     "n_cells": int(n_rows),
+                    "n_cells_available": sum(int(c.n_cells) for c, *_ in plan),
                     "explained_variance_ratio": float(variance_ratio.sum()),
                 },
             )
@@ -137,8 +143,10 @@ class ReplogleControlCoexpression:
             if control_rows.size < 2:
                 continue
 
+            source = f"{self.name}:{context}"
+            rng, seed = inputs.block_rng(source)
             selected = control_rows[
-                _sample_rows(control_rows.size, cfg.priors.coexpr_max_cells, inputs.rng)
+                _sample_rows(control_rows.size, cfg.priors.coexpr_max_cells, rng)
             ]
             mean, std = ctx.control_stats()
             measured_idx = ctx.challenge_idx
@@ -159,14 +167,13 @@ class ReplogleControlCoexpression:
                 measured_idx.size,
                 cfg.priors.block_dim,
                 n_iter=cfg.priors.coexpr_n_iter,
-                rng=inputs.rng,
+                rng=rng,
             )
 
             features = np.zeros((inputs.n_genes, components.shape[1]), dtype=np.float32)
             features[measured_idx] = components
             covered = np.zeros(inputs.n_genes, dtype=bool)
             covered[measured_idx] = True
-            source = f"{self.name}:{context}"
             covered = inputs.apply_gene_restriction(covered, source=source)
 
             results.append(
@@ -174,9 +181,14 @@ class ReplogleControlCoexpression:
                     name=source,
                     features=features,
                     covered=covered,
+                    column_names=[f"pc{i}" for i in range(components.shape[1])],
+                    source_context=context,
+                    reads_responses=False,
+                    sampling_seed=seed,
                     detail={
                         "source": f"Replogle {context} control cells",
                         "n_cells": int(n_rows),
+                        "n_cells_available": int(control_rows.size),
                         "n_measured_genes": int(measured_idx.size),
                         "explained_variance_ratio": float(variance_ratio.sum()),
                     },

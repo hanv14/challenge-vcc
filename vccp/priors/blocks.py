@@ -14,6 +14,7 @@ the target-role prior is the wider of the two.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -33,11 +34,29 @@ class BlockResult:
 
     `features` is `(n_genes, d)` with zeros wherever `covered` is false;
     `build.py` keeps that convention and adds the missing-flag column.
+
+    `column_names`, `source_context`, `reads_responses` and `sampling_seed`
+    are provenance: they travel into `coverage.csv` and into
+    `prior_features.npz` so that a checkpoint can be matched to the prior
+    layout it was trained with, and so the rehearsal can say which blocks it
+    had to rebuild.
     """
 
     name: str
     features: np.ndarray
     covered: np.ndarray
+    #: One label per feature column. Blocks that mix a decomposition with
+    #: scalar features need this to stay readable.
+    column_names: list[str] = field(default_factory=list)
+    #: The source instance this result came from (a screen name), or None
+    #: for a block with a single source.
+    source_context: str | None = None
+    #: Whether this result read perturbation responses — what decides
+    #: whether a rehearsal scope forces it to be rebuilt.
+    reads_responses: bool = False
+    #: The seed used for any sampling inside the block, so the same cells
+    #: are drawn again on a rerun.
+    sampling_seed: int | None = None
     #: Anything worth putting in `coverage.csv` — the source it read, how
     #: many rows it saw, how much variance the components carry.
     detail: dict = field(default_factory=dict)
@@ -49,6 +68,13 @@ class BlockResult:
                 f"coverage mask has {self.covered.shape[0]}"
             )
         self.features = np.where(self.covered[:, None], self.features, 0.0).astype(np.float32)
+        if not self.column_names:
+            self.column_names = [f"c{i}" for i in range(self.features.shape[1])]
+        if len(self.column_names) != self.features.shape[1]:
+            raise ValueError(
+                f"{self.name}: {len(self.column_names)} column name(s) for "
+                f"{self.features.shape[1]} column(s)"
+            )
 
     @property
     def n_covered(self) -> int:
@@ -73,6 +99,20 @@ class BlockInputs:
     @property
     def index(self) -> dict[str, int]:
         return {symbol: i for i, symbol in enumerate(self.axis)}
+
+    def block_seed(self, source: str) -> int:
+        """A seed for `source`, derived from the run seed and the scope.
+
+        Derived per block rather than drawn from one shared generator, so
+        the cells a block samples do not depend on how many blocks ran
+        before it — and so the seed can be written down next to the block.
+        """
+        material = f"{self.cfg.seed}:{self.scope.cache_key()}:{source}".encode()
+        return int.from_bytes(hashlib.sha256(material).digest()[:8], "big") % (2**32)
+
+    def block_rng(self, source: str) -> tuple[np.random.Generator, int]:
+        seed = self.block_seed(source)
+        return np.random.default_rng(seed), seed
 
     def empty(self, width: int) -> tuple[np.ndarray, np.ndarray]:
         """An all-uncovered result, for a source this scope excludes."""

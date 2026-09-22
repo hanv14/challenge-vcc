@@ -105,6 +105,9 @@ class HgncGeneGroups:
                 name=self.name,
                 features=features,
                 covered=covered,
+                column_names=[f"sv{i}" for i in range(features.shape[1])],
+                source_context=None,
+                reads_responses=False,
                 detail={
                     "source": path.name,
                     "n_groups": len(kept),

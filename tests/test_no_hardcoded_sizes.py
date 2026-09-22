@@ -39,6 +39,12 @@ FORBIDDEN_STRINGS = {"K562_gwps", "rpe1", "K562_essential"}
 #: Modules exempt from the numeric scan only (see the module docstring).
 NUMERIC_SCAN_EXEMPT = {"config.py"}
 
+#: A line carrying this comment is exempt, for the cases where a banned
+#: value is genuinely not a size — a percentile, say. Explicit and greppable
+#: on purpose: an exemption should be something a reviewer can see and
+#: disagree with, not something the scanner quietly allows.
+EXEMPT_MARKER = "# not-a-size"
+
 
 def _package_files() -> list[Path]:
     package = Path(__file__).resolve().parent.parent / "vccp"
@@ -46,12 +52,17 @@ def _package_files() -> list[Path]:
 
 
 def _offences(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(), filename=str(path))
+    source = path.read_text()
+    lines = source.splitlines()
+    tree = ast.parse(source, filename=str(path))
     scan_numbers = path.name not in NUMERIC_SCAN_EXEMPT
     found: list[str] = []
 
+    def exempt(lineno: int) -> bool:
+        return 0 < lineno <= len(lines) and EXEMPT_MARKER in lines[lineno - 1]
+
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Constant):
+        if not isinstance(node, ast.Constant) or exempt(node.lineno):
             continue
         value = node.value
         if scan_numbers and isinstance(value, int) and not isinstance(value, bool):
@@ -114,3 +125,28 @@ def test_the_scanner_would_catch_each_forbidden_literal(value, tmp_path):
     module = tmp_path / "offender.py"
     module.write_text(f"N_GENES = {value}\n")
     assert _offences(module), f"the scanner missed {value}"
+
+
+def test_the_exemption_marker_works_and_is_line_scoped(tmp_path):
+    module = tmp_path / "marked.py"
+    module.write_text(
+        "PERCENTILES = [50]  # not-a-size: percentiles, not cell counts\n"
+        "N_GENES = 18533\n"
+    )
+    offences = _offences(module)
+    assert len(offences) == 1
+    assert "18533" in offences[0]
+
+
+def test_exemptions_are_few_and_explained():
+    """An exemption is a claim; it should be rare and carry its reason."""
+    marked = []
+    for path in _package_files():
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            if EXEMPT_MARKER in line:
+                marked.append((f"{path.name}:{lineno}", line.strip()))
+
+    assert len(marked) <= 3, f"too many size-scan exemptions: {marked}"
+    for where, line in marked:
+        reason = line.split(EXEMPT_MARKER, 1)[1].strip()
+        assert reason.startswith(":") and len(reason) > 10, f"{where} has no reason"

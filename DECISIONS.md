@@ -275,6 +275,21 @@ the part that does not transfer.
 magnitude is re-fitted where it belongs, by Phase 2 and by the generator's
 effect-size scale.
 
+**Amended at the M2 review.** Z-scoring alone loses the distinction between a
+strong specific response and a near-null one — and most knockdowns do very
+little, so a null response divided by its own tiny norm becomes a
+confident-looking random direction. Each phenotype sub-block therefore also
+carries **scalar magnitude and reliability features** in the same block, under
+the same missing flag: `log1p_magnitude` plus the source's own quality signals
+(Replogle `fold_expr`, `log1p_anderson_darling`, `log1p_n_cells`; LINCS
+`cc_q75`, `log1p_n_sigs`, `log1p_n_rows`). The direction basis is learned from
+the weighted responses — weight `m / (m + floor)`, halving at
+`priors.phenotype_magnitude_floor` times the source's median magnitude — and
+then **every** target is projected into it, so a null response lands where it
+lands in a basis it did not help choose, rather than bending the basis toward
+its own noise. `priors/checks.json` reports the fraction of targets below the
+floor per sub-block.
+
 ### D18. The neighbour check runs per HGNC group, not per configured pattern
 
 **Decision.** `priors.check_families` holds name fragments, but the check
@@ -307,3 +322,82 @@ true of roughly 10,000 genes.
 **Alternative.** Impute the missing values. Rejected: an imputed
 co-expression profile for a gene measured nowhere is a fabrication, and the
 free per-gene `delta` is the mechanism the specification gives for that case.
+
+---
+
+## M2 review — amendments
+
+### D20. The magnitude check reports the depth confound beside the floor
+
+**Decision.** The magnitude report carries, per sub-block, the RMS
+percentiles and the correlation between response magnitude and the source's
+depth signal (`n_cells` for Replogle, `n_sigs` for LINCS), plus a caveat
+sentence.
+
+**Reason.** On `mini_data` the fraction below the floor is 0.0% for both
+Replogle screens, which reads as "every knockdown did something". It is not:
+magnitude correlates **−0.75** with cell count on K562_gwps and −0.44 on
+rpe1, because a pseudobulk over 8 cells is noisy and noise has a magnitude.
+The floor fraction alone would have been read as biology. The depth signal is
+a feature of the same block, so the model can discount magnitude where depth
+is low; the report is what tells a human to expect that.
+
+**Alternative.** Depth-correct the magnitude before reporting it. Not taken
+at M2: it is a modelling choice rather than a diagnostic, the model has the
+information to do it, and inventing a correction now would hide the raw
+number the user asked to see.
+
+### D21. Two kinds of context exclusion, because variant 2 needs both
+
+**Decision.** `PriorScope` has `exclude_contexts` (hide a source entirely)
+and `exclude_response_contexts` (hide only its perturbation responses, keep
+its control cells). The three rehearsal variants' scopes are constructed in
+`vccp/priors/scope.py`.
+
+**Reason.** Rehearsal variant 2 learns perturbation behaviour in one screen
+and adapts to the other *using only its controls* (§4.6). One exclusion set
+cannot express that: hiding the screen entirely would remove the controls the
+variant is built on, and hiding nothing would leak the responses it is
+supposed to predict. Defining the scopes next to the rule keeps what the
+priors promise and what the rehearsal asks for from drifting apart.
+
+### D22. The rebuild plan is declared, and tested against a real rebuild
+
+**Decision.** `priors/leakage.py` classifies every block as rebuilt, dropped
+or reused under each variant's scope, and that plan goes into
+`priors/checks.json`. `tests/test_leakage.py` builds the priors under each
+scope and asserts the outcome matches.
+
+**Reason.** The plan has to be readable before the rehearsal runs, but a
+declaration nobody checks is just a comment. Building all six scopes inside
+the `priors` stage would triple its cost for a result that does not change
+between runs; testing them once does the same job. The classification depends
+only on what *kind* of thing a scope hides, not on which targets it picks, so
+the plan is exact even though the rehearsal chooses its held-out sets later.
+
+### D23. Per-block sampling seeds, and a layout hash
+
+**Decision.** Each block derives its own seed from
+`sha256(run seed, scope key, block name)` rather than drawing from one shared
+generator. `coverage.csv` and `prior_features.npz` record every block's name,
+width, column labels, per-role offsets, coverage and seed, and
+`PriorFeatures.layout_hash()` digests all of it.
+
+**Reason.** With a shared generator, which cells a block sampled depended on
+how many blocks ran before it, so adding a block changed an unrelated one's
+sample. And the block set is not fixed: the server's `K562_essential` adds
+two blocks and shifts every offset after them, so a checkpoint trained
+against one layout must be able to refuse another. `load()` verifies the
+stored hash against the layout it holds.
+
+### D24. The size scan gained an explicit, auditable exemption
+
+**Decision.** `# not-a-size: <reason>` on a line exempts it from the
+hardcoded-size scan. A test caps the number of exemptions and requires each
+to carry a reason.
+
+**Reason.** The scan flagged `np.percentile(rms, [5, 25, 50, 75, 95])` — 50
+is on the banned list as mini_data's `cells_per_pert`. Weakening the scan
+would have cost more than the annotation. Making the exemption explicit and
+greppable means it is a claim a reviewer can see and disagree with, rather
+than something the scanner quietly allows.

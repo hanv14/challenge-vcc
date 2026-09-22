@@ -62,6 +62,17 @@ class Priors:
     coexpr_n_iter: int = 2
     #: Gene-group families smaller than this carry no usable signal.
     hgnc_min_group_size: int = 2
+    #: A knockdown's response is z-scored per target before the direction
+    #: decomposition, which makes a near-null response look like a confident
+    #: random direction. These two keys are how that is handled: the floor is
+    #: a fraction of the sub-block's median response magnitude, below which a
+    #: target is reported as low-magnitude, and, when weighting is on, the
+    #: point at which its influence on the basis is halved.
+    phenotype_magnitude_floor: float = 0.5
+    #: Learn the direction basis from the targets that actually responded,
+    #: then project every target into it. Off means every target, however
+    #: null, shapes the basis equally.
+    phenotype_weight_by_magnitude: bool = True
     #: Protein language model embeddings (block 7). Built only when this
     #: points at a file that exists; never downloaded (CLAUDE.md §4.1).
     plm_path: str | None = None
@@ -94,6 +105,8 @@ class Priors:
             raise ConfigError("priors.check_n_neighbors must be at least 1")
         if self.check_max_targets < 2:
             raise ConfigError("priors.check_max_targets must be at least 2")
+        if self.phenotype_magnitude_floor <= 0:
+            raise ConfigError("priors.phenotype_magnitude_floor must be positive")
 
 
 @dataclass(frozen=True)

@@ -136,10 +136,72 @@ def test_response_check_caps_the_number_of_targets(session_cfg, built_priors):
             assert entry["n_targets"] <= 5
 
 
-def test_run_checks_returns_both_and_summarizes(session_cfg, built_priors):
+def test_run_checks_returns_every_check_and_summarizes(session_cfg, built_priors):
     checks = run_checks(session_cfg, built_priors)
-    assert set(checks) == {"neighbour_check", "response_correlation_check"}
+    assert set(checks) == {
+        "neighbour_check",
+        "response_correlation_check",
+        "magnitude_check",
+        "rehearsal_rebuild_plan",
+    }
 
     table = summarize(checks)
     assert not table.empty
-    assert set(table["check"]) <= {"neighbours", "response_correlation"}
+    assert set(table["check"]) <= {"neighbours", "response_correlation", "magnitude"}
+
+
+# --------------------------------------------------------------------------- #
+# magnitude and the rehearsal rebuild plan land in checks.json
+# --------------------------------------------------------------------------- #
+def test_magnitude_check_reports_every_phenotype_block(session_cfg, built_priors):
+    from vccp.priors.checks import magnitude_check
+
+    result = magnitude_check(session_cfg, built_priors)
+    reported = {entry["block"] for entry in result["blocks"]}
+    expected = {
+        spec.name
+        for spec in built_priors.layouts[TARGET].blocks
+        if spec.name.startswith("pert_phenotype")
+    }
+    assert reported == expected
+
+    for entry in result["blocks"]:
+        assert 0.0 <= entry["fraction_below_floor"] <= 1.0
+        assert entry["floor"] > 0
+        assert entry["quality_columns"] is not None
+
+
+def test_magnitude_check_reports_the_depth_confound(session_cfg, built_priors):
+    """A shallow pseudobulk is noisy and noise has a magnitude. Without the
+    correlation next to it, the fraction below the floor would read as
+    biology when on mini_data it is mostly cell count."""
+    from vccp.priors.checks import magnitude_check
+
+    result = magnitude_check(session_cfg, built_priors)
+    assert "caveat" in result
+    for entry in result["blocks"]:
+        assert "magnitude_vs_depth_correlation" in entry
+        assert entry["depth_signal"] is not None
+
+
+def test_checks_json_states_the_rehearsal_rebuild_plan(mini_cfg):
+    """Requirement from the M2 review: `priors/checks.json` must say which
+    blocks each rehearsal variant rebuilds."""
+    import json
+
+    from vccp.paths import RunPaths
+    from vccp.priors.stage import run_priors
+
+    run_priors(mini_cfg)
+    checks = json.loads(RunPaths(mini_cfg).prior_checks.read_text())
+
+    assert "magnitude_check" in checks
+    plan = checks["rehearsal_rebuild_plan"]
+    assert plan["variants"]
+    for name, entry in plan["variants"].items():
+        assert entry["blocks"], name
+        assert set(entry["blocks"].values()) <= {"rebuilt", "dropped", "reused"}
+        assert (
+            entry["n_rebuilt"] + entry["n_dropped"] + entry["n_reused"]
+            == len(entry["blocks"])
+        )

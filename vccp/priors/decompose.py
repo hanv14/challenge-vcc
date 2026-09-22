@@ -164,6 +164,71 @@ def resident_pca(
     return components, np.asarray(ratio, dtype=np.float32)
 
 
+def rowwise_standardize(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Z-score each row, returning the standardized rows and their RMS.
+
+    For a perturbation response this separates *where* the response points
+    from *how big* it is. The direction goes into the decomposition; the
+    magnitude comes back as its own feature, because a response that is
+    nearly nothing normalizes into a confident-looking random direction and
+    the model has to be able to tell the two apart.
+    """
+    matrix = np.asarray(matrix, dtype=np.float32)
+    centered = matrix - matrix.mean(axis=1, keepdims=True)
+    rms = np.sqrt((centered**2).mean(axis=1))
+    scale = np.where(rms < MIN_STD, 1.0, rms)
+    return (centered / scale[:, None]).astype(np.float32), rms.astype(np.float32)
+
+
+def weighted_direction_basis(
+    profiles: np.ndarray,
+    k: int,
+    weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Direction features for rows, from a basis the reliable rows define.
+
+    `profiles` is `(n_rows, n_cols)` — one perturbation response per row.
+    Rows are z-scored, the basis is the right singular vectors of the
+    *weighted* rows, and then **every** row is projected into that basis,
+    weighted or not. A near-null response therefore lands wherever it lands
+    in a basis it did not help choose, instead of bending the basis toward
+    its own noise.
+
+    Returns `(features (n_rows, k'), explained_variance_ratio, basis)`.
+    """
+    directions, _ = rowwise_standardize(profiles)
+    if directions.shape[0] < 2:
+        raise ValueError(f"need at least 2 rows, got {directions.shape[0]}")
+
+    if weights is None:
+        weighted = directions
+    else:
+        weights = np.asarray(weights, dtype=np.float32).reshape(-1, 1)
+        if weights.shape[0] != directions.shape[0]:
+            raise ValueError("weights must have one entry per row")
+        weighted = directions * weights
+
+    _, singular, vt = np.linalg.svd(weighted, full_matrices=False)
+    k_effective = min(k, vt.shape[0])
+    basis = vt[:k_effective].T.astype(np.float32)
+
+    total = float((singular**2).sum())
+    ratio = (singular[:k_effective] ** 2 / total) if total > 0 else np.zeros(k_effective)
+    return (directions @ basis).astype(np.float32), np.asarray(ratio, dtype=np.float32), basis
+
+
+def magnitude_weights(rms: np.ndarray, floor: float) -> np.ndarray:
+    """A soft weight in (0, 1): 0.5 at the floor, approaching 1 well above it.
+
+    Soft rather than a cutoff, so a target just under the floor is not
+    discarded and one just over it is not fully trusted.
+    """
+    rms = np.asarray(rms, dtype=np.float32)
+    if floor <= 0:
+        return np.ones_like(rms)
+    return (rms / (rms + floor)).astype(np.float32)
+
+
 def sparse_svd(matrix, k: int) -> tuple[np.ndarray, np.ndarray]:
     """Truncated SVD of a sparse indicator matrix, without centering.
 
