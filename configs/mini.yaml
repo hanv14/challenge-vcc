@@ -1,0 +1,17 @@
+# Cloud / CPU rehearsal config. Paths are relative to the repository root.
+# Numbers here are deliberately small so `python -m vccp all` finishes in
+# minutes; nothing in the code path differs from the server run.
+
+data_root: mini_data          # contains ref/ and processed/
+vcc_root: mini_data/vcc       # challenge release files
+output_root: runs
+device: cpu                   # explicit: this container has no CUDA
+
+run_name: mini
+seed: 0
+
+resources:
+  cpu_threads: 4
+  num_workers: 2
+  gpu_memory_fraction: 0.5
+  max_ram_gb: 64

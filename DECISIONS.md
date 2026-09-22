@@ -1,0 +1,208 @@
+# DECISIONS.md
+
+One entry per non-obvious choice: the decision, the reason, and the
+alternative that was not taken. Deviations from `CLAUDE.md` are marked
+**DEVIATION** and are also listed in `PLAN.md` §9 and in the final message.
+
+---
+
+## M0 — plan
+
+### D1. The package is `vccp`, not `vcc` — **DEVIATION** (CLAUDE.md §2, §7)
+
+**Decision.** The Python package is `vccp/` and every command is
+`python -m vccp <stage> --config …`. The challenge's own packaging tool is
+invoked only as the executable found by `shutil.which("vcc")`.
+
+**Reason.** `CLAUDE.md` asks for a package importable as `vcc` while the
+challenge ships a command-line tool of the same name. On the server, a `vcc`
+Python package installed by the challenge would make `python -m vcc` ambiguous:
+run from outside the repository it resolves to theirs, run from inside it
+shadows theirs for anything that imports it. Renaming costs one letter now and
+is very painful later. Approved by the user at the M0 review.
+
+**Alternative.** Keep the name and guard at startup by asserting
+`vcc.__file__` resolves under the repository root. Rejected: it detects the
+collision rather than removing it, and does nothing about our package shadowing
+theirs.
+
+### D2. `mini.yaml` sets `device: cpu` — **DEVIATION** (CLAUDE.md §1)
+
+**Decision.** The mini config pins `device: cpu`; `server.yaml` keeps
+`device: auto`. `device` stays a single top-level key.
+
+**Reason.** `CLAUDE.md` §1's snippet shows `device: auto` for mini while §1.2
+says the `resources` block should carry `device: cpu` for mini — and `device`
+is not among the `resources` keys §1.2 lists. One key, explicit value, no
+reliance on `auto` happening to find no CUDA in the container. Approved by the
+user at the M0 review.
+
+**Alternative.** A second `resources.device` key overriding the top-level one.
+Rejected: two keys for one setting is exactly the ambiguity that produced the
+question.
+
+### D3. `train.unfreeze_core` defaults true for Phase 2 — **DEVIATION** (CLAUDE.md §4.3)
+
+**Decision.** The core is trainable in Phase 2 and frozen in Phase 3, both
+configurable. Phase 2 additionally trains a second, frozen-core arm, and Phase 1
+validation is scored under both; the comparison is reported in
+`reports/forgetting.json` and the rehearsal report.
+
+**Reason.** §4.3's stated default freezes the core in every later phase, which
+leaves the forgetting guard (§4.8 item 7) with almost nothing to act on. The
+user's judgement: Phase 2 has the data to support training the core and is where
+the guard is worth having, while Phase 3 sees only control cells, where updating
+the core would risk the perturbation knowledge Phases 1–2 built. The ablation
+exists so the default rests on a measurement rather than on that judgement.
+
+**Alternative.** Keep the core frozen everywhere and report that the guard is
+inactive by construction. Rejected by the user at the M0 review.
+
+### D4. `prediction.vcc` is optional — **DEVIATION** (CLAUDE.md §4.8 item 13)
+
+**Decision.** The deliverable is `submission/prediction.h5ad` in the format of
+§8. The `vcc prep` code path is still built and still runs when the tool is on
+`PATH`, but the `.vcc` is not required for a run to be complete.
+
+**Reason.** The user packages the submission themselves with the challenge's
+tool on the server. The tool cannot be installed in the cloud, so requiring the
+`.vcc` would make every cloud run incomplete for a reason unrelated to the
+method.
+
+### D5. The calibration objective is normalized against the no-change points
+
+**Decision.** The generator's confidence threshold and effect-size scale are
+fitted on rehearsal variant 2 by maximizing the mean of the six official
+metrics *after* mapping each so that its documented no-change value is 0 and
+better is positive; where the baseline and replicate anchors can be built on the
+rehearsal data, the leaderboard's own 0 = baseline / 1 = replicate scaling is
+used instead. The objective actually used is recorded in `phase3_policy.json`.
+
+**Reason.** §4.7 says "maximizing the mean of the six official metrics", but two
+of the six are lower-is-better and all six live on different scales, so their
+raw mean is not a meaningful quantity to maximize.
+
+**Alternative.** Maximize the raw mean as written. Rejected: it would trade a
+point of `sig_jaccard` against a point of `lfc_nmae` as though they were
+commensurable, and would reward raising an error metric.
+
+### D6. Sanity check 2 bounds the moved genes as well as the unmoved ones
+
+**Decision.** Check 2 has two halves: genes the model did not predict to move
+must have a predicted mean inside a bootstrap range of the context's control
+per-gene means; genes it did predict to move must satisfy
+|log2 FC vs control| ≤ `sanity.max_abs_log2fc` (default 10). The target gene is
+excluded from both. Both halves report the violating fraction and the worst
+offenders.
+
+**Reason.** §6.1's check 2 exempts "genes the model predicts to move", which as
+written exempts every gene that could fail it. The genes below the confidence
+threshold are copies of control cells by construction, so a check restricted to
+them tests nothing. Raised by the user at the M0 review.
+
+### D7. Rehearsal arms share their control resample and generator seed
+
+**Decision.** Within a rehearsal variant, the method, the upper bound and the
+floor draw the same control cells and use the same generator settings, seeded
+per `(variant, target)`. The official metrics for variants 1 and 3 are keyed
+`official_panel_assisted`, never under variant 2's key.
+
+**Reason.** The three arms exist to be compared; if they differ in their control
+resample as well as in their predicted fold changes, the comparison measures
+sampling noise too. And variants 1 and 3 are fed the *true* panel values, so
+their official metrics are not end-to-end performance and must not be able to be
+read as though they were. Both raised by the user at the M0 review.
+
+### D8. The knockdown prior records its source and respects an expression floor
+
+**Decision.** `fold_expr` is per-target from Replogle bulk where available
+(median over the gene's promoter rows), otherwise the pooled median over every
+Replogle bulk file present. The resolved source is recorded per target
+(`pooled` or `per_target:<screen>`) and shown in the knockdown figure. The prior
+is applied only where the target gene is detectably expressed in that context's
+controls, above `phase3.knockdown.min_control_cpm`.
+
+**Reason.** The medians differ by screen (0.155 K562, 0.088 RPE1) and the
+challenge contexts are not identified with any Replogle cell line, so the number
+used is a transfer assumption and should be visible as one. Applying a fold
+change to a gene that is not expressed in controls would manufacture a change
+out of noise. Raised by the user at the M0 review.
+
+---
+
+## M1 — data layer
+
+### D9. `cell-eval2` is pinned to 0.16.0
+
+**Decision.** `environment.yml` pins `cell-eval2==0.16.0`, CPU-only, with no
+`[gpu]` or `[gpudge]` extras. The eval wrapper will introspect the installed
+`EvalConfig` rather than assume attribute names, and will log the installed
+version into every report that uses it.
+
+**Reason.** `docs/metrics.md` and the brief describe 0.15.0 with
+`rule_version 3`, but 0.16.0 is the only version PyPI publishes. The docs
+themselves record metric semantics moving *within* a version several times
+(#172, #271, #343, #348, #351), so the version a report was produced under is
+part of the result.
+
+**Alternative.** Leave it unpinned. Rejected: two runs on different days would
+not be comparable, and the docs show that is not hypothetical.
+
+### D10. Tests work on a symlink mirror, and a fixture proves `mini_data` is untouched
+
+**Decision.** Tests that need a broken input build a tmp tree of symlinks
+pointing at `mini_data` and replace or remove links in it. A session-scoped
+autouse fixture snapshots every file's size and mtime under `mini_data` and
+fails the session if anything changed.
+
+**Reason.** `mini_data/` is read-only input (§1.1). While writing these tests I
+deleted a real input file by calling `.resolve()` on a mirror path before
+unlinking, which followed the link out of the mirror; it was restored from git.
+The helpers now refuse any path that is not a symlink in the mirror, and the
+fixture catches the whole class of mistake rather than that one instance.
+
+**Alternative.** Copy `mini_data` (43 MB) per test. Rejected: slower, and it
+would not have caught the bug — a copy is writable, so the mistake would have
+been invisible.
+
+### D11. Stages are registered as they are built
+
+**Decision.** The CLI's stage list contains only implemented stages; `all` runs
+those. An unregistered name is rejected with the list of the ones that exist.
+
+**Reason.** §0 forbids stubs and `NotImplementedError`s in the delivered code
+path. A stage that exists but does nothing is exactly that. The list grows with
+each milestone and is complete at M5.
+
+**Alternative.** Register every stage of §7 now, raising "not implemented" for
+the unbuilt ones. Rejected: that is the stub §0 rules out, and it makes `all`
+report a failure that is not one.
+
+### D12. `check-data` reports a second gene-coverage number
+
+**Decision.** Alongside `gene_coverage.csv`'s count, `check-data` reports how
+many challenge genes Phase 1 or Phase 2 actually measures, and how many are
+therefore reachable only through the challenge controls.
+
+**Reason.** `gene_coverage.csv` counts a gene as covered when any source file
+holds it, including LINCS genes outside the panel — 1,722 of 1,983 on mini. What
+constrains the method is narrower: 1,442 genes are measured by a phase we train,
+so 541 have no supervised perturbation response anywhere. That second number is
+the one that matters for the priors and for reading the results, and on the
+server it is about 10,000.
+
+**Alternative.** Report only the coverage file's number. Rejected: it is
+optimistic in a way that would mislead when reading the summary.
+
+### D13. Replogle `ctrl_std` is floored at 1e-3
+
+**Decision.** Control-SD units divide by `max(ctrl_std, 1e-3)`, in both the
+Replogle and the challenge loaders.
+
+**Reason.** §3.2 requires guarding against `ctrl_std == 0`; a gene with no
+variance in a context's controls would otherwise produce infinite z-scores that
+propagate into the priors and the loss.
+
+**Alternative.** Drop zero-variance genes. Rejected: they are still genes the
+submission must predict, and dropping them would make the gene axis
+context-dependent.

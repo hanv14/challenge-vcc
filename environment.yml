@@ -63,6 +63,12 @@ dependencies:
   # ---------- pip-only packages ----------
   - pip
   - pip:
+      # Official scorer for the six vcc2026 metrics. CPU-only base install:
+      # do NOT add the [gpu] or [gpudge] extras — [gpudge] pulls its own torch
+      # and can break the model's environment (CLAUDE.md §1). The docs in
+      # docs/metrics.md describe 0.15.0; 0.16.0 is what PyPI publishes, and
+      # the eval wrapper logs the installed version into every report.
+      - cell-eval2==0.16.0
       - decoupler            # pathway / TF activity scoring from gene sets
       - cmapPy               # read LINCS L1000 .gctx files
       - scvi-tools           # VAE machinery for single-cell; useful for the

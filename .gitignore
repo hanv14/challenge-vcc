@@ -1,1 +1,13 @@
 .DS_Store
+
+# outputs — never committed (CLAUDE.md §1.1)
+runs/
+*.h5ad.tmp
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/

@@ -1,0 +1,16 @@
+# Server config. Run from the repository root, after:
+#     source scripts/server_env.sh
+
+data_root: /data/han/projects/VCC/data
+vcc_root: /data/share/han/VCC
+output_root: /data/han/projects/VCC/runs
+device: auto
+
+run_name: server
+seed: 0
+
+resources:
+  cpu_threads: 4
+  num_workers: 2
+  gpu_memory_fraction: 0.5
+  max_ram_gb: 64
