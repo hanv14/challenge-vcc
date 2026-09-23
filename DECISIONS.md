@@ -742,3 +742,22 @@ starts; that is only true if something has touched the data.
 the source is reachable, but it does not exist here and would not catch a
 missing compression plugin. The probe catches both, and reports which of the
 two it is.
+
+### D46. An adapter is created on its base layer's device and dtype
+
+**Decision.** `LoRALinear.add_adapter` creates its two parameters with the
+`device` and `dtype` of `self.base.weight`, not on the default device.
+
+**Reason.** A bug, found by the first GPU run. Every stage does
+`build_model(...).to(device)` and *then* `model.add_adapter(...)` — which is
+the point of an adapter — so the new parameters were created on the CPU while
+the rest of the model was on `cuda:0`, and the first forward pass died with
+`Expected all tensors to be on the same device ... mat2 is on cpu`. It could
+not show on `mini_data`, where the default device *is* the right one, which
+is exactly why it survived M1–M6.
+
+**Test.** PyTorch's `meta` device is a real device that exists without a GPU,
+so `tests/test_model.py` moves a model to `meta`, adds adapters, and asserts
+every parameter and buffer shares one device. The old code path gives
+`{'meta', 'cpu'}` there. An audit for the same shape — a tensor created
+without a device outside `__init__` — found no other instance.

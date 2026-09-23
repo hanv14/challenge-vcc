@@ -309,3 +309,51 @@ def test_zscore_across_genes_describes_a_profiles_shape():
     assert np.allclose(zscore_across_genes(profile_values), scaled, atol=1e-5)
     assert abs(float(scaled.mean())) < 1e-6
     assert np.isfinite(zscore_across_genes(np.zeros(5, dtype=np.float32))).all()
+
+
+# --------------------------------------------------------------------------- #
+# adapters are created where the model already is
+# --------------------------------------------------------------------------- #
+# Every stage moves the model to the device and *then* adds its adapters —
+# that is what an adapter is for. A parameter created on the default device
+# instead of the base layer's would sit on the CPU while the rest of the model
+# is on the GPU, and the first forward pass would die with "mat2 is on cpu".
+# `meta` is a real device that exists without a GPU, so these run anywhere.
+META = "meta"
+
+
+def test_an_adapter_lands_on_the_device_its_base_layer_is_on():
+    import torch.nn as nn
+
+    from vccp.models.adapters import LoRALinear
+
+    layer = LoRALinear(nn.Linear(4, 3), rank=2).to(META)
+    layer.add_adapter("phase1")
+
+    for parameter in layer.parameters():
+        assert parameter.device.type == META, "an adapter was created off-device"
+
+
+def test_an_adapter_inherits_its_base_layer_s_dtype():
+    import torch.nn as nn
+
+    from vccp.models.adapters import LoRALinear
+
+    layer = LoRALinear(nn.Linear(4, 3), rank=2).to(torch.float64)
+    layer.add_adapter("phase1")
+
+    assert all(p.dtype == torch.float64 for p in layer.parameters())
+
+
+def test_the_whole_model_stays_on_one_device_when_adapters_are_added(
+    mini_cfg, built_priors
+):
+    """The guard that covers any parameter created after the move, not only
+    the adapters'."""
+    model = build_model(mini_cfg, built_priors).to(META)
+    for name in ("phase1", "phase2", "phase3", "context:A"):
+        model.add_adapter(name)
+
+    devices = {p.device.type for p in model.parameters()}
+    devices |= {b.device.type for b in model.buffers()}
+    assert devices == {META}, f"the model is split across devices: {devices}"

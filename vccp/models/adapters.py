@@ -43,11 +43,26 @@ class LoRALinear(nn.Module):
         if name in self.up:
             return
         key = _key(name)
-        up = torch.empty(self.rank, self.base.in_features)
+        # On the base layer's own device and dtype. Every caller adds adapters
+        # *after* `model.to(device)` — that is the point of an adapter — so a
+        # parameter created on the default device would be left on the CPU
+        # while the rest of the model is on the GPU, and the first forward
+        # pass would fail with "mat2 is on cpu". It never showed on CPU-only
+        # runs, where the default device is the right one.
+        reference = self.base.weight
+        up = torch.empty(
+            self.rank, self.base.in_features,
+            device=reference.device, dtype=reference.dtype,
+        )
         nn.init.kaiming_uniform_(up, a=5**0.5)
         self.up[key] = nn.Parameter(up)
         # Zero, so the adapter is an exact no-op until it is trained.
-        self.down[key] = nn.Parameter(torch.zeros(self.base.out_features, self.rank))
+        self.down[key] = nn.Parameter(
+            torch.zeros(
+                self.base.out_features, self.rank,
+                device=reference.device, dtype=reference.dtype,
+            )
+        )
 
     def set_active(self, names: Iterable[str]) -> None:
         self._active = tuple(_key(n) for n in names if _key(n) in self.up)
