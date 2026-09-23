@@ -761,3 +761,29 @@ so `tests/test_model.py` moves a model to `meta`, adds adapters, and asserts
 every parameter and buffer shares one device. The old code path gives
 `{'meta', 'cpu'}` there. An audit for the same shape — a tensor created
 without a device outside `__init__` — found no other instance.
+
+### D47. The scorer's thread cap is the smallest pool, not just polars
+
+**Decision.** `eval/official.py` caps its thread count at
+`min(resources.cpu_threads, polars pool, NUMBA_NUM_THREADS)`, and `score()`
+retries once single-threaded if a pool refuses the count anyway.
+
+**Reason.** D33 capped against polars alone. `cell-eval2` also runs its
+Wilcoxon test through **numba**, and `scripts/server_env.sh` — following
+§1.2's mandated block — sets `NUMBA_NUM_THREADS=1` while
+`POLARS_MAX_THREADS` follows `cpu_threads=4`. The two disagreeing is the
+normal case on the server and impossible in the cloud, where every variable
+defaults to 1. So the first server run asked numba for 4 threads, got
+`ValueError: The number of threads must be between 1 and 1`, and **every one
+of the rehearsal's scoring calls failed** — 21 arms across three variants.
+The rehearsal produced no evidence at all, the generator was never
+calibrated, and sanity checks 6 and 7 had nothing to read.
+
+The retry exists because that trade is never worth making: scoring slowly
+beats not scoring, and a rehearsal is the only evidence there is about
+whether a submission is any good.
+
+**Test.** A subprocess with `NUMBA_NUM_THREADS=1` and `POLARS_MAX_THREADS=4`
+— the server's own combination — asserts the cap comes out at 1, and a real
+scoring under those variables returns all six metrics. Neither could have
+failed on a machine where the variables agree, which is why M1–M6 missed it.

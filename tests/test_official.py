@@ -9,6 +9,8 @@ written into a prediction.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -154,3 +156,66 @@ def test_the_no_change_points_are_the_ones_the_specification_names():
     assert set(nochange.NO_CHANGE) == set(official.SCORED)
     assert nochange.NO_CHANGE["pds_cosine"] == (0.5, True)
     assert nochange.NO_CHANGE["expr_mse_unbiased_capped_norm"] == (1.0, False)
+
+
+# --------------------------------------------------------------------------- #
+# thread pools: the scorer drives more than one, and they need not agree
+# --------------------------------------------------------------------------- #
+def test_the_cap_is_the_smallest_pool_not_just_polars(mini_cfg_module, monkeypatch):
+    """`NUMBA_NUM_THREADS=1` with `POLARS_MAX_THREADS=4` is exactly what
+    `scripts/server_env.sh` produces, and asking numba for 4 raises
+    "The number of threads must be between 1 and 1" (DECISIONS.md D47)."""
+    monkeypatch.setattr(official, "_pool_limits", lambda: {"polars": 8, "numba": 1})
+    assert official.scorer_threads(mini_cfg_module) == 1
+
+    monkeypatch.setattr(official, "_pool_limits", lambda: {"polars": 1, "numba": 8})
+    assert official.scorer_threads(mini_cfg_module) == 1
+
+    monkeypatch.setattr(official, "_pool_limits", lambda: {"polars": 8, "numba": 8})
+    assert official.scorer_threads(mini_cfg_module) == mini_cfg_module.resources.cpu_threads
+
+
+def test_the_cap_survives_a_pool_that_cannot_be_asked(mini_cfg_module, monkeypatch):
+    monkeypatch.setattr(official, "_pool_limits", dict)
+    assert official.scorer_threads(mini_cfg_module) == mini_cfg_module.resources.cpu_threads
+
+
+def test_both_pools_the_scorer_uses_are_reported():
+    pools = official._pool_limits()
+    assert {"polars", "numba"} <= set(pools), pools
+    assert all(value >= 1 for value in pools.values())
+
+
+def test_a_thread_refusal_is_recognized():
+    assert official._is_thread_refusal(ValueError("The number of threads must be between 1 and 1"))
+    assert official._is_thread_refusal(ValueError("thread pool size exceeded"))
+    assert not official._is_thread_refusal(ValueError("perturbation sets differ"))
+
+
+def test_the_cap_holds_in_a_process_that_really_has_numba_capped(repo_root):
+    """The bug only existed where the two variables disagreed, so this sets
+    them the way the server does and asks a fresh process."""
+    import subprocess
+    import sys
+
+    env = {
+        **os.environ,
+        "NUMBA_NUM_THREADS": "1",
+        "POLARS_MAX_THREADS": "4",
+        "PYTHONPATH": str(repo_root),
+    }
+    code = (
+        "from vccp.config import load_config;"
+        "from vccp.eval import official;"
+        "cfg = load_config('configs/server.yaml');"
+        "pools = official._pool_limits();"
+        "threads = official.scorer_threads(cfg);"
+        "print(pools, threads);"
+        "assert pools['numba'] == 1, pools;"
+        "assert threads == 1, threads"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=repo_root, env=env,
+        capture_output=True, text=True, timeout=300,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr

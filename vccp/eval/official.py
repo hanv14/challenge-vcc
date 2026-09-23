@@ -27,6 +27,8 @@ from typing import Any
 
 import numpy as np
 
+from ..logging_utils import get_logger
+
 #: The six that enter the leaderboard's average (§6).
 SCORED = (
     "pds_cosine",
@@ -162,24 +164,45 @@ def build_config(cfg, pert_col: str, control_label: str):
     )
 
 
-def scorer_threads(cfg) -> int:
-    """`resources.cpu_threads`, but never more than polars actually has.
+def _pool_limits() -> dict[str, int]:
+    """Every thread pool the scorer drives, and how large each one may be.
 
-    `cell-eval2` gathers with polars, whose pool size was fixed from
-    `POLARS_MAX_THREADS` when it was imported — by `scripts/server_env.sh` on
-    the server, or by the conservative default `vccp/__main__.py` sets when
-    the environment is silent (§1.2). Asking it for more threads than the
-    pool holds is an error, and raising the pool would override what the
-    environment said, which §1.2 forbids. So take the smaller of the two.
+    `cell-eval2` gathers with **polars** and runs the Wilcoxon test through
+    **numba**, and each fixes its ceiling at import from its own environment
+    variable — `POLARS_MAX_THREADS` and `NUMBA_NUM_THREADS`. Asking either for
+    more than it has is a hard error, and they need not agree:
+    `scripts/server_env.sh` sets `NUMBA_NUM_THREADS=1` (CLAUDE.md §1.2
+    mandates that line) while `POLARS_MAX_THREADS` follows
+    `resources.cpu_threads`. A cap taken against one of them alone is no cap
+    at all.
     """
-    threads = max(1, int(cfg.resources.cpu_threads))
+    limits: dict[str, int] = {}
     try:
         import polars as pl
 
-        available = int(pl.thread_pool_size())
-    except Exception:  # noqa: BLE001 — a missing polars is the scorer's problem
-        return threads
-    return max(1, min(threads, available))
+        limits["polars"] = int(pl.thread_pool_size())
+    except Exception:  # noqa: BLE001 — a missing pool is the scorer's problem
+        pass
+    try:
+        import numba
+
+        limits["numba"] = int(numba.config.NUMBA_NUM_THREADS)
+    except Exception:  # noqa: BLE001
+        pass
+    return {name: value for name, value in limits.items() if value >= 1}
+
+
+def scorer_threads(cfg) -> int:
+    """`resources.cpu_threads`, but never more than any pool actually has.
+
+    Raising a pool to fit the config would override what the environment
+    said, which §1.2 forbids — so the smallest ceiling wins. A wrong answer
+    here does not run slowly, it raises: "The number of threads must be
+    between 1 and 1" is numba refusing, and on the first server run it cost
+    every scoring call in the rehearsal (DECISIONS.md D47).
+    """
+    threads = max(1, int(cfg.resources.cpu_threads))
+    return max(1, min([threads, *_pool_limits().values()]))
 
 
 def describe_config(config) -> dict[str, Any]:
@@ -225,15 +248,43 @@ def with_controls(prediction, real, pert_col: str, control_label: str):
     return merged
 
 
+#: What a pool says when it is asked for more threads than it has.
+THREAD_REFUSALS = ("number of threads", "thread pool", "num_threads")
+
+
+def _is_thread_refusal(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(phrase in message for phrase in THREAD_REFUSALS)
+
+
 def score(cfg, prediction, real, *, pert_col: str, control_label: str) -> OfficialScore:
-    """Score a prediction against the real data with the official metrics."""
+    """Score a prediction against the official metrics."""
     from cell_eval2 import aggregate_metrics, aggregate_metrics_wide, compute_metrics
     from cell_eval2.baseline import build_run_meta
 
     config = build_config(cfg, pert_col, control_label)
     scoring_prediction = with_controls(prediction, real, pert_col, control_label)
 
-    result = compute_metrics(scoring_prediction, real, config=config)
+    extra_warnings: list[str] = []
+    try:
+        result = compute_metrics(scoring_prediction, real, config=config)
+    except ValueError as exc:
+        if not _is_thread_refusal(exc):
+            raise
+        # One pool would not take the thread count. Scoring slowly beats not
+        # scoring at all: a rehearsal is the only evidence there is about
+        # whether the submission is any good, and losing all of it to a
+        # thread count is not a trade worth making.
+        get_logger().warning(
+            "  the scorer refused %d thread(s) (%s); retrying single-threaded. "
+            "Pools: %s", config.num_threads, exc, _pool_limits(),
+        )
+        extra_warnings.append(
+            f"scored single-threaded: a thread pool refused the configured count "
+            f"({exc}). Pools available: {_pool_limits()}"
+        )
+        config = dataclasses.replace(config, num_threads=1, gather_threads=1)
+        result = compute_metrics(scoring_prediction, real, config=config)
     aggregate = aggregate_metrics(result)
 
     metrics = {
@@ -252,7 +303,7 @@ def score(cfg, prediction, real, *, pert_col: str, control_label: str) -> Offici
         n_perturbations=len(labels),
         scorer_version=scorer_version(),
         config=describe_config(config),
-        warnings=(
+        warnings=extra_warnings + (
             [
                 f"the scorer returned no value for {missing}; on small panels "
                 "de_wilcoxon_lfc_nmae drops perturbations whose reference gate holds "

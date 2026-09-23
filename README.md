@@ -64,6 +64,21 @@ core. The pipeline **never overrides** these: whatever the environment says,
 it respects, and it logs the effective values at the start of every run. Keep
 `POLARS_MAX_THREADS` equal to `resources.cpu_threads` in your config.
 
+**One knob worth knowing about.** That block sets `NUMBA_NUM_THREADS=1`, and
+`cell-eval2` runs its Wilcoxon test through numba — so the scorer, and with it
+the whole rehearsal, is single-threaded however high `resources.cpu_threads`
+is. The pipeline caps itself at the smallest pool rather than raising one
+(§1.2 says never override the environment), so this is correct but slow. If
+the rehearsal is taking too long, raising it to match `cpu_threads` is your
+call and still a good neighbour on a 192-core machine:
+
+```bash
+export NUMBA_NUM_THREADS=4      # same as resources.cpu_threads
+```
+
+`python scripts/check_env.py` prints the pools and says when one of them is
+capping the scorer.
+
 `CUDA_VISIBLE_DEVICES=1` in that script chooses the GPU. The code only ever
 addresses `cuda:0`, which is whatever that variable makes visible, and caps
 itself at `resources.gpu_memory_fraction` (0.5) of it.

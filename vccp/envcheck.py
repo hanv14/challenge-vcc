@@ -149,12 +149,23 @@ def check_scorer(cfg: Config, report: Report) -> None:
         report.add("cell-eval2", FAIL, f"installed but unusable: {exc}")
         return
 
+    # The scorer drives polars *and* numba, each capped by its own variable,
+    # and they need not agree. The smallest ceiling is what it can use.
+    pools = official._pool_limits()
+    capped = [
+        name for name, value in pools.items() if value < cfg.resources.cpu_threads
+    ]
     report.add(
         "cell-eval2", OK,
         f"{official.scorer_version()}, preset vcc2026, de.backend={config.de.backend}, "
-        f"{config.num_threads} thread(s)",
+        f"{config.num_threads} thread(s) — pools {pools}"
+        + (
+            f"; {', '.join(capped)} caps it below resources.cpu_threads="
+            f"{cfg.resources.cpu_threads}, so scoring will be slower"
+            if capped else ""
+        ),
         version=official.scorer_version(), de_backend=config.de.backend,
-        num_threads=config.num_threads,
+        num_threads=config.num_threads, pools=pools,
     )
 
     backend = cfg.eval.de_backend
