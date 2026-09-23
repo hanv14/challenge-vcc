@@ -805,3 +805,58 @@ The component match, rather than a substring, came from the test for this:
 pytest's own `tmp_path` for a test whose name contains "mini" matched the
 substring rule. A server directory that happens to contain those letters is
 real data.
+
+### D49. Runs are deterministic by default
+
+**Decision.** `train.deterministic` (default true) asks torch for
+deterministic kernels (`warn_only`, so an op without one warns rather than
+failing at hour three), turns TF32 off for matmuls and cuDNN, and fixes
+`CUBLAS_WORKSPACE_CONFIG` — set in `vccp/__main__.py` beside the thread
+variables, because cuBLAS reads it once when CUDA initializes.
+
+**Reason.** Two `predict` runs on the server, from the same checkpoint with
+the same settings and the same seeds, produced different submissions. §7
+asks for seeds fixed and logged, and they were — but seeds fix which cells
+are drawn and which way a coin lands, not the order a CUDA matmul reduces
+in. Those last bits move the predicted values, and a confidence threshold
+applied afterwards turns that into thousands of genes moving or not moving.
+A prototype whose submission changes between identical runs cannot be
+optimized against: no comparison between two configurations means anything
+if the noise floor is unknown.
+
+**Alternative.** Leave it off and treat the drift as part of the noise.
+Rejected: the drift is invisible, it is not reported anywhere, and the whole
+point of the next phase of work is comparing configurations.
+
+### D50. A stage whose inputs were rewritten is not finished
+
+**Decision.** `sanity` and `validate` record the newest prediction block's
+mtime in their stage marker, and `package` records the submission's; a stage
+whose inputs are newer than that reruns instead of being skipped. `validate`
+and `package` additionally refuse outright when the artifact they would
+describe is older than the predictions.
+
+**Reason.** Resume keyed on the config hash alone. A rerun of `predict`
+changes no config, so `sanity`, `validate` and `package` were all silently
+skipped, and `prediction.vcc` on disk described a set of prediction blocks
+that had since been overwritten. Nothing looked wrong: the validator report
+said PASS, the checklist said 15/15, and every file existed. It took
+comparing two targets byte for byte against the assembled file to see it.
+
+A submission is uploaded once and scored for weeks. One built from
+predictions that no longer exist is worse than no submission, precisely
+because nothing about it looks wrong.
+
+### D51. Every run stamps the code that produced it
+
+**Decision.** `vccp/provenance.py` records the git commit, the branch,
+whether the tree was dirty and which files differed, plus the versions of
+the packages whose numbers reach the output. It goes into `config.yaml`,
+`checklist.json` and `reports/summary.md`, and one line of it is logged at
+the start of every run.
+
+**Reason.** The run directory recorded the settings, the generator and the
+data — everything except which code read them. A `.vcc` on a server six
+weeks after the fact is unattributable without it, and the user is about to
+submit several versions and compare their scores. It can never fail a run: a
+tree that is not a git checkout reports what it can.

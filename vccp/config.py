@@ -172,6 +172,14 @@ class Train:
     ablation_steps_fraction: float = 1.0
     #: Steps between logged curve points.
     log_every: int = 25
+    #: Ask torch for deterministic kernels, turn TF32 off, and fix the cuBLAS
+    #: workspace. Two runs of the same checkpoint with the same seeds then
+    #: produce the same predictions. Without it they do not: a CUDA matmul
+    #: reduces in whatever order it likes, which moved thousands of genes
+    #: across the generator's confidence threshold between two runs of the
+    #: same submission (DECISIONS.md D49). It costs some speed, and a run
+    #: that is not reproducible cannot be optimized against.
+    deterministic: bool = True
     #: Output genes decoded per training step, sampled fresh each time. The
     #: loss is a mean over genes, so a subsample is an unbiased estimate of
     #: it, and the decoder's cost is linear in this. 0 means every gene —

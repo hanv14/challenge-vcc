@@ -173,9 +173,22 @@ def _compose(cfg, run_paths, paths, on_mini, **parts) -> str:
     checklist = parts["checklist"]
     sections: list[str] = []
     sections.append(f"# Virtual Cell Challenge 2026 — prototype results\n")
+    stamp = checklist.get("provenance", {})
+    git = stamp.get("git", {})
     sections.append(
         f"Run `{cfg.run_name}` · seed {cfg.seed} · data `{cfg.data_root}` · "
         f"config `{cfg.source}`\n"
+    )
+    sections.append(
+        f"Built from commit `{git.get('short', 'unknown')}`"
+        + (" **with uncommitted changes**" if git.get("dirty") else "")
+        + f" on `{git.get('branch', 'unknown')}` · "
+        + " · ".join(
+            f"{name} {version}"
+            for name, version in sorted(stamp.get("packages", {}).items())
+            if name in ("torch", "cell-eval2")
+        )
+        + f" · {stamp.get('started_at', '')}\n"
     )
     if on_mini:
         sections.append(MINI_WARNING + "\n")

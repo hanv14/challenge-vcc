@@ -196,3 +196,65 @@ def test_no_shipped_command_uses_skip_check(repo_root):
             if "-m vccp" in line and "--skip-check" in line:
                 offenders.append(f"{path.name}:{lineno}")
     assert not offenders, f"--skip-check appears in a shipped command at {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# a finished stage whose inputs moved is not finished
+# --------------------------------------------------------------------------- #
+def test_a_stage_reruns_when_its_inputs_are_rewritten(tmp_path):
+    """A `predict` rerun left `validate` and `package` silently skipped, and
+    the .vcc on disk described predictions that no longer existed."""
+    import time
+
+    from vccp import cli as cli_mod
+
+    code, run_paths = run("all", ["--allow-warnings"], tmp_path=tmp_path)
+    assert code == 0
+    digest = json.loads(run_paths.stage_marker("validate").read_text())["config_hash"]
+    assert cli_mod._is_done(run_paths, "validate", digest) is True
+
+    # Touch a prediction block, as a rerun of `predict` would.
+    block = next(run_paths.predictions_dir.glob("*/*.npz"))
+    time.sleep(0.01)
+    block.touch()
+
+    assert cli_mod._is_done(run_paths, "validate", digest) is False
+    assert cli_mod._is_done(run_paths, "sanity", digest) is False
+    # `package` reads the submission, which has not moved.
+    package_digest = json.loads(run_paths.stage_marker("package").read_text())
+    assert cli_mod._is_done(run_paths, "package", package_digest["config_hash"]) is True
+
+
+def test_a_stage_without_inputs_still_resumes(tmp_path):
+    from vccp import cli as cli_mod
+
+    _, run_paths = run("check-data", tmp_path=tmp_path)
+    digest = json.loads(run_paths.stage_marker("check-data").read_text())["config_hash"]
+    assert cli_mod._is_done(run_paths, "check-data", digest) is True
+
+
+def test_package_refuses_a_submission_older_than_the_predictions(tmp_path):
+    import time
+
+    from vccp.submit.stage import run_package
+
+    code, run_paths = run("all", ["--allow-warnings"], tmp_path=tmp_path)
+    assert code == 0
+
+    time.sleep(0.01)
+    next(run_paths.predictions_dir.glob("*/*.npz")).touch()
+
+    from vccp.config import load_config
+
+    cfg = tiny(load_config(MINI_CONFIG), tmp_path)
+    with pytest.raises(RuntimeError, match="older than the predictions"):
+        run_package(cfg, None)
+
+
+def test_the_run_config_records_the_code_that_made_it(tmp_path):
+    _, run_paths = run("check-data", tmp_path=tmp_path)
+    recorded = yaml.safe_load(run_paths.config.read_text())["provenance"]
+
+    assert set(recorded) >= {"git", "packages", "python", "started_at"}
+    assert "torch" in recorded["packages"]
+    assert "commit" in recorded["git"]

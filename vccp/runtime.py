@@ -32,11 +32,20 @@ THREAD_VARS = (
 #: which can only lower a pool further, never raise one the environment set.
 DEFAULT_THREADS = 1
 
+#: cuBLAS needs a fixed workspace for its reductions to be reproducible, and
+#: it reads this **once, when CUDA initializes** — so like the thread
+#: variables it has to be set before torch is imported, not when the config
+#: is read. `:4096:8` is the setting torch's own documentation names.
+CUBLAS_WORKSPACE = "CUBLAS_WORKSPACE_CONFIG"
+CUBLAS_WORKSPACE_VALUE = ":4096:8"
+
 
 def set_thread_env(threads: int = DEFAULT_THREADS) -> dict[str, str]:
     """Set every thread variable that is unset. Returns the effective values."""
     for var in THREAD_VARS:
         os.environ.setdefault(var, str(threads))
+    # Never overridden either: whatever the environment says, it keeps.
+    os.environ.setdefault(CUBLAS_WORKSPACE, CUBLAS_WORKSPACE_VALUE)
     return {var: os.environ[var] for var in THREAD_VARS}
 
 
@@ -93,6 +102,55 @@ def resolve_device(requested: str) -> str:
         return "cuda:0" if available else "cpu"
 
     raise ValueError(f"unknown device {requested!r}")
+
+
+def set_determinism(enabled: bool, device: str) -> dict[str, Any]:
+    """Make two runs of the same checkpoint agree, bit for bit.
+
+    Seeds alone do not do this. They fix which cells are drawn and which way
+    a coin lands; they say nothing about the order a CUDA matmul reduces in,
+    or whether it rounds through TF32. Those choices move the predicted
+    values in their last bits, and a threshold applied afterwards turns that
+    into thousands of genes moving or not moving.
+
+    `warn_only` because a few ops have no deterministic implementation: a
+    warning names them and the run continues, which is better than failing
+    at hour three of twelve.
+    """
+    import torch
+
+    if not enabled:
+        return {"deterministic": False}
+
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # TF32 trades mantissa bits for speed on matmuls — the single largest
+    # source of run-to-run drift on an Ampere or later GPU.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+    workspace = os.environ.get(CUBLAS_WORKSPACE)
+    report = {
+        "deterministic": True,
+        "cudnn_deterministic": True,
+        "cudnn_benchmark": False,
+        "tf32": False,
+        CUBLAS_WORKSPACE: workspace or "<unset>",
+        "warn_only": True,
+        "note": "seeds fix the sampling; this fixes the arithmetic",
+    }
+    if not workspace and device == "cuda":
+        # Saying "deterministic" while cuBLAS is free to reduce as it likes
+        # would be worse than saying nothing. `vccp/__main__.py` sets it
+        # before torch is imported; anything that bypasses that entry point
+        # has to set it itself, and only before CUDA initializes.
+        report["warning"] = (
+            f"{CUBLAS_WORKSPACE} is unset, so cuBLAS reductions are still free to "
+            f"vary. Set {CUBLAS_WORKSPACE}={CUBLAS_WORKSPACE_VALUE} before the "
+            "process imports torch — `python -m vccp` does this for you."
+        )
+    return report
 
 
 def apply_resources(device: str, cpu_threads: int, gpu_memory_fraction: float) -> None:

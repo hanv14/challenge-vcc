@@ -204,6 +204,33 @@ projector.
 
 ---
 
+## Keeping track of what you submitted
+
+Every run stamps the code that produced it — the git commit, whether the tree
+was dirty and which files differed, and the versions of torch, numpy, scipy,
+anndata, cell-eval2 and pdex. It goes into `config.yaml`, `checklist.json`
+and the top of `reports/summary.md`, and the commit is logged on the first
+line of every run. Any `.vcc` can therefore be traced to the code that made
+it.
+
+Two habits make that worth something:
+
+* **one run name per submission** — `--run-name server_v1`, `server_v2`, … so
+  a new run never overwrites a previous version's artifacts;
+* **record three columns per upload**: run name, commit, leaderboard score.
+
+The settings that decide a prediction live in `phase3_policy.json` (the
+generator's threshold and scale) and `predictions/model/index.json` (what the
+blocks were actually built with). Those two, plus the commit, are the whole
+provenance of a submission.
+
+Runs are also **reproducible**: `train.deterministic` (on by default) turns
+off TF32, asks torch for deterministic kernels and fixes the cuBLAS
+workspace, so the same checkpoint and seeds give the same predictions. And a
+stage whose inputs have been rewritten since it ran is no longer considered
+finished — rerunning `predict` un-finishes `sanity` and `validate`, so a
+`.vcc` can never quietly describe predictions that no longer exist.
+
 ## Where the outputs go
 
 Everything is under `output_root/<run_name>/` and nothing is written anywhere

@@ -106,8 +106,11 @@ def build(cfg, run_paths) -> dict[str, Any]:
         items.append(Item(number, element, section, [str(a) for a in artifacts],
                           status, reason, present))
 
+    from . import provenance
+
     return {
         "run": str(run_paths.root),
+        "provenance": provenance.describe(cfg),
         "n_items": len(items),
         "n_done": sum(1 for i in items if i.status == DONE),
         "n_deviation": sum(1 for i in items if i.status == DEVIATION),

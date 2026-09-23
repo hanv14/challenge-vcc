@@ -94,3 +94,67 @@ def test_the_check_writes_nothing(mini_cfg, tmp_path):
     cfg = dataclasses.replace(mini_cfg, output_root=tmp_path / "untouched")
     check_environment(cfg)
     assert not (tmp_path / "untouched").exists()
+
+
+# --------------------------------------------------------------------------- #
+# provenance and determinism
+# --------------------------------------------------------------------------- #
+def test_the_stamp_names_the_commit_and_whether_it_was_clean(mini_cfg):
+    from vccp import provenance
+
+    stamp = provenance.describe(mini_cfg)
+    git = stamp["git"]
+    assert git["commit"] != provenance.UNKNOWN, "this repository is a git checkout"
+    assert isinstance(git["dirty"], bool)
+    assert git["short"] == git["commit"][:12]
+    assert stamp["packages"]["torch"] != provenance.UNKNOWN
+    assert provenance.one_line(stamp).startswith(git["short"])
+
+
+def test_the_stamp_survives_a_directory_that_is_not_a_checkout(mini_cfg, tmp_path):
+    """It must never fail a run — a copied tree, or a machine without git."""
+    import dataclasses
+
+    from vccp import provenance
+
+    detached = dataclasses.replace(mini_cfg, repo_root=tmp_path)
+    stamp = provenance.describe(detached)
+    assert stamp["git"]["commit"] in (provenance.UNKNOWN,) or stamp["git"]["commit"]
+    assert stamp["python"]
+
+
+def test_determinism_is_on_by_default_and_can_be_turned_off(mini_cfg):
+    from vccp.runtime import set_determinism
+
+    assert mini_cfg.train.deterministic is True
+
+    from vccp.runtime import CUBLAS_WORKSPACE, CUBLAS_WORKSPACE_VALUE, set_thread_env
+
+    set_thread_env()  # what `python -m vccp` does before importing torch
+    on = set_determinism(True, "cpu")
+    assert on["deterministic"] is True
+    assert on["tf32"] is False
+    assert on[CUBLAS_WORKSPACE] == CUBLAS_WORKSPACE_VALUE
+
+    assert set_determinism(False, "cpu") == {"deterministic": False}
+
+
+def test_determinism_warns_when_the_cublas_workspace_never_got_set(monkeypatch):
+    """Claiming determinism while cuBLAS is free to reduce as it likes would
+    be worse than claiming nothing."""
+    from vccp.runtime import CUBLAS_WORKSPACE, set_determinism
+
+    monkeypatch.delenv(CUBLAS_WORKSPACE, raising=False)
+    assert "warning" not in set_determinism(True, "cpu"), "only matters on CUDA"
+    assert CUBLAS_WORKSPACE in set_determinism(True, "cuda")["warning"]
+
+
+def test_the_cublas_workspace_is_set_before_torch_would_read_it():
+    """It is read once, when CUDA initializes, so it belongs with the thread
+    variables in `__main__` — not with the config."""
+    import os
+
+    from vccp.runtime import CUBLAS_WORKSPACE, set_thread_env
+
+    set_thread_env()
+    assert os.environ[CUBLAS_WORKSPACE]

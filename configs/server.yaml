@@ -20,6 +20,12 @@ resources:
 # them; `vccp/config.py` documents each one.
 
 train:
+  # Two runs of the same checkpoint, with the same seeds, produce the same
+  # predictions. Seeds alone do not give you that: a CUDA matmul reduces in
+  # whatever order it likes and TF32 drops mantissa bits, which moved
+  # thousands of genes across the generator's threshold between two runs of
+  # the same submission. Costs some speed; set false if you need it back.
+  deterministic: true
   # Output genes decoded per training step. The loss is a mean over genes, so
   # a subsample is an unbiased estimate of it and the decoder's cost is linear
   # in this. Lower it first if the GPU runs out of memory.

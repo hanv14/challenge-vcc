@@ -51,6 +51,31 @@ def _sanity_gate(cfg: Config, run_paths: RunPaths, allow_warnings: bool) -> dict
     return report
 
 
+def _newest_block(run_paths: RunPaths) -> float | None:
+    from ..cli import newest_mtime
+
+    return newest_mtime(run_paths.predictions_dir.glob("*/*.npz"))
+
+
+def refuse_if_stale(run_paths: RunPaths, artifact, what: str, rerun: str) -> None:
+    """Refuse an artifact older than the predictions it claims to describe.
+
+    A submission is uploaded once and scored for weeks; one built from
+    predictions that have since been overwritten is worse than no submission,
+    because nothing about it looks wrong.
+    """
+    blocks = _newest_block(run_paths)
+    if blocks is None or not artifact.is_file():
+        return
+    if artifact.stat().st_mtime < blocks:
+        raise RuntimeError(
+            f"{artifact} is older than the predictions it would describe — the "
+            f"blocks under {run_paths.predictions_dir} have been rewritten since "
+            f"{what} ran. Run `{rerun}` first, or the submission will describe "
+            "predictions that no longer exist."
+        )
+
+
 def run_validate(cfg: Config, options=None) -> dict[str, Any]:
     """Assemble the submission, then check it against §8 (item 13)."""
     log = get_logger()
@@ -59,6 +84,10 @@ def run_validate(cfg: Config, options=None) -> dict[str, Any]:
     run_paths.ensure()
     paths = DataPaths(cfg)
 
+    refuse_if_stale(
+        run_paths, run_paths.sanity_report, "the sanity checks",
+        "python -m vccp sanity --config <config> --force",
+    )
     sanity = _sanity_gate(cfg, run_paths, allow_warnings)
     spec = load_spec(cfg)
 
@@ -113,6 +142,10 @@ def run_package(cfg: Config, options=None) -> dict[str, Any]:
         raise RuntimeError(
             f"{run_paths.submission} does not exist: run the `validate` stage first"
         )
+    refuse_if_stale(
+        run_paths, run_paths.submission, "the submission writer",
+        "python -m vccp validate --config <config> --force",
+    )
 
     on_mini = cfg.on_mini_data
     result = package_mod.package(

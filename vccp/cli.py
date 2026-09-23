@@ -25,12 +25,14 @@ import yaml
 from .config import Config, ConfigError, config_to_dict, load_config
 from .logging_utils import banner, get_logger, setup_logging
 from .paths import RunPaths
+from . import provenance
 from .runtime import (
     apply_resources,
     effective_thread_env,
     release_gpu_memory,
     resolve_device,
     seed_everything,
+    set_determinism,
 )
 
 @dataclass(frozen=True)
@@ -165,29 +167,87 @@ def config_hash(cfg: Config) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
+def newest_mtime(paths) -> float | None:
+    """The most recent mtime among `paths`, or None if none exist."""
+    stamps = [Path(p).stat().st_mtime for p in paths if Path(p).exists()]
+    return max(stamps) if stamps else None
+
+
+def _prediction_blocks(run_paths: RunPaths) -> float | None:
+    return newest_mtime(run_paths.predictions_dir.glob("*/*.npz"))
+
+
+def _submission(run_paths: RunPaths) -> float | None:
+    return newest_mtime([run_paths.submission])
+
+
+#: Stages whose work is invalidated by something *other* than the config.
+#: `sanity` and `validate` read the prediction blocks, and `package` reads the
+#: assembled submission; if those have been rewritten since the stage ran, the
+#: stage is not done however its marker reads. Without this a `predict` rerun
+#: leaves `validate` and `package` silently skipped, and the `.vcc` on disk
+#: describes predictions that no longer exist (DECISIONS.md D50).
+STAGE_INPUTS: dict[str, Any] = {
+    SANITY: _prediction_blocks,
+    VALIDATE: _prediction_blocks,
+    PACKAGE: _submission,
+}
+
+
+def _input_mtime(run_paths: RunPaths, stage: str) -> float | None:
+    probe = STAGE_INPUTS.get(stage)
+    return probe(run_paths) if probe else None
+
+
 def _is_done(run_paths: RunPaths, stage: str, digest: str) -> bool:
     marker = run_paths.stage_marker(stage)
     if not marker.is_file():
         return False
     try:
-        recorded = json.loads(marker.read_text()).get("config_hash")
+        recorded = json.loads(marker.read_text())
     except (json.JSONDecodeError, OSError):
         return False
-    return recorded == digest
+    if recorded.get("config_hash") != digest:
+        return False
+
+    current = _input_mtime(run_paths, stage)
+    if current is None:
+        return True
+    previous = recorded.get("input_mtime")
+    if previous is None or current > previous:
+        get_logger().info(
+            "%s ran before its inputs were last written; rerunning it rather than "
+            "leaving stale output in place", stage,
+        )
+        return False
+    return True
 
 
 def _mark_done(run_paths: RunPaths, stage: str, digest: str) -> None:
     run_paths.stage_marker(stage).write_text(
-        json.dumps({"stage": stage, "config_hash": digest}, indent=2)
+        json.dumps(
+            {
+                "stage": stage,
+                "config_hash": digest,
+                "input_mtime": _input_mtime(run_paths, stage),
+            },
+            indent=2,
+        )
     )
 
 
-def write_run_config(cfg: Config, run_paths: RunPaths, *, checks_skipped: bool) -> None:
-    """Record exactly what this run was given, including whether the data
-    checks were skipped — that fact has to survive into the run directory."""
+def write_run_config(
+    cfg: Config, run_paths: RunPaths, *, checks_skipped: bool,
+    stamp: dict[str, Any] | None = None,
+) -> None:
+    """Record exactly what this run was given: the settings, whether the data
+    checks were skipped, and the code that produced it."""
+    from . import provenance
+
     payload = config_to_dict(cfg)
     payload["checks_skipped"] = checks_skipped
     payload["config_hash"] = config_hash(cfg)
+    payload["provenance"] = stamp or provenance.describe(cfg)
     run_paths.config.write_text(yaml.safe_dump(payload, sort_keys=False))
 
 
@@ -278,6 +338,10 @@ def main(argv: list[str] | None = None) -> int:
     device = resolve_device(cfg.device)
     apply_resources(device, cfg.resources.cpu_threads, cfg.resources.gpu_memory_fraction)
     seed_everything(cfg.seed)
+    determinism = set_determinism(cfg.train.deterministic, device)
+
+    stamp = provenance.describe(cfg)
+    log.info("code          : %s", provenance.one_line(stamp))
 
     log.info("device        : %s (config: %s)", device, cfg.device)
     log.info(
@@ -288,6 +352,11 @@ def main(argv: list[str] | None = None) -> int:
         cfg.resources.max_ram_gb,
     )
     log.info("thread env    : %s", _format_env(effective_thread_env()))
+    log.info(
+        "determinism   : %s",
+        "on (tf32 off, deterministic kernels)" if determinism["deterministic"]
+        else "OFF — two runs of the same checkpoint may differ (train.deterministic)",
+    )
 
     stages = stage_names() if args.stage == "all" else [args.stage]
 
@@ -302,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         log.warning("!" * 72)
         log.warning("")
 
-    write_run_config(cfg, run_paths, checks_skipped=args.skip_check)
+    write_run_config(cfg, run_paths, checks_skipped=args.skip_check, stamp=stamp)
 
     options = StageOptions(allow_warnings=args.allow_warnings)
     try:
