@@ -17,48 +17,22 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from vccp import cli
 from vccp.data import manifest as manifest_mod
 from vccp.data import reference
 from vccp.paths import DataPaths, RunPaths
 from vccp.phases import phase3 as phase3_mod
 from vccp.rehearsal import common, stage as rehearsal_stage
 
-STAGES = ("priors", "phase1", "phase2", "rehearsal", "phase3", "predict")
+@pytest.fixture(scope="module")
+def m4_cfg(pipeline_cfg):
+    """The shared pipeline config (tests/conftest.py)."""
+    return pipeline_cfg
 
 
 @pytest.fixture(scope="module")
-def m4_cfg(tmp_path_factory):
-    """The mini config at budgets that exercise the wiring, not the training."""
-    from vccp.config import load_config
-
-    from tests.conftest import MINI_CONFIG
-
-    cfg = load_config(MINI_CONFIG)
-    return dataclasses.replace(
-        cfg,
-        output_root=tmp_path_factory.mktemp("m4"),
-        phase1=dataclasses.replace(cfg.phase1, steps=1, batch_size=2),
-        phase2=dataclasses.replace(cfg.phase2, steps=1, batch_size=2, cells_per_draw=2),
-        train=dataclasses.replace(
-            cfg.train, output_genes_per_step=8, log_every=1, core_freeze_ablation=False
-        ),
-        rehearsal=dataclasses.replace(
-            cfg.rehearsal, max_targets=2, adapt_steps=1, phase2_steps=1,
-            calibration_thresholds=(0.0, 0.25), calibration_scales=(0.5, 1.0),
-        ),
-        phase3=dataclasses.replace(cfg.phase3, adapt_steps=1, batch_size=2),
-        # The scale runs the scorer many more times; it is tested on its own.
-        eval=dataclasses.replace(cfg.eval, build_scale=False),
-    )
-
-
-@pytest.fixture(scope="module")
-def m4_run(m4_cfg):
-    """One run of every M4 stage, shared by the tests below."""
-    for stage in STAGES:
-        cli.STAGES[stage](m4_cfg)
-    return RunPaths(m4_cfg)
+def m4_run(pipeline_run):
+    """The shared pipeline run (tests/conftest.py)."""
+    return pipeline_run
 
 
 # --------------------------------------------------------------------------- #
@@ -273,7 +247,10 @@ def test_nothing_holds_every_target_at_once(m4_run, prediction_index):
     stream them back one at a time."""
     contexts = {b["context"] for b in prediction_index["blocks"]}
     for context in contexts:
-        files = sorted((m4_run.predictions_dir / context).glob("*.npz"))
-        assert len(files) == sum(
+        blocks = sorted(
+            path for path in (m4_run.predictions_dir / context).glob("*.npz")
+            if path != m4_run.fold_changes(context)
+        )
+        assert len(blocks) == sum(
             1 for b in prediction_index["blocks"] if b["context"] == context
         )

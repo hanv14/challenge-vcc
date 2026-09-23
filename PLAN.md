@@ -9,7 +9,7 @@ the user on review**, and each now records the decision taken. Section 9 lists t
 points where those decisions depart from `CLAUDE.md` as written — these are also recorded in
 `DECISIONS.md` and go into the final message.
 
-**Status: M0, M1, M2, M3 and M4 complete.** Sections 1–7 are the build plan; module names in §2 that do
+**Status: M0–M5 complete.** Sections 1–7 are the build plan; module names in §2 that do
 not exist yet are what later milestones will add.
 
 ---
@@ -363,9 +363,15 @@ blocks to an on-disk sparse dataset (`indptr` int64, integer dtype for the data,
 `eliminate_zeros()` on every block), with `obs` = exactly `target_gene` and `context`, no
 control rows, and `var` index = `gene_names.csv` in order — the format of `CLAUDE.md` §8.
 
-`submit/validator.py` checks every rule of §8 before anything else and writes
-`reports/validate.json`. `submit/limits.py` holds the format constants
-(`max_counts_per_cell`, `max_stored_entries`) as config defaults, not as module literals.
+`submit/validator.py` checks every rule of §8 and writes `reports/validate.json`. The
+format constants (`max_counts_per_cell`, `max_stored_entries`) are config keys under
+`submission:`, not module literals, so a test can shrink them and watch the rule bite.
+
+**There is no `submit` stage**: §7's stage list has none, and §6.1 requires that a failure
+of sanity check 1 stop the pipeline *before the submission is written*. So `validate`
+assembles the file and then validates what it wrote, after `sanity` has run
+(DECISIONS.md D42). Sanity check 1 applies §8's rules to the prediction blocks and
+`validate` applies the same rules, through the same code, to the assembled file.
 
 **The user packages the submission themselves** (§8.1, §8.10). `submit/package.py` is still
 built — it detects `vcc` with `shutil.which` and runs `vcc prep --dry-run` / writes the
@@ -394,7 +400,19 @@ Both halves report the violating fraction and the worst offenders by name.
 **Check 5** is computed on `log1p(CP10K)` per gene, taking the median over genes, against the
 same statistic on that context's control cells.
 
+Two things the first mini runs changed (DECISIONS.md D37, D39): the first half of check 2 is
+judged in **count space**, because moving some genes shifts every other gene's *normalized*
+level through the library size; and every log fold change the pipeline forms is floored at
+`predict.cpm_floor` (0.01 CP10K), because with a bare epsilon a gene switched off at 0.05
+CP10K reads as a 15-log2 drop that describes the arithmetic rather than the prediction.
+**Check 4** removes every target gene's column, not only each row's own, or two identical
+predictions can never be detected as identical (D40).
+
 ### 4.8 Item 15 — results summary
+
+`checklist.py` walks §4.8 and reports each item as `done`, a `deviation` with its reason, or
+`missing` — which is a failure, not a deviation. It is written by the `report` stage, after
+`summary.md` exists, because item 15's own artifact is that file.
 
 `report/summary.py` collects, without re-running anything: data sizes per source; the method
 as built with checklist status and deviations; Phase 1 and Phase 2 held-out metrics and
@@ -495,7 +513,7 @@ All tests run on `mini_data`, on CPU, and are fast. Beyond the per-element tests
 | M2 | prior blocks 1–6 (7 gated), both roles, embedding module, prior checks | items 1–4 artifacts exist ✅ |
 | M3 | gene-token core, adapters, freeze check, forgetting guard + core-freeze ablation, Phase 1, Phase 2 | items 5–9 artifacts exist ✅ |
 | M4 | three rehearsal variants, calibration, `phase3_policy.json`, Phase 3, prediction, generator | items 10–12 artifacts exist ✅ |
-| M5 | submission writer, validator, sanity, summary, `checklist.json` | `python -m vccp all --config configs/mini.yaml` green |
+| M5 | submission writer, validator, sanity, summary, `checklist.json` | `python -m vccp all --config configs/mini.yaml` green ✅ |
 | M6 | README, DECISIONS.md, final message | definition of done in §9 of CLAUDE.md |
 
 Budget targets: `all` on `mini_data` under 15 minutes on CPU; `all` on the server under

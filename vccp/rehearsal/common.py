@@ -36,9 +36,10 @@ METHOD, UPPER_BOUND, FLOOR = "method", "upper_bound", "floor"
 PANEL_ASSISTED = "official_panel_assisted"
 END_TO_END = "official"
 
-#: Floor for the counts-per-10k conversion, so a gene that is zero in the
-#: control does not produce an infinite fold change.
-CPM_EPSILON = 1e-6
+#: Default floor for the counts-per-10k conversion — `predict.cpm_floor`
+#: overrides it. It is a floor rather than an epsilon on purpose: see the
+#: config key's own note.
+CPM_FLOOR = 0.01
 
 
 def arm_seed(variant: str, target: str, base_seed: int) -> int:
@@ -48,7 +49,10 @@ def arm_seed(variant: str, target: str, base_seed: int) -> int:
 
 
 def sd_units_to_log2fc(
-    predicted_sd: np.ndarray, ctrl_mean: np.ndarray, ctrl_std: np.ndarray
+    predicted_sd: np.ndarray,
+    ctrl_mean: np.ndarray,
+    ctrl_std: np.ndarray,
+    floor: float = CPM_FLOOR,
 ) -> np.ndarray:
     """Control-SD units to a log2 fold change the generator can apply.
 
@@ -61,11 +65,19 @@ def sd_units_to_log2fc(
     is the fold change between two *typical* cells rather than between two
     group means. It is the quantity a per-cell multiplicative change needs,
     and the generator applies it per cell.
+
+    Both sides are floored at `floor` CP10K, the level below which a gene is
+    not distinguishable from absent. Without it, a gene the model switches
+    off reads as a fold change set by the guard epsilon and by how faint the
+    control was — 15 log2 units for a gene at 0.05 CP10K — which is a
+    statement about the arithmetic rather than about the prediction.
     """
     predicted_lognorm = np.asarray(predicted_sd, dtype=np.float64) * ctrl_std + ctrl_mean
     predicted_cpm = np.expm1(np.maximum(predicted_lognorm, 0.0))
     control_cpm = np.expm1(np.maximum(np.asarray(ctrl_mean, dtype=np.float64), 0.0))
-    return np.log2((predicted_cpm + CPM_EPSILON) / (control_cpm + CPM_EPSILON)).astype(np.float32)
+    return np.log2(
+        np.maximum(predicted_cpm, floor) / np.maximum(control_cpm, floor)
+    ).astype(np.float32)
 
 
 @dataclass
@@ -159,6 +171,8 @@ def score_arm(
     scored = {
         **result.as_dict(),
         "normalized": nochange.summarize(result.scored),
+        # Per target, not averaged: sanity check 7 takes a median of ratios.
+        "nsig_counts": result.nsig_counts(),
     }
     if scale_reference is not None:
         from ..eval import scale as scale_mod

@@ -41,3 +41,9 @@ rehearsal:
 phase3:
   adapt_steps: 60
   batch_size: 16
+
+sanity:
+  # §6.1: on mini_data the statistics are noisy and warnings are expected, so
+  # `all` is not blocked by them here. `server.yaml` leaves this off, where a
+  # warning is worth stopping for. A **fail** stops the run either way.
+  accept_warnings: true

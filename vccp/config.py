@@ -281,10 +281,132 @@ class Predict:
     target_chunk: int = 1
     #: Control cells held in memory per context while generating.
     max_control_cells: int = 0
+    #: The expression level, in CP10K, below which a gene is not
+    #: distinguishable from absent. It is the floor of every log fold change
+    #: the pipeline forms, so that "this gene goes off" is a finite statement
+    #: rather than a number set by whichever epsilon guards the division: at
+    #: 1e-6 a gene sitting at 0.05 CP10K reads as a 15-log2 drop when it is
+    #: predicted to zero, which says more about the epsilon than about the
+    #: prediction. One count in a 20,000-UMI cell is 0.5 CP10K, so this is
+    #: fifty times below anything a single cell can show.
+    cpm_floor: float = 0.01
 
     def validate(self) -> None:
         if self.target_chunk < 1:
             raise ConfigError("predict.target_chunk must be at least 1")
+        if self.cpm_floor <= 0:
+            raise ConfigError("predict.cpm_floor must be positive")
+
+
+@dataclass(frozen=True)
+class Submission:
+    """The submission format (CLAUDE.md §8), whose limits are the challenge's.
+
+    They are config keys rather than module literals so that a round with
+    different limits needs no code change — and so that a test can shrink
+    them to check that the validator enforces them at all.
+    """
+
+    #: No cell may total more than this many counts.
+    max_counts_per_cell: int = 1_000_000
+    #: Stored entries in the whole file, explicit zeros included.
+    max_stored_entries: int = 4_750_000_000
+    #: Rows appended to the on-disk sparse dataset at a time. The file is
+    #: assembled block by block; nothing concatenates it in RAM (§8).
+    write_chunk_cells: int = 4096
+
+    def validate(self) -> None:
+        if self.max_counts_per_cell < 1:
+            raise ConfigError("submission.max_counts_per_cell must be at least 1")
+        if self.max_stored_entries < 1:
+            raise ConfigError("submission.max_stored_entries must be at least 1")
+        if self.write_chunk_cells < 1:
+            raise ConfigError("submission.write_chunk_cells must be at least 1")
+
+
+@dataclass(frozen=True)
+class Sanity:
+    """What "reasonable" means, check by check (CLAUDE.md §6.1).
+
+    Every threshold the seven checks use lives here, with the defaults the
+    specification names.
+    """
+
+    # check 2 — plausible magnitudes
+    library_ratio_low: float = 0.5
+    library_ratio_high: float = 2.0
+    #: How many standard errors of the control mean a gene the model did not
+    #: predict to move may sit from it, in **counts**. Those cells are
+    #: resampled control cells, so this is the sampling range their mean
+    #: should stay inside.
+    control_mean_sigmas: float = 6.0
+    #: The other half of check 2 (PLAN.md §8.5): genes the model *did* move
+    #: are bounded too, or the check leaves them free by construction.
+    max_abs_log2fc: float = 10.0
+
+    # check 3 — the knockdown is visible
+    knockdown_min_control_cpm: float = 1.0
+    knockdown_max_ratio: float = 0.7
+    knockdown_min_fraction: float = 0.9
+
+    # check 4 — targets differ
+    max_median_target_correlation: float = 0.95
+
+    # check 5 — cells vary
+    variance_ratio_low: float = 0.5
+    variance_ratio_high: float = 2.0
+
+    # check 7 — a reasonable number of DE calls
+    nsig_ratio_low: float = 0.25
+    nsig_ratio_high: float = 4.0
+
+    #: Worst offenders listed by name in the report.
+    max_reported: int = 10
+    #: Accept a warning-level result without `--allow-warnings`. §6.1 says
+    #: warnings are expected on `mini_data`, where the statistics are noisy,
+    #: so `mini.yaml` turns this on and `server.yaml` leaves it off — the
+    #: gate stays real where the numbers mean something. A **fail** still
+    #: stops the run either way.
+    accept_warnings: bool = False
+
+    def validate(self) -> None:
+        if not 0 < self.library_ratio_low < self.library_ratio_high:
+            raise ConfigError("sanity.library_ratio_low must be in (0, library_ratio_high)")
+        if not 0 < self.variance_ratio_low < self.variance_ratio_high:
+            raise ConfigError("sanity.variance_ratio_low must be in (0, variance_ratio_high)")
+        if not 0 < self.nsig_ratio_low < self.nsig_ratio_high:
+            raise ConfigError("sanity.nsig_ratio_low must be in (0, nsig_ratio_high)")
+        if not 0 < self.knockdown_max_ratio <= 1:
+            raise ConfigError("sanity.knockdown_max_ratio must be in (0, 1]")
+        if not 0 < self.knockdown_min_fraction <= 1:
+            raise ConfigError("sanity.knockdown_min_fraction must be in (0, 1]")
+        if not 0 < self.max_median_target_correlation <= 1:
+            raise ConfigError("sanity.max_median_target_correlation must be in (0, 1]")
+        if self.max_abs_log2fc <= 0:
+            raise ConfigError("sanity.max_abs_log2fc must be positive")
+        if self.control_mean_sigmas <= 0:
+            raise ConfigError("sanity.control_mean_sigmas must be positive")
+        if self.max_reported < 1:
+            raise ConfigError("sanity.max_reported must be at least 1")
+
+
+@dataclass(frozen=True)
+class Report:
+    """The results summary for the proposal defense (CLAUDE.md §5)."""
+
+    #: Figures are drawn for a projector: large fonts, labelled axes.
+    figure_dpi: int = 150
+    font_size: int = 14
+    #: Targets drawn in the predicted-vs-true scatter panel.
+    max_scatter_targets: int = 4
+
+    def validate(self) -> None:
+        if self.figure_dpi < 50:
+            raise ConfigError("report.figure_dpi must be at least 50")
+        if self.font_size < 6:
+            raise ConfigError("report.font_size must be at least 6")
+        if self.max_scatter_targets < 1:
+            raise ConfigError("report.max_scatter_targets must be at least 1")
 
 
 @dataclass(frozen=True)
@@ -374,6 +496,9 @@ class Config:
     predict: Predict = field(default_factory=Predict)
     rehearsal: Rehearsal = field(default_factory=Rehearsal)
     eval: Eval = field(default_factory=Eval)
+    submission: Submission = field(default_factory=Submission)
+    sanity: Sanity = field(default_factory=Sanity)
+    report: Report = field(default_factory=Report)
 
     source: Path | None = None
     repo_root: Path | None = None
@@ -410,6 +535,9 @@ class Config:
         self.predict.validate()
         self.rehearsal.validate()
         self.eval.validate()
+        self.submission.validate()
+        self.sanity.validate()
+        self.report.validate()
 
 
 def _resolve(value: str, base: Path) -> Path:
@@ -461,6 +589,9 @@ def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config
         ("predict", Predict),
         ("rehearsal", Rehearsal),
         ("eval", Eval),
+        ("submission", Submission),
+        ("sanity", Sanity),
+        ("report", Report),
     ):
         section_raw = raw.pop(name, {}) or {}
         if not isinstance(section_raw, dict):

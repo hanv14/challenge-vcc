@@ -70,6 +70,30 @@ class OfficialScore:
     def complete(self) -> bool:
         return all(name in self.metrics for name in SCORED)
 
+    def per_target(self, metric: str) -> dict[str, float]:
+        """One metric's per-perturbation values, where the scorer emits them.
+
+        Sanity check 7 asks for the *median over targets* of a ratio of two
+        diagnostics, which the aggregate means cannot give.
+        """
+        if self.per_perturbation is None:
+            return {}
+        frame = self.per_perturbation.filter(self.per_perturbation["metric"] == metric)
+        return {
+            str(row["perturbation"]): float(row["value"])
+            for row in frame.iter_rows(named=True)
+            if row["value"] is not None and np.isfinite(row["value"])
+        }
+
+    def nsig_counts(self) -> dict[str, dict[str, float]]:
+        """`{target: {"real": n, "pred": n}}` from the scorer's diagnostics."""
+        real = self.per_target("de_wilcoxon_nsig_counts_real")
+        pred = self.per_target("de_wilcoxon_nsig_counts_pred")
+        return {
+            target: {"real": real[target], "pred": pred.get(target, 0.0)}
+            for target in sorted(real)
+        }
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "metrics": self.metrics,

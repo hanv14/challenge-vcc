@@ -80,10 +80,31 @@ def test_unknown_stage_is_rejected():
 
 
 def test_all_runs_every_registered_stage(tmp_path):
-    code, run_paths = run("all", tmp_path=tmp_path)
+    """CLAUDE.md §4.8: `all` on mini_data, every artifact present, every
+    checklist item `done` or an explicitly reported `deviation`.
+
+    `--allow-warnings` because mini_data's statistics are noisy and §6.1 says
+    warnings are expected there; a **fail** would still stop the run.
+    """
+    code, run_paths = run("all", ["--allow-warnings"], tmp_path=tmp_path)
     assert code == 0
     for stage in cli.stage_names():
         assert run_paths.stage_marker(stage).is_file(), stage
+
+    checklist = json.loads(run_paths.checklist.read_text())
+    assert checklist["n_items"] == 15
+    assert checklist["n_missing"] == 0, [
+        item for item in checklist["items"] if item["status"] == "missing"
+    ]
+    for item in checklist["items"]:
+        assert item["status"] in ("done", "deviation")
+        if item["status"] == "deviation":
+            assert item["reason"]
+
+    for artifact in (run_paths.submission, run_paths.validate_report,
+                     run_paths.sanity_report, run_paths.summary_md,
+                     run_paths.rehearsal_report, run_paths.phase3_policy):
+        assert artifact.is_file(), artifact
 
 
 def test_a_finished_stage_is_skipped_on_rerun(tmp_path):
@@ -143,7 +164,7 @@ def test_bad_config_returns_two(tmp_path):
 def test_skip_check_warns_and_is_recorded_in_the_run_config(tmp_path, caplog):
     """`--skip-check` must never pass quietly: the run directory has to say
     that nothing verified the inputs (PLAN.md §8.11)."""
-    code, run_paths = run("all", ["--skip-check"], tmp_path=tmp_path)
+    code, run_paths = run("all", ["--skip-check", "--allow-warnings"], tmp_path=tmp_path)
     assert code == 0
 
     recorded = yaml.safe_load(run_paths.config.read_text())
@@ -156,7 +177,7 @@ def test_skip_check_warns_and_is_recorded_in_the_run_config(tmp_path, caplog):
 
 
 def test_without_skip_check_the_run_config_says_so(tmp_path):
-    _, run_paths = run("all", tmp_path=tmp_path)
+    _, run_paths = run("all", ["--allow-warnings"], tmp_path=tmp_path)
     assert yaml.safe_load(run_paths.config.read_text())["checks_skipped"] is False
 
 

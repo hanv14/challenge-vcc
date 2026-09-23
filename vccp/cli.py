@@ -16,6 +16,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,19 @@ from .runtime import (
     seed_everything,
 )
 
-StageFn = Callable[[Config], Any]
+@dataclass(frozen=True)
+class StageOptions:
+    """Command-line choices a stage may need.
+
+    They are deliberately *not* part of the config: `--allow-warnings` says
+    what this invocation accepts, not what the run is, and it must not change
+    the config hash that decides which stages are already done.
+    """
+
+    allow_warnings: bool = False
+
+
+StageFn = Callable[..., Any]
 
 CHECK_DATA = "check-data"
 PRIORS = "priors"
@@ -42,6 +55,10 @@ REHEARSAL = "rehearsal"
 PHASE3 = "phase3"
 FORGETTING = "forgetting"
 PREDICT = "predict"
+SANITY = "sanity"
+VALIDATE = "validate"
+PACKAGE = "package"
+REPORT = "report"
 
 
 def _stage_check_data(cfg: Config) -> Any:
@@ -92,6 +109,30 @@ def _stage_forgetting(cfg: Config) -> Any:
     return run_forgetting(cfg)
 
 
+def _stage_sanity(cfg: Config) -> Any:
+    from .sanity.stage import run_sanity
+
+    return run_sanity(cfg)
+
+
+def _stage_validate(cfg: Config, options: StageOptions) -> Any:
+    from .submit.stage import run_validate
+
+    return run_validate(cfg, options)
+
+
+def _stage_package(cfg: Config, options: StageOptions) -> Any:
+    from .submit.stage import run_package
+
+    return run_package(cfg, options)
+
+
+def _stage_report(cfg: Config) -> Any:
+    from .report.summary import build_summary
+
+    return build_summary(cfg)
+
+
 #: Stage name -> implementation, in the order `all` runs them.
 STAGES: dict[str, StageFn] = {
     CHECK_DATA: _stage_check_data,
@@ -104,6 +145,12 @@ STAGES: dict[str, StageFn] = {
     # — which is what checklist item 7 asks for.
     FORGETTING: _stage_forgetting,
     PREDICT: _stage_predict,
+    # §6.1: sanity runs on the predictions *before* the submission is written,
+    # so a violation stops the pipeline instead of producing a bad file.
+    SANITY: _stage_sanity,
+    VALIDATE: _stage_validate,
+    PACKAGE: _stage_package,
+    REPORT: _stage_report,
 }
 
 
@@ -144,7 +191,21 @@ def write_run_config(cfg: Config, run_paths: RunPaths, *, checks_skipped: bool) 
     run_paths.config.write_text(yaml.safe_dump(payload, sort_keys=False))
 
 
-def run_stage(stage: str, cfg: Config, run_paths: RunPaths, *, force: bool) -> Any:
+def _call(stage: str, cfg: Config, options: StageOptions) -> Any:
+    """Stages take the config; the few that need the invocation's own choices
+    take the options too."""
+    import inspect
+
+    function = STAGES[stage]
+    if len(inspect.signature(function).parameters) > 1:
+        return function(cfg, options)
+    return function(cfg)
+
+
+def run_stage(
+    stage: str, cfg: Config, run_paths: RunPaths, *, force: bool,
+    options: StageOptions | None = None,
+) -> Any:
     log = get_logger()
     digest = config_hash(cfg)
     if not force and _is_done(run_paths, stage, digest):
@@ -152,7 +213,7 @@ def run_stage(stage: str, cfg: Config, run_paths: RunPaths, *, force: bool) -> A
         return None
 
     banner(f"stage: {stage}")
-    result = STAGES[stage](cfg)
+    result = _call(stage, cfg, options or StageOptions())
     _mark_done(run_paths, stage, digest)
     release_gpu_memory()
     return result
@@ -179,6 +240,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip check-data in 'all' (NOT recommended: it is what catches a bad "
         "input layout before hours of training)",
+    )
+    parser.add_argument(
+        "--allow-warnings",
+        action="store_true",
+        help="accept a submission the sanity checks warned about (§6.1). Warnings are "
+        "expected on mini_data; on the real data, read sanity/summary.txt first.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     return parser
@@ -237,9 +304,10 @@ def main(argv: list[str] | None = None) -> int:
 
     write_run_config(cfg, run_paths, checks_skipped=args.skip_check)
 
+    options = StageOptions(allow_warnings=args.allow_warnings)
     try:
         for stage in stages:
-            run_stage(stage, cfg, run_paths, force=args.force)
+            run_stage(stage, cfg, run_paths, force=args.force, options=options)
     except Exception as exc:  # noqa: BLE001 — the CLI is the boundary
         log.error("%s", exc)
         return 1

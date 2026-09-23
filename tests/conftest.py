@@ -111,6 +111,46 @@ def built_priors(session_cfg):
     return build_priors(session_cfg)
 
 
+@pytest.fixture(scope="session")
+def pipeline_cfg(tmp_path_factory) -> Config:
+    """The mini config at budgets that exercise the wiring, not the training.
+
+    Every stage runs for real; only the step counts are cut. One run is shared
+    by every test that needs a finished pipeline, because running the stages
+    is the slowest thing in the suite by far.
+    """
+    cfg = load_config(MINI_CONFIG)
+    return dataclasses.replace(
+        cfg,
+        output_root=tmp_path_factory.mktemp("pipeline"),
+        phase1=dataclasses.replace(cfg.phase1, steps=1, batch_size=2),
+        phase2=dataclasses.replace(cfg.phase2, steps=1, batch_size=2, cells_per_draw=2),
+        train=dataclasses.replace(
+            cfg.train, output_genes_per_step=8, log_every=1, core_freeze_ablation=False
+        ),
+        rehearsal=dataclasses.replace(
+            cfg.rehearsal, max_targets=2, adapt_steps=1, phase2_steps=1,
+            calibration_thresholds=(0.0, 0.25), calibration_scales=(0.5, 1.0),
+        ),
+        phase3=dataclasses.replace(cfg.phase3, adapt_steps=1, batch_size=2),
+        # The leaderboard scale runs the scorer many more times; it is tested
+        # on its own in test_official.py.
+        eval=dataclasses.replace(cfg.eval, build_scale=False),
+    )
+
+
+@pytest.fixture(scope="session")
+def pipeline_run(pipeline_cfg):
+    """Every stage, run once, in order — the run the M4/M5 tests read."""
+    from vccp import cli
+    from vccp.paths import RunPaths
+
+    options = cli.StageOptions(allow_warnings=True)
+    for stage in cli.stage_names():
+        cli._call(stage, pipeline_cfg, options)
+    return RunPaths(pipeline_cfg)
+
+
 @pytest.fixture
 def mirrored_cfg(tmp_path: Path) -> Config:
     """Like `mini_cfg`, but reading a symlink mirror the test may break."""

@@ -108,6 +108,7 @@ def predicted_log2fc(
     context: phase3.ChallengeContext,
     target_idx: torch.Tensor | None,
     n_genes: int,
+    cpm_floor: float,
 ) -> tuple[np.ndarray, bool]:
     """Steps 1 and 2: the whole gene axis, as a log2 fold change vs control.
 
@@ -128,7 +129,10 @@ def predicted_log2fc(
     full = np.zeros(n_genes, dtype=np.float32)
     full[context.panel_positions] = panel.squeeze(0).cpu().numpy()
     full[context.rest_positions] = rest.squeeze(0).cpu().numpy()
-    return common.sd_units_to_log2fc(full, context.ctrl_mean, context.ctrl_std), True
+    return (
+        common.sd_units_to_log2fc(full, context.ctrl_mean, context.ctrl_std, cpm_floor),
+        True,
+    )
 
 
 def save_block(path, counts: np.ndarray) -> int:
@@ -241,14 +245,20 @@ def run_predict(cfg: Config) -> dict[str, Any]:
         )
 
         knockdown_records = []
+        applied_changes = []
         for target in plan[name]:
             n_cells = _cells_for(target, manifest, pert_counts)
             target_position = gene_index.get(target)
             target_idx = (
                 as_index([target_position], device) if target_position is not None else None
             )
-            log2fc, used_token = predicted_log2fc(model, context, target_idx, n_genes)
+            log2fc, used_token = predicted_log2fc(
+                model, context, target_idx, n_genes, cfg.predict.cpm_floor
+            )
 
+            # The target's own gene, once the prior has spoken, is a measured
+            # quantity and is exempt from the generator's two settings.
+            exempt = np.zeros(n_genes, dtype=bool)
             fold_expr, source = prior.resolve(target)
             if cfg.phase3.knockdown_source == "per_target_only" and source == knockdown_mod.POOLED:
                 record = {
@@ -267,6 +277,8 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                     float(control_cpm[target_position]) if target_position is not None else np.nan,
                     cfg.phase3.knockdown_min_control_cpm,
                 )
+                if record["applied"]:
+                    exempt[target_position] = True
             record = {
                 "context": name,
                 "target_gene": target,
@@ -279,9 +291,12 @@ def run_predict(cfg: Config) -> dict[str, Any]:
             rng = np.random.default_rng(
                 common.arm_seed(f"predict:{name}", target, cfg.seed)
             )
-            counts = generate(control_counts, log2fc, n_cells, rng, settings)
+            counts = generate(control_counts, log2fc, n_cells, rng, settings, exempt)
             path = run_paths.prediction_block(name, target)
             stored = save_block(path, counts)
+            applied_changes.append(
+                generator_mod.apply_settings(log2fc, settings, exempt).astype(np.float32)
+            )
 
             blocks.append(
                 TargetBlock(
@@ -289,7 +304,7 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                     target=target,
                     n_cells=int(counts.shape[0]),
                     path=str(path.relative_to(run_paths.root)),
-                    generator=generator_mod.describe(settings, log2fc),
+                    generator=generator_mod.describe(settings, log2fc, exempt),
                     knockdown=record,
                     perturbation_token=used_token,
                     total_counts_median=float(np.median(counts.sum(axis=1))),
@@ -297,6 +312,13 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                 )
             )
             del counts
+
+        np.savez_compressed(
+            run_paths.fold_changes(name),
+            targets=np.array(plan[name], dtype=object),
+            log2_fold_change=np.vstack(applied_changes),
+        )
+        del applied_changes
 
         frame = knockdown_mod.records_to_frame(knockdown_records)
         run_paths.phase3_knockdown(name).parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +333,9 @@ def run_predict(cfg: Config) -> dict[str, Any]:
             "knockdown_applied": int(frame["applied"].sum()) if len(frame) else 0,
             "knockdown_table": str(
                 run_paths.phase3_knockdown(name).relative_to(run_paths.root)
+            ),
+            "fold_changes": str(
+                run_paths.fold_changes(name).relative_to(run_paths.root)
             ),
             "targets_without_token": [
                 b.target for b in context_blocks if not b.perturbation_token

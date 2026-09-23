@@ -236,13 +236,74 @@ class RunPaths:
     def prediction_block(self, context: str, target: str) -> Path:
         return self.predictions_dir / context / f"{target}.npz"
 
+    def fold_changes(self, context: str) -> Path:
+        """The applied per-gene log2 fold changes, one row per target.
+
+        What the cells were actually built from — after the confidence
+        threshold, the effect scale and the knockdown prior. The sanity
+        checks and the knockdown figure both read it.
+        """
+        return self.predictions_dir / context / "fold_changes.npz"
+
     @property
     def prediction_index(self) -> Path:
         return self.predictions_dir / "index.json"
 
+    # ---- submission ------------------------------------------------------
+    @property
+    def submission_dir(self) -> Path:
+        return self.root / "submission"
+
+    @property
+    def submission(self) -> Path:
+        """The deliverable: one `.h5ad` for every context of the round (§8)."""
+        return self.submission_dir / "prediction.h5ad"
+
+    @property
+    def submission_vcc(self) -> Path:
+        """Written only where the challenge's `vcc` tool is on PATH."""
+        return self.submission_dir / "prediction.vcc"
+
+    @property
+    def submission_report(self) -> Path:
+        return self.submission_dir / "write_report.json"
+
+    # ---- sanity ----------------------------------------------------------
+    @property
+    def sanity_dir(self) -> Path:
+        return self.root / "sanity"
+
+    @property
+    def sanity_report(self) -> Path:
+        return self.sanity_dir / "report.json"
+
+    @property
+    def sanity_summary(self) -> Path:
+        return self.sanity_dir / "summary.txt"
+
+    # ---- reports ---------------------------------------------------------
     @property
     def reports(self) -> Path:
         return self.root / "reports"
+
+    @property
+    def validate_report(self) -> Path:
+        return self.reports / "validate.json"
+
+    @property
+    def summary_md(self) -> Path:
+        return self.reports / "summary.md"
+
+    @property
+    def figures(self) -> Path:
+        return self.reports / "figures"
+
+    def figure(self, name: str) -> Path:
+        return self.figures / f"{name}.png"
+
+    @property
+    def checklist(self) -> Path:
+        return self.root / "checklist.json"
 
     @property
     def frozen_check(self) -> Path:

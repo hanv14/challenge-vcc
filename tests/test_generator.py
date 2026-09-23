@@ -224,3 +224,21 @@ def test_the_scale_points_the_same_way_for_both_directions():
 def test_a_metric_that_is_not_one_of_the_six_is_ignored():
     assert nochange.normalize("de_wilcoxon_nsig_counts_pred", 42.0) is None
     assert np.isnan(nochange.objective({"not_a_metric": 1.0}))
+
+
+def test_a_measured_knockdown_is_exempt_from_the_two_settings():
+    """§4.7's settings are calibrated against the model's own uncertainty; a
+    measured `fold_expr` was never in doubt, and shrinking it would undo the
+    knockdown sanity check 3 looks for (DECISIONS.md D38)."""
+    values = np.array([-0.234, 1.0, 0.02], dtype=np.float32)  # a weak guide, 0.85x
+    exempt = np.array([True, False, False])
+    settings = GeneratorSettings(confidence_threshold=0.3, effect_scale=0.5)
+
+    applied = apply_settings(values, settings, exempt)
+
+    assert applied[0] == pytest.approx(-0.234, abs=1e-6), "measured, so untouched"
+    assert applied[1] == pytest.approx(0.5), "predicted, so scaled"
+    assert applied[2] == 0.0, "predicted and below the threshold, so silenced"
+
+    without = apply_settings(values, settings)
+    assert without[0] == 0.0, "without the exemption the threshold would silence it"

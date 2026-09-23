@@ -600,3 +600,90 @@ on it applied the knockdown prior to 5 of 30 targets per context on
 **Reason.** Checklist item 7 asks for Phase 1 validation re-scored "after
 Phase 2 and after Phase 3". The stage scores every core checkpoint that
 exists, so running it after Phase 3 is what makes the Phase 3 column real.
+
+---
+
+## M5 — submission, sanity, summary
+
+### D37. Sanity check 2's first half is judged in count space
+
+**Decision.** "Genes the model did not predict to move stay within the range
+seen in that context's controls" is measured on **mean counts**, against the
+sampling range of a draw of `cells_per_pert` control cells
+(`sanity.control_mean_sigmas` standard errors). Not on normalized values.
+
+**Reason.** Those cells *are* control cells, gene by gene — the generator
+leaves an unmoved gene bit-for-bit alone. But moving other genes changes each
+cell's library size, so in CP10K every untouched gene shifts a little. That
+compositional shift is arithmetic, not a magnitude problem, and on a small
+gene panel it was enough to flag 42% of the untouched genes.
+
+### D38. The measured knockdown is exempt from the generator's two settings
+
+**Decision.** `apply_settings` takes an `exempt` mask, and Phase 3 marks the
+target's own gene where the knockdown prior was applied. The confidence
+threshold and the effect scale do not touch it.
+
+**Reason.** Both settings are calibrated against the *model's* uncertainty.
+`fold_expr` is measured. At the scale the rehearsal chose on `mini_data`
+(0.5), a weak guide's knockdown to 0.85 of control became 0.92 — no longer a
+knockdown at all, and sanity check 3 duly failed for 22 of 74 targets. With
+the exemption it is 74 of 74. None of the six metrics scores a target's own
+gene, so this moves no score; it is correct biology, which is why §4.7 asks
+for it and why check 3 exists.
+
+### D39. Every log fold change is floored at a detectability level
+
+**Decision.** `predict.cpm_floor` (default 0.01 CP10K) floors both sides of
+every log ratio the pipeline forms — the model's predictions, the rehearsal's
+measured truth and the sanity checks' re-measurement.
+
+**Reason.** With a bare guard epsilon of 1e-6, a gene sitting at 0.05 CP10K
+that the model switches off reads as a **15 log2** drop, and one that simply
+draws no count in 50 cells reads as −14. Those numbers describe the epsilon
+and the sparsity of the data, not the prediction: in count space both mean
+"this gene is off", which is a change of a fraction of one count. Flooring at
+a level fifty times below a single count in a 20,000-UMI cell makes "off" a
+finite statement. On `mini_data` the largest predicted effect fell from
+|log2 FC| ≈ 20 to ≈ 2.6, and sanity check 2 went from flagging half the moved
+genes to flagging none.
+
+**Alternative.** Raise `sanity.max_abs_log2fc` until the check stops
+complaining. Rejected: the check was right and the quantity was wrong.
+
+### D40. Sanity check 4 excludes every target gene, not each row's own
+
+**Decision.** The change matrix has the column of *every* target gene removed
+before the pairwise correlations and the duplicate test.
+
+**Reason.** §6.1 says "excluding each target's own gene". Excluding only the
+row's own leaves each row differing from its twin exactly at the genes being
+knocked down, so two identical predictions are never detected as identical.
+It is also what the discrimination metric does: it excludes every target gene
+of the panel (§6).
+
+### D41. `mini.yaml` accepts sanity warnings through the config, not a branch
+
+**Decision.** `sanity.accept_warnings` is a config key, true in `mini.yaml`
+and false in `server.yaml`. `--allow-warnings` still works and is what the
+README tells the user to reach for on the server.
+
+**Reason.** §6.1 says `validate` refuses a warned submission unless
+`--allow-warnings`, and §9 says `python -m vccp all --config configs/mini.yaml`
+must complete. On `mini_data` warnings are expected, so both cannot hold
+unless the acceptance is a setting. Making it a config key keeps one code
+path (§1.1 forbids an `if mini:` branch) and leaves the gate real where the
+numbers mean something. A **fail** still stops the run under either config.
+
+### D42. The submission is written by `validate`, after `sanity`
+
+**Decision.** There is no `submit` stage. The `validate` stage assembles
+`submission/prediction.h5ad` from the prediction blocks and then checks the
+file it wrote.
+
+**Reason.** §7 lists the stages and `submit` is not among them, while §6.1
+requires that a failure of sanity check 1 stop the pipeline *before the
+submission is written*. Writing inside `validate`, which runs after `sanity`,
+is the only order that satisfies both. Sanity check 1 runs §8's rules over
+the prediction blocks; `validate` runs the same rules over the assembled
+file, through the same code.

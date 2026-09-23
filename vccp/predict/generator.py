@@ -68,16 +68,32 @@ class GeneratorSettings:
         )
 
 
-def apply_settings(log2_fold_change: np.ndarray, settings: GeneratorSettings) -> np.ndarray:
+def apply_settings(
+    log2_fold_change: np.ndarray,
+    settings: GeneratorSettings,
+    exempt: np.ndarray | None = None,
+) -> np.ndarray:
     """Threshold, then scale. Returns log2 fold changes.
 
     Thresholding happens *before* scaling, so the threshold means what it says
     about the model's own output rather than about the output after shrinking.
+
+    `exempt` marks genes whose change is **measured rather than predicted** —
+    the target's own gene under the knockdown prior (§4.7). Both settings are
+    calibrated against the model's own uncertainty, so applying them to a
+    measured quantity would shrink a number that was never in doubt: at an
+    effect scale of 0.5 a knockdown to 0.85 of control becomes 0.92, which is
+    no longer a knockdown at all (sanity check 3 catches exactly this).
     """
     values = np.asarray(log2_fold_change, dtype=np.float32).copy()
     values[~np.isfinite(values)] = 0.0
+    keep = None if exempt is None else values[np.asarray(exempt, dtype=bool)].copy()
+
     values[np.abs(values) < settings.confidence_threshold] = 0.0
-    return values * np.float32(settings.effect_scale)
+    values = values * np.float32(settings.effect_scale)
+    if keep is not None:
+        values[np.asarray(exempt, dtype=bool)] = keep
+    return values
 
 
 def sample_control_cells(
@@ -153,19 +169,23 @@ def generate_cells(
     n_cells: int,
     rng: np.random.Generator,
     settings: GeneratorSettings,
+    exempt: np.ndarray | None = None,
 ) -> np.ndarray:
     """One target's predicted cells: draw controls, then apply the changes."""
     rows = sample_control_cells(
         control_counts.shape[0], n_cells, rng, allow_replacement=settings.allow_replacement
     )
     drawn = control_counts[rows]
-    return generate_counts(drawn, apply_settings(log2_fold_change, settings), rng)
+    return generate_counts(drawn, apply_settings(log2_fold_change, settings, exempt), rng)
 
 
-def describe(settings: GeneratorSettings, log2_fold_change: np.ndarray) -> dict[str, Any]:
+def describe(
+    settings: GeneratorSettings, log2_fold_change: np.ndarray,
+    exempt: np.ndarray | None = None,
+) -> dict[str, Any]:
     """What the settings did to one target's prediction, for the reports."""
     raw = np.asarray(log2_fold_change, dtype=np.float32)
-    applied = apply_settings(raw, settings)
+    applied = apply_settings(raw, settings, exempt)
     moved = applied != 0.0
     return {
         **settings.as_dict(),

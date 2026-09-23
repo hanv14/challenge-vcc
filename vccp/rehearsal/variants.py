@@ -204,6 +204,30 @@ def score_arms(
     return arms
 
 
+def true_log2fc(
+    real_counts: np.ndarray, real_labels: list[str], control_counts: np.ndarray,
+    targets: list[str],
+) -> dict[str, np.ndarray]:
+    """Each target's measured log2 fold change, in the generator's own units.
+
+    The same conversion `common.sd_units_to_log2fc` lands in — a ratio of
+    per-gene mean CP10K — so predicted and true are comparable point by point.
+    """
+    from ..sanity.checks import mean_cp10k
+
+    labels = np.asarray(real_labels)
+    control = mean_cp10k(control_counts)
+    out = {}
+    for target in targets:
+        rows = np.flatnonzero(labels == target)
+        if rows.size == 0:
+            continue
+        out[target] = np.log2(
+            (mean_cp10k(real_counts[rows]) + 1e-6) / (control + 1e-6)
+        ).astype(np.float32)
+    return out
+
+
 def leaderboard_scale(
     cfg, run_paths, variant: str, context: str,
     real_counts: np.ndarray, real_labels: list[str],
@@ -306,7 +330,7 @@ def run_controls_only(
                 full[rest_positions] = predicted
                 predictions[arm][target] = common.TargetPrediction(
                     target,
-                    common.sd_units_to_log2fc(full, ctrl_mean, ctrl_std),
+                    common.sd_units_to_log2fc(full, ctrl_mean, ctrl_std, cfg.predict.cpm_floor),
                     {"arm": arm},
                 )
 
@@ -314,7 +338,7 @@ def run_controls_only(
             floor_full = np.zeros(len(gene_names), dtype=np.float32)
             floor_full[panel_positions] = panel_truth.mean(dim=0).cpu().numpy()
             predictions[common.FLOOR][target] = common.TargetPrediction(
-                target, common.sd_units_to_log2fc(floor_full, ctrl_mean, ctrl_std), {"arm": "floor"}
+                target, common.sd_units_to_log2fc(floor_full, ctrl_mean, ctrl_std, cfg.predict.cpm_floor), {"arm": "floor"}
             )
 
         settings = GeneratorSettings()
@@ -440,7 +464,7 @@ def run_cross_context(
                 full[panel_positions] = panel.squeeze(0).cpu().numpy()
                 full[rest_positions] = rest.squeeze(0).cpu().numpy()
                 predictions[arm][target] = common.TargetPrediction(
-                    target, common.sd_units_to_log2fc(full, ctrl_mean, ctrl_std), {"arm": arm}
+                    target, common.sd_units_to_log2fc(full, ctrl_mean, ctrl_std, cfg.predict.cpm_floor), {"arm": arm}
                 )
             predictions[common.FLOOR][target] = common.zero_prediction(target, len(gene_names))
 
@@ -469,6 +493,15 @@ def run_cross_context(
                     "predictions": {
                         target: predictions[common.METHOD][target].log2_fold_change.tolist()
                         for target in targets[: cfg.rehearsal.n_saved_predictions]
+                    },
+                    # The same targets' measured change, so §5's predicted-vs-true
+                    # scatter needs nothing re-run.
+                    "truth": {
+                        target: values.tolist()
+                        for target, values in true_log2fc(
+                            real_counts, real_labels, control_counts,
+                            targets[: cfg.rehearsal.n_saved_predictions],
+                        ).items()
                     },
                     "note": "whole predicted cells, scored exactly as the challenge "
                     "scores them — the closest analogue of the challenge available",
@@ -570,7 +603,7 @@ def run_unseen_genes(
                 full[panel_positions] = panel_truth.mean(dim=0).cpu().numpy()
                 full[rest_positions] = predicted
                 predictions[arm][target] = common.TargetPrediction(
-                    target, common.sd_units_to_log2fc(full, ctrl_mean, ctrl_std), {"arm": arm}
+                    target, common.sd_units_to_log2fc(full, ctrl_mean, ctrl_std, cfg.predict.cpm_floor), {"arm": arm}
                 )
 
             per_gene[common.FLOOR].append(
@@ -579,7 +612,7 @@ def run_unseen_genes(
             floor_full = np.zeros(len(gene_names), dtype=np.float32)
             floor_full[panel_positions] = panel_truth.mean(dim=0).cpu().numpy()
             predictions[common.FLOOR][target] = common.TargetPrediction(
-                target, common.sd_units_to_log2fc(floor_full, ctrl_mean, ctrl_std), {"arm": "floor"}
+                target, common.sd_units_to_log2fc(floor_full, ctrl_mean, ctrl_std, cfg.predict.cpm_floor), {"arm": "floor"}
             )
 
         settings = GeneratorSettings()
