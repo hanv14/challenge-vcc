@@ -82,8 +82,12 @@ def run_rehearsal(cfg: Config) -> dict[str, Any]:
         "variants": [result.as_dict() for result in results],
         "calibration": policy_calibration.as_dict(),
         "scale": _leaderboard_scale(cfg, results),
-        "note": "on mini_data these numbers are not indicative of real performance "
-        "(CLAUDE.md §5)",
+        "note": (
+            "on mini_data these numbers are not indicative of real performance "
+            "(CLAUDE.md §5)"
+            if cfg.on_mini_data
+            else f"measured on the real data under {cfg.data_root}"
+        ),
     }
 
     run_paths.rehearsal_dir.mkdir(parents=True, exist_ok=True)

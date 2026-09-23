@@ -787,3 +787,21 @@ whether a submission is any good.
 — the server's own combination — asserts the cap comes out at 1, and a real
 scoring under those variables returns all six metrics. Neither could have
 failed on a machine where the variables agree, which is why M1–M6 missed it.
+
+### D48. The "not indicative" caveat follows the data, and matches a path component
+
+**Decision.** `Config.on_mini_data` is the single place that asks the
+question, and it matches a whole path component named `mini_data` rather than
+the substring "mini" anywhere in the path. The rehearsal report and the
+forgetting report now ask it instead of carrying the caveat unconditionally.
+
+**Reason.** Both reports stated "on mini_data these numbers are not
+indicative of real performance" on *every* run, including the server's. That
+line sits at the bottom of `rehearsal/summary.txt`, which is exactly the file
+taken to a proposal defense — a caveat that is false is worse than none,
+because it discards a real result. Found by reading a server summary.
+
+The component match, rather than a substring, came from the test for this:
+pytest's own `tmp_path` for a test whose name contains "mini" matched the
+substring rule. A server directory that happens to contain those letters is
+real data.

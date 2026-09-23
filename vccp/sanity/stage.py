@@ -311,7 +311,7 @@ def run_sanity(cfg: Config) -> dict[str, Any]:
         check_mod.check_de_call_count(cfg, rehearsal),
     ]
 
-    on_mini = "mini" in str(cfg.data_root)
+    on_mini = cfg.on_mini_data
     report = check_mod.report_dict(cfg, results, on_mini)
     report["contexts"] = per_context
     report["knockdown"] = knockdown_records

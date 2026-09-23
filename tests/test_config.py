@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -88,3 +90,27 @@ def test_config_to_dict_is_serializable(mini_cfg):
     payload = config_to_dict(mini_cfg)
     yaml.safe_dump(payload)  # raises if a Path leaked through
     assert payload["resources"]["cpu_threads"] == 4
+
+
+def test_the_mini_caveat_follows_the_data_root(mini_cfg, tmp_path):
+    """A report that says "these numbers are not indicative" on real server
+    data is worse than no caveat: it is shown at a defense."""
+    import dataclasses
+
+    assert mini_cfg.on_mini_data is True
+
+    for real in ("/data/han/projects/VCC/data", tmp_path / "VCC" / "data"):
+        cfg = dataclasses.replace(mini_cfg, data_root=Path(real))
+        assert cfg.on_mini_data is False, real
+
+
+def test_the_caveat_matches_a_component_not_a_substring(mini_cfg):
+    """A path that merely contains the letters is not the mini data."""
+    import dataclasses
+
+    for lookalike in ("/data/minimal/VCC", "/srv/mini_data_backup/VCC", "/x/administrative"):
+        cfg = dataclasses.replace(mini_cfg, data_root=Path(lookalike))
+        assert cfg.on_mini_data is False, lookalike
+
+    cfg = dataclasses.replace(mini_cfg, data_root=Path("/somewhere/mini_data"))
+    assert cfg.on_mini_data is True

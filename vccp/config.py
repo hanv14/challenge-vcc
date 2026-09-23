@@ -19,6 +19,10 @@ from typing import Any
 import yaml
 
 
+#: The directory name that marks the tiny example rather than the real data.
+MINI_DATA_DIR = "mini_data"
+
+
 class ConfigError(ValueError):
     """A config file is malformed, or names a key the schema does not have."""
 
@@ -540,6 +544,22 @@ class Config:
     @property
     def run_dir(self) -> Path:
         return self.output_root / self.run_name
+
+    @property
+    def on_mini_data(self) -> bool:
+        """Whether this run reads the tiny example rather than the real data.
+
+        Only ever used to caveat a *report*: every number a mini run produces
+        says that the pipeline works, and none of them says how well the
+        method does (CLAUDE.md §5). It never changes what the code does —
+        §1.1 forbids a mini-specific code path.
+
+        Matched on a whole path component, not as a substring: a server
+        directory that merely happens to contain the letters "mini" is real
+        data, and labelling its results "not indicative" at a defense would
+        be worse than saying nothing.
+        """
+        return MINI_DATA_DIR in self.data_root.parts
 
     def validate(self) -> None:
         if self.device not in ("auto", "cpu", "cuda"):

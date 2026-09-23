@@ -96,7 +96,7 @@ def build_summary(cfg: Config) -> dict[str, Any]:
     # checklist is only true once the summary exists.
     checklist = checklist_mod.build(cfg, run_paths)
 
-    on_mini = "mini" in str(cfg.data_root)
+    on_mini = cfg.on_mini_data
     text = _compose(
         cfg, run_paths, paths, on_mini,
         check_data=check_data, coverage=coverage, prior_checks=prior_checks,

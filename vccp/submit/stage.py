@@ -66,7 +66,7 @@ def run_validate(cfg: Config, options=None) -> dict[str, Any]:
     run_paths.submission_report.write_text(json.dumps(write.as_dict(), indent=2))
 
     result = validator.validate_file(cfg, spec, run_paths.submission)
-    on_mini = "mini" in str(cfg.data_root)
+    on_mini = cfg.on_mini_data
     dry = package_mod.dry_run(cfg, paths, run_paths.submission, warning_only=on_mini)
 
     report = {
@@ -114,7 +114,7 @@ def run_package(cfg: Config, options=None) -> dict[str, Any]:
             f"{run_paths.submission} does not exist: run the `validate` stage first"
         )
 
-    on_mini = "mini" in str(cfg.data_root)
+    on_mini = cfg.on_mini_data
     result = package_mod.package(
         cfg, paths, run_paths.submission, run_paths.submission_vcc, warning_only=on_mini
     )

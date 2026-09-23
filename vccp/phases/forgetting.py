@@ -113,8 +113,12 @@ def run_forgetting(cfg: Config) -> dict[str, Any]:
         },
         "checkpoints": scores,
         "core_freeze_ablation": _ablation(cfg, scores),
-        "note": "on mini_data these numbers are noisy and not indicative; the "
-        "comparison is the point, not the level",
+        "note": (
+            "on mini_data these numbers are noisy and not indicative; the "
+            "comparison is the point, not the level"
+            if cfg.on_mini_data
+            else "the comparison between cores is the point, not the level"
+        ),
     }
 
     run_paths.forgetting.write_text(json.dumps(report, indent=2, default=str))
