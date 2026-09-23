@@ -1,8 +1,16 @@
 # DECISIONS.md
 
 One entry per non-obvious choice: the decision, the reason, and the
-alternative that was not taken. Deviations from `CLAUDE.md` are marked
-**DEVIATION** and are also listed in `PLAN.md` §9 and in the final message.
+alternative that was not taken. 44 entries, M0 to M6.
+
+**Deviations from `CLAUDE.md`** are marked **DEVIATION** below, listed in
+`PLAN.md` §9 and stated in the final message. All four were authorized by the
+user at the M0 review; nothing deviates silently:
+
+* **D1** — The package is `vccp`, not `vcc` (CLAUDE.md §2, §7)
+* **D2** — `mini.yaml` sets `device: cpu` (CLAUDE.md §1)
+* **D3** — `train.unfreeze_core` defaults true for Phase 2 (CLAUDE.md §4.3)
+* **D4** — `prediction.vcc` is optional (CLAUDE.md §4.8 item 13)
 
 ---
 
@@ -687,3 +695,30 @@ submission is written*. Writing inside `validate`, which runs after `sanity`,
 is the only order that satisfies both. Sanity check 1 runs §8's rules over
 the prediction blocks; `validate` runs the same rules over the assembled
 file, through the same code.
+
+---
+
+## M6 — hand-off
+
+### D43. The environment check is a script, not a stage
+
+**Decision.** `scripts/check_env.py`, over `vccp/envcheck.py`, rather than a
+`check-env` stage of the CLI.
+
+**Reason.** §7 fixes the stage list and `check-env` is not in it, and the
+check answers a question about the *machine* rather than about a run: it
+writes nothing, has no artifact, and is most useful before the run directory
+exists at all. Keeping it out of `STAGES` also keeps `all` exactly the twelve
+stages §7 names.
+
+### D44. The server runtimes in the README are labelled as estimates
+
+**Decision.** The README gives measured numbers for `mini_data` and
+explicitly labelled **estimates** for the server, with the quantity that
+drives each stage and the five knobs to turn if a run overruns.
+
+**Reason.** The full data was never reachable from this environment (§1.1),
+so a server timing here would be a guess dressed as a measurement. What can
+honestly be given is the shape of the cost — that the rehearsal is dominated
+by about 43 scoring calls, each a Wilcoxon DE over `rehearsal.max_targets`
+targets — and where to look for the real numbers, which is `log.txt`.

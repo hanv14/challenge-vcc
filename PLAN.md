@@ -9,7 +9,7 @@ the user on review**, and each now records the decision taken. Section 9 lists t
 points where those decisions depart from `CLAUDE.md` as written — these are also recorded in
 `DECISIONS.md` and go into the final message.
 
-**Status: M0–M5 complete.** Sections 1–7 are the build plan; module names in §2 that do
+**Status: M0–M6 complete — the build is finished.** Sections 1–7 are the build plan; module names in §2 that do
 not exist yet are what later milestones will add.
 
 ---
@@ -440,7 +440,25 @@ alone with an explicit note where they cannot be built. `eval/nochange.py` holds
 documented no-change values (0.5 / 1.0 / ≈1.0 / ≈0 / ≈0 / ≈0) used by the sanity checks and
 the calibration objective.
 
-### 4.10 Resources and the shared server
+### 4.10 The hand-off
+
+`README.md` is what the user follows on the server: the environment, `source
+scripts/server_env.sh`, `python scripts/check_env.py`, `check-data`, the `all`
+command under `nice`/`ionice`, the `vcc prep --dry-run` check and the packaging
+command, what to read in `sanity/summary.txt` and `rehearsal/summary.txt` before
+submitting, where every output goes, how to run stages separately, measured mini
+runtimes and **estimated** server ones, and the config change that switches to the
+final test round. `tests/test_docs.py` fails if it documents a stage that does not
+exist, omits one that does, or drops any of §9's hand-off items.
+
+`scripts/check_env.py` (over `vccp/envcheck.py`) answers, in seconds and writing
+nothing, whether a machine can run the pipeline: packages and versions,
+`cell-eval2` with its `vcc2026` preset and the DE backend the config pins, the
+challenge's `vcc` on `PATH`, the resolved device and GPU cap, the thread limits of
+§1.2 as they actually stand, the configured data roots, and free disk under
+`output_root`.
+
+### 4.11 Resources and the shared server
 
 `vccp/__main__.py` sets the eight thread variables with `os.environ.setdefault` **before**
 importing numpy, torch, polars or scanpy, never overriding what the environment says, and
@@ -514,7 +532,7 @@ All tests run on `mini_data`, on CPU, and are fast. Beyond the per-element tests
 | M3 | gene-token core, adapters, freeze check, forgetting guard + core-freeze ablation, Phase 1, Phase 2 | items 5–9 artifacts exist ✅ |
 | M4 | three rehearsal variants, calibration, `phase3_policy.json`, Phase 3, prediction, generator | items 10–12 artifacts exist ✅ |
 | M5 | submission writer, validator, sanity, summary, `checklist.json` | `python -m vccp all --config configs/mini.yaml` green ✅ |
-| M6 | README, DECISIONS.md, final message | definition of done in §9 of CLAUDE.md |
+| M6 | README, `scripts/check_env.py`, DECISIONS.md, final message | definition of done in §9 of CLAUDE.md ✅ |
 
 Budget targets: `all` on `mini_data` under 15 minutes on CPU; `all` on the server under
 ~12 hours on one GPU, with every budget a config key and the mini budgets set separately in

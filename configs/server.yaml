@@ -14,3 +14,54 @@ resources:
   num_workers: 2
   gpu_memory_fraction: 0.5
   max_ram_gb: 64
+
+# Everything below is the schema's own default, written out because these are
+# the knobs to reach for first. `python -m vccp <stage> --config ...` reads
+# them; `vccp/config.py` documents each one.
+
+train:
+  # Output genes decoded per training step. The loss is a mean over genes, so
+  # a subsample is an unbiased estimate of it and the decoder's cost is linear
+  # in this. Lower it first if the GPU runs out of memory.
+  output_genes_per_step: 2048
+  # A second Phase 2 arm with the core frozen, so `unfreeze_core` rests on a
+  # measurement. Costs one extra Phase 2 training run; set to false to skip.
+  core_freeze_ablation: true
+
+phase1:
+  steps: 400
+  batch_size: 32
+
+phase2:
+  steps: 600
+  batch_size: 32
+  cells_per_draw: 16
+
+rehearsal:
+  # The three knobs that dominate the rehearsal's wall clock: every scoring
+  # call runs a Wilcoxon DE over this many targets, and the calibration grid
+  # is one scoring per point.
+  max_targets: 100
+  phase2_steps: 300
+  adapt_steps: 150
+  calibration_thresholds: [0.0, 0.05, 0.1, 0.25]
+  calibration_scales: [0.25, 0.5, 1.0, 1.5]
+
+phase3:
+  adapt_steps: 300
+  batch_size: 32
+
+eval:
+  # Pinned: the vcc2026 preset ships `auto`, and which DE engine a host
+  # happens to have would otherwise change the numbers.
+  de_backend: pdex
+  # Build the leaderboard's 0 = baseline / 1 = replicate scale on the
+  # rehearsal's cross-context data. Costs six extra scoring calls per
+  # dataset; set to false if the rehearsal is taking too long.
+  build_scale: true
+
+sanity:
+  # Left off deliberately: on the real data a warning is worth stopping for.
+  # `--allow-warnings` accepts them for one invocation, after you have read
+  # sanity/summary.txt.
+  accept_warnings: false
