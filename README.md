@@ -93,6 +93,22 @@ printed for you to confirm before hours of training. Read those numbers: they
 are the first place a wrong `data_root` or a half-copied directory shows up.
 It writes `reports/check_data.json`.
 
+If a stage ever dies with an HDF5 error — `Can't synchronously read data
+(filter returned failure during read)`, or anything about a filter — one of
+the input files is truncated, damaged in transit, or written with a
+compression this environment cannot decode. `check-data` reads blocks of every
+matrix and will normally catch it first; to find the file directly:
+
+```bash
+python scripts/probe_data.py --config configs/server.yaml
+```
+
+It reads blocks of each `X` and each layer of every `.h5ad` the pipeline
+opens and names the file, the element and the row range that failed. Add
+`--full` to read every file end to end (slow on the single-cell files), or
+`--only <substring>` to probe one. `checks.probe_matrices: false` turns the
+check-data probe off if you would rather not pay for it every run.
+
 ### 5. Run everything
 
 ```bash
@@ -212,7 +228,7 @@ in this order — each reads what the ones before it wrote:
 
 | stage | what it does | writes |
 |---|---|---|
-| `check-data` | verify every input file, column and gene order | `reports/check_data.json` |
+| `check-data` | verify every input file, column, gene order — and that the matrices decode | `reports/check_data.json` |
 | `priors` | the gene vocabulary and its checks | `priors/` |
 | `phase1` | LINCS: control + perturbation → signature → perturbed | `phase1/`, `checkpoints/core_phase1.pt` |
 | `phase2` | Replogle: Siamese panel→rest, and the perturbation module | `phase2/`, `checkpoints/core_phase2.pt` |

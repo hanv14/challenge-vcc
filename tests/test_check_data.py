@@ -204,3 +204,93 @@ def test_control_file_with_a_wrong_context_label_fails(mirrored_cfg):
 
     found = run_expecting_failure(mirrored_cfg)
     assert f"controls:{context}:label" in found
+
+
+# --------------------------------------------------------------------------- #
+# the matrices are read, not only their metadata
+# --------------------------------------------------------------------------- #
+def damage(path):
+    """Overwrite a chunk in the middle — a plausible transfer corruption."""
+    import os
+
+    size = os.path.getsize(path)
+    with open(path, "r+b") as handle:
+        handle.seek(size // 2)
+        handle.write(b"\x00" * max(1, min(200_000, size // 4)))
+
+
+def test_a_damaged_matrix_is_caught_by_check_data(mirrored_cfg):
+    """A file whose obs and var are perfect can still fail hours later inside
+    the priors with an HDF5 error that names no file (§1.1)."""
+    import shutil
+
+    from vccp.data.checks import DataCheckError, check_data
+    from vccp.paths import DataPaths
+
+    from tests.conftest import replace_in_mirror
+
+    link = DataPaths(mirrored_cfg).phase1_lincs
+    # Resolve before the link is removed — afterwards there is nothing to
+    # resolve, and `.resolve()` on a mirror path is what deletes real data.
+    real = link.resolve()
+
+    def write(path):
+        shutil.copy(real, path)
+        damage(path)
+
+    replace_in_mirror(link, write)
+
+    with pytest.raises(DataCheckError):
+        check_data(mirrored_cfg)
+
+
+def test_the_probe_names_the_file_the_element_and_the_row_range(tmp_path, mini_cfg):
+    import shutil
+
+    from vccp.data.h5probe import explain, probe_h5ad
+    from vccp.paths import DataPaths
+
+    good = DataPaths(mini_cfg).phase1_lincs
+    copy = tmp_path / "damaged.h5ad"
+    shutil.copy(good, copy)
+    damage(copy)
+
+    probe = probe_h5ad(copy, samples=64, block_rows=64)
+    assert not probe.ok
+    failure = probe.failures[0]
+    assert failure.element
+    assert failure.failed_rows is not None
+    assert failure.filters, "the filter in use is what a filter error is about"
+    assert "truncated or damaged" in explain(probe)
+
+
+def test_a_healthy_file_probes_clean(mini_cfg):
+    from vccp.data.h5probe import probe_h5ad
+    from vccp.paths import DataPaths
+
+    probe = probe_h5ad(DataPaths(mini_cfg).phase1_lincs)
+    assert probe.ok, probe.summary()
+    assert probe.elements
+    assert all(element.n_rows_read > 0 for element in probe.elements)
+
+
+def test_a_missing_file_is_reported_not_raised(tmp_path):
+    from vccp.data.h5probe import probe_h5ad
+
+    probe = probe_h5ad(tmp_path / "nope.h5ad")
+    assert not probe.ok
+    assert "does not exist" in probe.error
+
+
+def test_the_probe_can_be_turned_off(mirrored_cfg):
+    """It costs a read of every matrix; a config key says no."""
+    import dataclasses
+
+    from vccp.data.checks import check_data
+
+    off = dataclasses.replace(
+        mirrored_cfg, checks=dataclasses.replace(mirrored_cfg.checks, probe_matrices=False)
+    )
+    report = check_data(off)
+    skipped = [r for r in report["results"] if r["name"] == "matrices_readable"]
+    assert skipped and skipped[0]["status"] == "warn"

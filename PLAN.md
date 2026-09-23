@@ -451,6 +451,12 @@ runtimes and **estimated** server ones, and the config change that switches to t
 final test round. `tests/test_docs.py` fails if it documents a stage that does not
 exist, omits one that does, or drops any of §9's hand-off items.
 
+`scripts/probe_data.py` (over `vccp/data/h5probe.py`) reads blocks of every `X` and
+every layer of every `.h5ad` the pipeline opens, and names the file, the element and
+the row range when one fails to decode. `check-data` runs the same probe
+(`checks.probe_matrices`, on by default), so a truncated or undecodable input is
+found in seconds instead of hours into the priors.
+
 `scripts/check_env.py` (over `vccp/envcheck.py`) answers, in seconds and writing
 nothing, whether a machine can run the pipeline: packages and versions,
 `cell-eval2` with its `vcc2026` preset and the DE backend the config pins, the

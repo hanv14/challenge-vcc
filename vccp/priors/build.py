@@ -381,7 +381,17 @@ def build_priors(
     produced: list[tuple[object, BlockResult]] = []
     coverage_rows = []
     for block in blocks:
-        results = block.build(inputs)
+        try:
+            results = block.build(inputs)
+        except OSError as exc:
+            # An HDF5 read error names no file of its own, and this stage
+            # touches several. Say which block was reading when it failed.
+            raise OSError(
+                f"prior block {block.name!r} could not read its input: {exc}. "
+                "Run `python scripts/probe_data.py --config <your config>` to find "
+                "which file is unreadable — a truncated or damaged .h5ad is the "
+                "usual cause, and `check-data` now reads the matrices too."
+            ) from exc
         if not results:
             log.info("  %-28s (not built)", block.name)
             coverage_rows.append(

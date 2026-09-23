@@ -299,6 +299,26 @@ class Predict:
 
 
 @dataclass(frozen=True)
+class Checks:
+    """What `check-data` verifies beyond files, columns and gene orders."""
+
+    #: Also *read* blocks of every matrix, so a truncated or undecodable
+    #: `.h5ad` is found in seconds rather than hours into the priors. A file
+    #: whose `obs` and `var` are perfect can still fail mid-run with an HDF5
+    #: "filter returned failure during read".
+    probe_matrices: bool = True
+    #: Row blocks read from a file too large to read in full, and their size.
+    probe_samples: int = 12
+    probe_block_rows: int = 512
+
+    def validate(self) -> None:
+        if self.probe_samples < 1:
+            raise ConfigError("checks.probe_samples must be at least 1")
+        if self.probe_block_rows < 1:
+            raise ConfigError("checks.probe_block_rows must be at least 1")
+
+
+@dataclass(frozen=True)
 class Submission:
     """The submission format (CLAUDE.md §8), whose limits are the challenge's.
 
@@ -496,6 +516,7 @@ class Config:
     predict: Predict = field(default_factory=Predict)
     rehearsal: Rehearsal = field(default_factory=Rehearsal)
     eval: Eval = field(default_factory=Eval)
+    checks: Checks = field(default_factory=Checks)
     submission: Submission = field(default_factory=Submission)
     sanity: Sanity = field(default_factory=Sanity)
     report: Report = field(default_factory=Report)
@@ -535,6 +556,7 @@ class Config:
         self.predict.validate()
         self.rehearsal.validate()
         self.eval.validate()
+        self.checks.validate()
         self.submission.validate()
         self.sanity.validate()
         self.report.validate()
@@ -589,6 +611,7 @@ def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config
         ("predict", Predict),
         ("rehearsal", Rehearsal),
         ("eval", Eval),
+        ("checks", Checks),
         ("submission", Submission),
         ("sanity", Sanity),
         ("report", Report),

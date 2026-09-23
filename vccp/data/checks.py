@@ -211,7 +211,67 @@ def check_data(cfg: Config) -> dict[str, Any]:
     _check_coverage(paths, checker)
     _summarize_trainable_genes(axis, checker)
 
+    # ---- can the matrices actually be read? ------------------------------
+    _check_matrices_readable(cfg, paths, checker, log)
+
     return _finish(cfg, checker, log)
+
+
+def _check_matrices_readable(cfg: Config, paths: DataPaths, checker: Checker, log) -> None:
+    """Everything above reads metadata; this reads the matrices (§1.1).
+
+    A file whose `obs` and `var` are exactly right can still be truncated or
+    written with a compression filter this environment cannot decode, and
+    then the run dies hours later inside the priors with an HDF5 error that
+    names no file. Reading blocks of each `X` and each layer here costs
+    seconds and names it.
+    """
+    if not cfg.checks.probe_matrices:
+        checker.warn(
+            "matrices_readable",
+            "skipped: checks.probe_matrices is off, so nothing has read the matrices",
+        )
+        return
+
+    from .h5probe import explain, probe_h5ad
+
+    files: list[Path] = [paths.phase1_lincs]
+    for _, directory in sorted(paths.discover_phase2_contexts().items()):
+        files.append(directory / "pseudobulk.h5ad")
+    files.extend(path for _, path in sorted(paths.discover_replogle_singlecell().items()))
+    files.extend(path for _, path in sorted(paths.discover_replogle_bulk().items()))
+    files.extend(path for _, path in sorted(paths.discover_phase3_controls().items()))
+    files.extend(path for _, path in sorted(paths.discover_context_files().items()))
+
+    log.info("reading blocks of %d matrix file(s) to check they decode", len(files))
+    n_rows = 0
+    for path in files:
+        if not path.is_file():
+            continue  # its own check has already reported the file as missing
+        probe = probe_h5ad(
+            path,
+            samples=cfg.checks.probe_samples,
+            block_rows=cfg.checks.probe_block_rows,
+        )
+        n_rows += sum(element.n_rows_read for element in probe.elements)
+        if probe.ok:
+            continue
+        failure = probe.failures[0] if probe.failures else None
+        checker.fail(
+            f"readable:{path.name}",
+            f"{path} cannot be read: "
+            + (f"{failure.element} at rows {failure.failed_rows}: {failure.error}"
+               if failure else str(probe.error))
+            + f". {explain(probe)}",
+            path=str(path), probe=probe.as_dict(),
+        )
+    if not checker.failed or all(not r.name.startswith("readable:") for r in checker.failed):
+        checker.ok(
+            "matrices_readable",
+            f"{n_rows:,} row(s) read across {len(files)} file(s) without an HDF5 error "
+            "(large files are sampled, so this is a probe, not a proof)",
+            n_rows_read=n_rows, n_files=len(files),
+        )
 
 
 def _summarize_trainable_genes(axis: list[str] | None, checker: Checker) -> None:

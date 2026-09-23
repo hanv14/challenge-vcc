@@ -722,3 +722,23 @@ so a server timing here would be a guess dressed as a measurement. What can
 honestly be given is the shape of the cost — that the rehearsal is dominated
 by about 43 scoring calls, each a Wilcoxon DE over `rehearsal.max_targets`
 targets — and where to look for the real numbers, which is `log.txt`.
+
+### D45. `check-data` reads the matrices, not only the metadata
+
+**Decision.** `check-data` reads blocks of every `X` and every layer of every
+`.h5ad` the pipeline opens (`checks.probe_matrices`, on by default), and
+`scripts/probe_data.py` does the same on demand. Large files are sampled;
+small ones are read in full.
+
+**Reason.** A real run on the server died inside the `priors` stage with
+`Can't synchronously read data (filter returned failure during read)` — HDF5
+saying a compressed chunk would not decode — after eight minutes of work and
+naming no file. Every earlier check had passed, because they read `obs`,
+`var` and shapes, and a truncated matrix is perfectly consistent with all of
+them. §1.1 asks `check-data` to give a clear pass/fail *before* training
+starts; that is only true if something has touched the data.
+
+**Alternative.** Verify checksums against the source instead. Better where
+the source is reachable, but it does not exist here and would not catch a
+missing compression plugin. The probe catches both, and reports which of the
+two it is.
