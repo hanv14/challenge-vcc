@@ -354,9 +354,8 @@ python scripts/coupling_check.py --config configs/server.yaml
 There is also a fourth **rehearsal variant**, off by default, that measures
 the one boundary the other three never test:
 
-```yaml
-rehearsal:
-  cross_assay: true       # learn from LINCS alone, adapt with controls only
+```bash
+python -m vccp rehearsal --config configs/server_xassay.yaml --force
 ```
 
 Variants 1–3 all stay inside Replogle. `cross_assay` learns what a
