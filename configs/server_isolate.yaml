@@ -1,0 +1,101 @@
+# Isolating what Phase 1's warm start is actually doing.
+#
+#     source scripts/server_env.sh
+#     nice -n 10 ionice -c3 python -m vccp phase2 --config configs/server_isolate.yaml --force
+#
+# The 6,000-step server run measured phase1_contribution at -0.274: both warm
+# arms sat at ~1.0 against predicting no change while the scratch arm reached
+# 0.807 and was still improving (DECISIONS.md D76). But a warm arm differs
+# from the scratch arm in *three* ways at once, and that run could not say
+# which one does the damage:
+#
+#   1. the warm start itself — Phase 1's weights as the initialization
+#   2. L2-SP — a penalty pulling the weights back toward Phase 1's
+#   3. replay — a quarter of the steps spent on Phase 1's objective, which
+#      interferes with Phase 2's even once the step *count* is matched
+#
+# This config removes 2 and 3 from every arm. What remains between
+# `core_unfrozen` and `core_scratch` is then the warm start alone, and the
+# comparison is clean because with replay off both arms get the same 6,000
+# Phase 2 steps by construction.
+#
+# How to read it, against the run it is compared with:
+#
+#   core_unfrozen here ~= 0.81   the initialization is fine; the forgetting
+#                                guard was the problem. Keep three phases,
+#                                lower train.l2sp_weight, and re-measure.
+#   core_unfrozen here ~= 1.0    the LINCS initialization itself is the
+#                                damage. phase2.warm_start: false makes the
+#                                shipped model two-phase, which is a
+#                                deviation from CLAUDE.md section 4 and has
+#                                to be recorded as one.
+#
+# Removing the forgetting guard is what makes this a *diagnostic* run and not
+# a submission one: section 4.3 requires replay and L2-SP, and Phase 1
+# validation after Phase 2 will be worse without them. Nothing here should be
+# copied into server.yaml except, possibly, a changed l2sp_weight.
+#
+# It writes to runs/server_isolate/, so it leaves the submission run alone.
+# It needs a run directory that already has `priors` and Phase 1 — copy them
+# in, or point output_root at the existing run and let `--force` redo only
+# phase2.
+
+data_root: /data/han/projects/VCC/data
+vcc_root: /data/share/han/VCC
+output_root: /data/han/projects/VCC/runs
+device: auto
+
+run_name: server_isolate
+seed: 0
+
+resources:
+  cpu_threads: 4
+  num_workers: 2
+  gpu_memory_fraction: 0.5
+  max_ram_gb: 64
+
+train:
+  deterministic: true
+  output_genes_per_step: 2048
+  # Must match the run this is compared against, or the difference is not
+  # about Phase 1. The 6,000-step run used 0.0003; check your server.yaml
+  # and change both together if it says otherwise.
+  lr: 0.0003
+  # The two the run is about. Both off, for every arm.
+  l2sp_weight: 0.0
+  replay_fraction: 0.0
+  # With replay off, match_phase2_steps is a no-op and every arm gets the
+  # full budget — so the comparison needs no correction at all.
+  match_phase2_steps: true
+  core_freeze_ablation: true
+  phase1_contribution_ablation: true
+
+phase1:
+  steps: 400
+  batch_size: 32
+
+phase2:
+  # These must match the run being compared against. Check them against your
+  # server.yaml before reading anything into the difference.
+  steps: 6000
+  batch_size: 32
+  cells_per_draw: 16
+  # Left on: the question here is about Phase 1, and changing two things at
+  # once would put us back where the last two readings were.
+  warm_start: true
+
+rehearsal:
+  max_targets: 100
+  phase2_steps: 300
+  adapt_steps: 150
+
+phase3:
+  adapt_steps: 300
+  batch_size: 32
+
+eval:
+  de_backend: pdex
+  build_scale: true
+
+sanity:
+  accept_warnings: false
