@@ -1482,3 +1482,28 @@ exceeds `DIVERGENCE_RATIO`.
 its best, under the threshold — so it read as steady while swinging by 2.28x.
 A run that swings that far and happens to land near its best is not under
 control, and the ending cannot show it.
+
+### D78. `phase2.steps` on the server is 6,000, and the server configs say `lr` out loud
+
+**Decision.** `configs/server*.yaml` set `phase2.steps: 6000` and write
+`train.lr` explicitly.
+
+**Reason for the steps.** 600 was too small to say anything: at that budget
+every arm sat at "no better than predicting no change" and it read as though
+the model could not learn. At 6,000 the from-scratch arm reached 0.807
+against no-change and was **still improving** — 0.918, 0.921, 0.857, 0.807 —
+so 6,000 is a floor rather than a tuned value. Three arms at 6,000 steps took
+about 96 minutes on the server, which is affordable inside §0's ~12-hour
+budget.
+
+**Reason for writing `lr` out.** It is unsettled and a default hides that.
+The `core_unfrozen` arm was unstable at 1e-3 **and** at 3e-4 — it swung to
+2.46x its own best mid-run — so lowering it did not fix the instability and
+3e-4 is not established as better. Having the key present in the file is also
+what stops a hand-edit being lost to a `git pull`, which is how the 6,000-step
+setting disappeared between one run and the next.
+
+**A run's own config is the record.** `runs/<name>/config.yaml` holds the
+resolved config the run actually used, which is what settled what the
+6,000-step run had been given after the file itself had changed underneath
+it. Grepping the config *file* answers a different question.

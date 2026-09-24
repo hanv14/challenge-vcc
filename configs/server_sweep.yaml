@@ -29,6 +29,7 @@ resources:
 
 train:
   deterministic: true
+  lr: 0.0003
   output_genes_per_step: 2048
   core_freeze_ablation: true
 
@@ -37,7 +38,9 @@ phase1:
   batch_size: 32
 
 phase2:
-  steps: 600
+  # Matches server.yaml: 600 was too small to say anything, and the
+  # from-scratch arm was still improving at 6,000.
+  steps: 6000
   batch_size: 32
   cells_per_draw: 16
 

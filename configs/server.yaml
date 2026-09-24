@@ -33,13 +33,26 @@ train:
   # A second Phase 2 arm with the core frozen, so `unfreeze_core` rests on a
   # measurement. Costs one extra Phase 2 training run; set to false to skip.
   core_freeze_ablation: true
+  # Written out because it is unsettled. The `core_unfrozen` arm was unstable
+  # at 1e-3 *and* at this value — it swung to 2.46x its best mid-run — so
+  # lowering it did not fix the instability and 3e-4 is not established as
+  # better. `configs/server_isolate.yaml` should say more: if the L2-SP
+  # anchor was holding that arm together, removing it will make the swing
+  # worse rather than better.
+  lr: 0.0003
 
 phase1:
   steps: 400
   batch_size: 32
 
 phase2:
-  steps: 600
+  # 600 was too small to say anything: at that budget every arm sat at
+  # "no better than predicting no change". At 6,000 the from-scratch arm
+  # reached 0.807 against no-change and was **still improving**
+  # (0.918 -> 0.921 -> 0.857 -> 0.807), so this is a floor rather than a
+  # tuned value. Three arms at 6,000 steps took about 96 minutes on the
+  # server, which is affordable inside the ~12-hour budget of §0.
+  steps: 6000
   batch_size: 32
   cells_per_draw: 16
 
