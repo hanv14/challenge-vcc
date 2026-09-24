@@ -151,6 +151,26 @@ def cross_context_scope(held_out_context: str, held_out_targets: Iterable[str]) 
     )
 
 
+def cross_assay_scope(
+    screens: Iterable[str], held_out_targets: Iterable[str]
+) -> PriorScope:
+    """The cross-assay variant — learn from LINCS, adapt to a Replogle screen.
+
+    Every Replogle screen's *responses* are hidden, not just the scored one:
+    the arm has to learn what a perturbation does from LINCS alone, so a
+    prior built on any single-cell screen's responses would be the answer
+    arriving by another route. Their control cells stay visible, which is
+    what "adapt using only its controls" means, and LINCS's own blocks stay —
+    it is the training assay here.
+    """
+    names = sorted({str(name) for name in screens})
+    return PriorScope(
+        exclude_targets=frozenset(held_out_targets),
+        exclude_response_contexts=frozenset(names),
+        label=f"rehearsal:cross_assay:{'+'.join(names)}",
+    )
+
+
 def unseen_genes_scope(
     hidden_genes: Iterable[str],
     context: str,

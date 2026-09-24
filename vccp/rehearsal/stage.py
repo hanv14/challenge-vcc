@@ -63,6 +63,16 @@ def run_rehearsal(cfg: Config) -> dict[str, Any]:
     )
     release_gpu_memory()
 
+    # Cross-assay: LINCS to Replogle, the boundary every submission crosses
+    # and the only one the other three variants never test (§7.7). Evidence
+    # for the write-up rather than score, so it is opt-in.
+    if cfg.rehearsal.cross_assay:
+        log.info("rehearsal: the cross-assay variant (LINCS -> Replogle)")
+        results += variants.run_cross_assay(
+            cfg, features, contexts, gene_index, device, run_paths, paths
+        )
+        release_gpu_memory()
+
     # The A/B that decides `phase2.perturbation_mode` (PLAN_PERCELL.md §12).
     # Off unless asked for: it retrains one Phase 2 arm per configuration, so
     # it is a deliberate measurement rather than something every run pays for.
@@ -87,7 +97,8 @@ def run_rehearsal(cfg: Config) -> dict[str, Any]:
             "scored_metrics": list(official.SCORED),
         },
         "keys": {
-            common.END_TO_END: "variant 2 only: whole predicted cells, end-to-end",
+            common.END_TO_END: "variants 2 and cross_assay: whole predicted cells, "
+            "end-to-end",
             common.PANEL_ASSISTED: "variants 1 and 3: the panel values fed in are the "
             "truth, so these are NOT end-to-end performance",
         },
@@ -518,32 +529,44 @@ def summarize(report: dict[str, Any]) -> str:
         label = "official (end-to-end)" if key == common.END_TO_END else (
             "official (PANEL-ASSISTED — the panel fed in is the truth)"
         )
+        # The three standard arms, plus whatever else this variant produced —
+        # the cross-assay variant adds a second method arm asked as the
+        # modality the weights were trained on, and an arm that is not
+        # printed is an arm that was measured for nothing.
+        standard = (common.METHOD, common.UPPER_BOUND, common.FLOOR)
+        arm_order = list(standard) + [a for a in sorted(entry["arms"]) if a not in standard]
         scored_any = any(
-            "scored" in entry["arms"].get(arm, {}).get(key, {})
-            for arm in (common.METHOD, common.UPPER_BOUND, common.FLOOR)
+            "scored" in entry["arms"].get(arm, {}).get(key, {}) for arm in arm_order
         )
         if scored_any:
             lines.append(f"  {label}:")
             for metric in official.SCORED:
-                row = [f"    {metric:<42}"]
-                for arm in (common.METHOD, common.UPPER_BOUND, common.FLOOR):
+                row = [f"    {official.short_name(metric):<8}"]
+                for arm in arm_order:
                     value = entry["arms"].get(arm, {}).get(key, {}).get("scored", {}).get(metric)
                     row.append(f"{arm}={value:.4f}" if value is not None else f"{arm}=--")
                 lines.append("  ".join(row))
-            for arm in (common.METHOD, common.UPPER_BOUND, common.FLOOR):
+            for arm in arm_order:
                 normalized = entry["arms"].get(arm, {}).get(key, {}).get("normalized", {})
                 if normalized.get("objective") is not None:
                     lines.append(
-                        f"    {arm:<12} objective vs no change: "
+                        f"    {arm:<24} objective vs no change: "
                         f"{normalized['objective']:+.4f}"
                     )
-            for arm in (common.METHOD, common.UPPER_BOUND, common.FLOOR):
+            for arm in arm_order:
                 board = entry["arms"].get(arm, {}).get(key, {}).get("leaderboard", {})
                 if board.get("available") and board.get("avg_score") is not None:
                     lines.append(
-                        f"    {arm:<12} leaderboard scale (0 = baseline, "
+                        f"    {arm:<24} leaderboard scale (0 = baseline, "
                         f"1 = replicate): {board['avg_score']:+.4f}"
                     )
+            if entry.get("modalities"):
+                lines.append(
+                    "    the two method arms are the same weights asked as "
+                    f"{entry['modalities'].get(common.METHOD)} and as "
+                    f"{entry['modalities'].get(variants.SOURCE_MODALITY)}; the gap "
+                    "is what the knockout-specific type offset is worth here"
+                )
         lines.append("")
 
     calibration = report["calibration"]

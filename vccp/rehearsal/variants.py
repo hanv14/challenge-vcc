@@ -44,6 +44,10 @@ from . import common
 
 log = get_logger()
 
+#: The cross-assay variant's second method arm: the same weights, asked as
+#: the modality they were trained on rather than the one being predicted.
+SOURCE_MODALITY = "method_source_modality"
+
 
 @dataclass
 class VariantResult:
@@ -886,3 +890,173 @@ def _sweep_contexts(cfg, contexts, names) -> list[tuple[str, list[str]]]:
             scored.append((held_out, targets))
     scored.sort(key=lambda item: -len(item[1]))
     return scored[: cfg.rehearsal.mode_sweep_contexts]
+
+
+# --------------------------------------------------------------------------- #
+# the cross-assay variant — LINCS to Replogle (PLAN_PERCELL.md §7.7)
+# --------------------------------------------------------------------------- #
+def run_cross_assay(
+    cfg, features, contexts, gene_index, device: str, run_paths, paths
+) -> list[VariantResult]:
+    """Learn what a perturbation does from LINCS; adapt with controls alone.
+
+    Variant 2 is cross-*context*: the same assay, a different cell line. This
+    is cross-*assay*, and it is the closer analogue of what the submission
+    actually does. The challenge is not Replogle — different lab, different
+    protocol, ~20,000 UMIs per cell against 11,000–15,000 — so every
+    submission crosses an assay boundary that nothing else in the rehearsal
+    measures.
+
+    The arm learns perturbation behaviour from **LINCS only** and meets the
+    held-out Replogle screen through its control cells alone:
+
+    * the priors hide every Replogle screen's responses, so the answer cannot
+      arrive through a prior block;
+    * the perturbation module is Phase 1's, never trained on a single-cell
+      screen;
+    * the panel→rest mapping does not exist yet — LINCS is panel-only — so
+      the controls-only adaptation is what builds it, which is exactly the
+      "adapt using only its controls" the challenge allows.
+
+    **It is also the experiment that tests the type vocabulary** (D56). LINCS
+    is CRISPR knockout and the screen is CRISPR interference, so the two arms
+    below predict the same model through different type rows: `method` asks
+    as CRISPRi, which is what Phase 3 does and which reaches `base` alone
+    because `delta[crispri]` was never trained here; `method_source_modality`
+    asks as CRISPR knockout, the modality the weights actually learned. The
+    gap between them is what Phase 1's knockout-specific offset is worth when
+    it is carried to a knockdown screen — the question §3.3 raises and
+    nothing has so far answered.
+
+    Evidence, not score: it cannot improve a submission, which is why it is
+    behind `rehearsal.cross_assay` and never runs in a deadline run.
+    """
+    from ..priors.scope import cross_assay_scope
+
+    variant = "cross_assay"
+    results: list[VariantResult] = []
+    names = sorted(contexts)
+    if not names:
+        log.info("  %s: skipped, no Replogle screen", variant)
+        return results
+
+    phase1_core = run_paths.core_checkpoint(phase1.PHASE)
+    if not phase1_core.is_file():
+        log.info("  %s: skipped, Phase 1 has not run in this run directory", variant)
+        return results
+
+    lincs_targets = _lincs_targets(cfg, device)
+    if not lincs_targets:
+        log.info("  %s: skipped, no LINCS target is a challenge gene", variant)
+        return results
+
+    for held_out in names[: cfg.rehearsal.cross_assay_contexts]:
+        tensors = contexts[held_out]
+        shared = sorted(
+            set(tensors.pert_train_targets + tensors.pert_val_targets) & lincs_targets
+        )
+        targets = held_out_targets(tensors, cfg, shared)
+        if len(targets) < 2:
+            log.info(
+                "  %s/%s: skipped, only %d target(s) shared with LINCS",
+                variant, held_out, len(targets),
+            )
+            continue
+        log.info(
+            "  %s/%s: %d targets shared with LINCS, learned from LINCS alone",
+            variant, held_out, len(targets),
+        )
+
+        scope = cross_assay_scope(names, targets)
+        scoped_features = build_priors(cfg, scope, reference_layouts=features.layouts)
+
+        # The method arm: Phase 1's core, and nothing from any single-cell
+        # screen except this one's control cells.
+        method_model = build_and_load(cfg, scoped_features, device, phase1_core)
+        adaptation = adapt.adapt_on_controls(
+            method_model, tensors, cfg, steps=cfg.rehearsal.adapt_steps,
+            device=device, rng=np.random.default_rng(cfg.seed), phase="rehearsal",
+        )
+
+        # The upper bound saw Replogle's perturbed cells, through Phase 2.
+        bound_model = build_and_load(
+            cfg, features, device, run_paths.core_checkpoint(phase2.PHASE)
+        )
+        adapt.adapt_on_controls(
+            bound_model, tensors, cfg, steps=cfg.rehearsal.adapt_steps,
+            device=device, rng=np.random.default_rng(cfg.seed), phase="rehearsal_bound",
+        )
+
+        rng = np.random.default_rng(cfg.seed)
+        gene_names, _, _ = gene_axis(tensors)
+        control_counts = control_counts_for(tensors, cfg, rng)
+        real_counts, real_labels, cells_per_target = real_cells_for(
+            tensors, targets, cfg, rng
+        )
+        settings = GeneratorSettings()
+        scale_reference = leaderboard_scale(
+            cfg, run_paths, variant, held_out, real_counts, real_labels,
+            control_counts, gene_names, "non-targeting",
+        )
+
+        predictions = {common.FLOOR: {
+            t: common.zero_prediction(t, len(gene_names)) for t in targets
+        }}
+        plan = (
+            (common.METHOD, method_model, cfg.phase2.pert_type),
+            (SOURCE_MODALITY, method_model, cfg.phase1.pert_type),
+            (common.UPPER_BOUND, bound_model, cfg.phase2.pert_type),
+        )
+        for arm, model, modality in plan:
+            model.use_adapters([adapt.context_adapter(held_out)])
+            arm_cfg = dataclasses.replace(
+                cfg, phase2=dataclasses.replace(cfg.phase2, pert_type=modality)
+            )
+            predictions[arm] = predict_targets(
+                arm_cfg, model, tensors, targets, gene_index, device,
+                arm=arm, variant=variant, control_counts=control_counts,
+                cells_per_target=cells_per_target, settings=settings,
+            )
+
+        arms = score_arms(
+            cfg, variant, predictions, control_counts, real_counts, real_labels,
+            cells_per_target, gene_names, settings, "non-targeting",
+            common.END_TO_END, scale_reference=scale_reference,
+        )
+
+        results.append(VariantResult(
+            variant=variant,
+            context=held_out,
+            arms=arms,
+            detail={
+                "n_targets": len(targets),
+                "learned_from": ["LINCS (phase 1)"],
+                "leaderboard_scale": scale_reference.as_dict(),
+                "adaptation": adaptation.as_dict(),
+                "prior_scope": scope.describe(),
+                "modalities": {
+                    common.METHOD: cfg.phase2.pert_type,
+                    SOURCE_MODALITY: cfg.phase1.pert_type,
+                },
+                "note": "the perturbation module is Phase 1's, trained on LINCS "
+                        "bulk knockouts and never on a single-cell screen; the "
+                        "mapping was built here from control cells alone. "
+                        f"`{SOURCE_MODALITY}` is the same model asked as the "
+                        "modality it learned, so the gap between the two arms is "
+                        "what the knockout-specific type offset is worth on a "
+                        "knockdown screen",
+            },
+        ))
+        del method_model, bound_model
+        release_gpu_memory()
+    return results
+
+
+def _lincs_targets(cfg, device: str) -> set[str]:
+    """LINCS target genes that the vocabulary has a token for."""
+    try:
+        tensors = phase1.load_phase1_tensors(cfg, device)
+    except Exception as exc:  # noqa: BLE001 — a missing Phase 1 file is a skip
+        log.info("  cross_assay: LINCS could not be read (%s)", exc)
+        return set()
+    return {str(t) for t in tensors.targets}

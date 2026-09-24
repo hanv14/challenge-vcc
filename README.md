@@ -351,6 +351,29 @@ python scripts/capacity_check.py --config configs/server.yaml --targets 8 --step
 python scripts/coupling_check.py --config configs/server.yaml
 ```
 
+There is also a fourth **rehearsal variant**, off by default, that measures
+the one boundary the other three never test:
+
+```yaml
+rehearsal:
+  cross_assay: true       # learn from LINCS alone, adapt with controls only
+```
+
+Variants 1–3 all stay inside Replogle. `cross_assay` learns what a
+perturbation does from **LINCS only** — bulk, CRISPR knockout — and meets a
+Replogle screen through its control cells alone, which is structurally what
+every submission does: the challenge is a different lab, protocol and
+sequencing depth from Replogle. It retrains nothing, so it costs an
+adaptation, a prior rebuild and three scored arms per screen.
+
+Read its two method arms against each other. They are the **same weights**
+asked through different perturbation-type rows — `method` as CRISPRi, which
+is what Phase 3 does, and `method_source_modality` as CRISPR knockout, the
+modality the weights learned. The gap is what Phase 1's knockout-specific
+offset is worth on a knockdown screen, which is the question CLAUDE.md §3.3
+raises and nothing else in the pipeline answers. If they score the same, the
+type vocabulary is doing nothing there.
+
 Run the coupling check before trusting `phase2.perturbation_mode: percell`
 on a new dataset: a degenerate coupling makes per-cell training identical to
 pooled training, and the two are indistinguishable from their curves.

@@ -9,9 +9,8 @@ landed (the A/B stage, one prediction path for both modes, calibration
 provenance). P6 is the server run, which is yours: `configs/server_sweep.yaml`
 and README §5b are the hand-off.**
 
-**Not built: §7.7's cross-assay rehearsal variant.** §14 named it the slip
-candidate because it produces evidence for the defense rather than score for
-the leaderboard, and P5's A/B took the window. It stands as specified.
+**§7.7's cross-assay variant is built too**, after P6 — the last item the
+schedule had marked as the slip candidate.
 
 The current perturbation module predicts one mean effect per (context,
 target). This replaces it with one that maps **a cell** to **that cell
@@ -545,6 +544,30 @@ analogue of the challenge than variant 2 is, for the reason at the top of
 this section. It produces **evidence, not score**: it cannot improve the
 submission, so it is built behind a config flag
 (`rehearsal.cross_assay: false`) and never slows a deadline run.
+
+**Built.** `variants.run_cross_assay`, with three things worth stating:
+
+* **The priors hide every Replogle screen's responses**, not just the scored
+  one (`cross_assay_scope`). The arm has to learn what a perturbation does
+  from LINCS alone, and a prior block built on any single-cell screen's
+  responses would be the answer arriving by another route. Their control
+  cells stay visible, which is what "adapt using only its controls" means.
+* **The mapping does not exist and has to be built here.** LINCS is
+  panel-only, so a Phase-1-only model has never seen a rest gene. The
+  controls-only adaptation is what creates the panel→rest mapping — which is
+  precisely the thing the challenge allows and the submission depends on.
+* **It is the experiment that tests the type vocabulary** (§7.4, D56). LINCS
+  is CRISPR knockout and the screen is CRISPR interference, so the variant
+  scores the *same weights* through two type rows: `method` asks as CRISPRi,
+  which is what Phase 3 does and which reaches `base` alone because
+  `delta[crispri]` was never trained in this arm; `method_source_modality`
+  asks as CRISPR knockout, the modality the weights actually learned. **The
+  gap between those two arms is what Phase 1's knockout-specific offset is
+  worth when carried to a knockdown screen** — the question CLAUDE.md §3.3
+  raises, and which nothing else in the pipeline answers.
+
+Run it with `rehearsal.cross_assay: true`; it retrains nothing, so it costs
+an adaptation, a prior rebuild and three scored arms per screen.
 
 ---
 

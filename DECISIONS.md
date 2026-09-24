@@ -1300,3 +1300,48 @@ way to break that claim without noticing, and a separate `run_name` keeps the
 measurement from overwriting the run a submission came from — which is
 exactly the confusion that made the earlier threshold-and-scale mystery so
 slow to resolve.
+
+## The cross-assay variant
+
+### D71. The cross-assay variant hides every screen's responses, not just one
+
+**Decision.** `cross_assay_scope` sets `exclude_response_contexts` to **all**
+Replogle screens, where `cross_context_scope` sets it to the held-out one.
+
+**Reason.** The arm's whole claim is that it learned what a perturbation does
+from LINCS alone. A prior block built on any single-cell screen's responses
+— the Replogle perturbation-phenotype block of §4.1 — would be that
+knowledge arriving by another route, and the variant would be measuring
+something weaker than it says. Their control cells stay visible, which is
+what "adapt using only its controls" means, and LINCS's own blocks stay
+because it is the training assay here.
+
+**The mapping is part of the point.** LINCS is panel-only
+(`phase1_lincs.h5ad` is 688 x 955), so a Phase-1-only model has never seen a
+rest gene and has no panel→rest mapping at all. The controls-only adaptation
+is what builds it — precisely the thing the challenge allows and the
+submission depends on, measured here for the first time.
+
+### D72. The variant scores the same weights through two type rows
+
+**Decision.** Besides `method` and `upper_bound`, the cross-assay variant
+scores `method_source_modality`: the same model, asked as
+`phase1.pert_type` (CRISPR knockout) instead of `phase2.pert_type` (CRISPR
+interference).
+
+**Reason.** This is the experiment that tests the type vocabulary of D56, and
+nothing else in the pipeline does. In this arm `delta[crispri]` was never
+trained, so asking as CRISPRi reaches `base` alone, while asking as knockout
+reaches `base + delta[crispr_ko]` — the offset Phase 1 actually learned.
+**The gap between the two arms is what that knockout-specific offset is worth
+when carried to a knockdown screen**, which is exactly the question CLAUDE.md
+§3.3 raises when it says directions transfer between the two but magnitudes
+do not.
+
+If the two arms score the same, the type vocabulary is doing nothing here and
+§7.4 is a correctness fix rather than a working mechanism. If they differ, the
+sign says whether Phase 1's knockout specialization helps or hurts on the
+assay the submission actually faces.
+
+**Cost:** one extra scored arm, no extra training — it is the same weights
+through a different token.

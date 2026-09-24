@@ -459,3 +459,97 @@ def test_an_off_sweep_prints_nothing():
 
     assert stage._summarize_mode_sweep({"ran": False, "reason": "off"}) == []
     assert stage._summarize_mode_sweep({}) == []
+
+
+# --------------------------------------------------------------------------- #
+# the cross-assay variant (PLAN_PERCELL.md §7.7)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_cross_assay_scope_hides_every_screens_responses():
+    """Not just the scored one: the arm has to learn from LINCS alone.
+
+    A prior block built on any single-cell screen's responses would be the
+    answer arriving by another route, so hiding only the held-out screen
+    would leak the very thing the variant is measuring.
+    """
+    from vccp.priors.scope import cross_assay_scope, cross_context_scope
+
+    screens = ["K562_gwps", "rpe1"]
+    scope = cross_assay_scope(screens, ["ADNP", "BYSL"])
+
+    assert scope.exclude_response_contexts == frozenset(screens)
+    assert scope.exclude_targets == frozenset({"ADNP", "BYSL"})
+    # Control cells stay visible — that asymmetry is what "adapt using only
+    # its controls" means.
+    assert scope.exclude_contexts == frozenset()
+
+    # And it is a different scope from variant 2's, which hides one screen.
+    narrow = cross_context_scope("rpe1", ["ADNP", "BYSL"])
+    assert scope.exclude_response_contexts > narrow.exclude_response_contexts
+    assert scope.describe()["cache_key"] != narrow.describe()["cache_key"]
+
+
+def test_the_cross_assay_scope_is_stable_under_screen_order():
+    """Two orderings are the same restriction and must not rebuild priors."""
+    from vccp.priors.scope import cross_assay_scope
+
+    a = cross_assay_scope(["rpe1", "K562_gwps"], ["ADNP"])
+    b = cross_assay_scope(["K562_gwps", "rpe1"], ["ADNP"])
+    assert a.label == b.label
+    assert a.describe()["cache_key"] == b.describe()["cache_key"]
+
+
+def test_the_variant_names_its_second_method_arm():
+    """The same weights asked as the modality they were trained on."""
+    from vccp.rehearsal import variants
+
+    assert variants.SOURCE_MODALITY == "method_source_modality"
+    assert variants.SOURCE_MODALITY != common_module().METHOD
+
+
+def common_module():
+    from vccp.rehearsal import common
+
+    return common
+
+
+def test_the_cross_assay_config_is_off_and_validated():
+    from vccp.config import ConfigError, Rehearsal
+
+    assert Rehearsal().cross_assay is False, "evidence, not score: never a deadline cost"
+    assert Rehearsal().cross_assay_contexts == 1
+    with pytest.raises(ConfigError, match="cross_assay_contexts"):
+        Rehearsal(cross_assay_contexts=0).validate()
+
+
+def test_the_summary_prints_every_arm_a_variant_produced():
+    """An arm that is measured and not printed is measured for nothing."""
+    from vccp.rehearsal import common, stage, variants
+
+    entry = {
+        "variant": "cross_assay",
+        "context": "rpe1",
+        "n_targets": 9,
+        "modalities": {common.METHOD: "crispri", variants.SOURCE_MODALITY: "crispr_ko"},
+        "arms": {
+            arm: {common.END_TO_END: {"scored": {"pds_cosine": value}}}
+            for arm, value in (
+                (common.METHOD, 0.51),
+                (common.UPPER_BOUND, 0.62),
+                (common.FLOOR, 0.50),
+                (variants.SOURCE_MODALITY, 0.55),
+            )
+        },
+    }
+    text = stage.summarize({
+        "scorer": {"available": True},
+        "variants": [entry],
+        "calibration": {"settings": {"confidence_threshold": 0.0, "effect_scale": 1.0}},
+        "scale": {"built_on": [], "attempted_on": [], "datasets": {}},
+        "note": "",
+    })
+    assert variants.SOURCE_MODALITY in text
+    assert "0.5500" in text
+    # And the reading that makes the two method arms worth comparing.
+    assert "knockout-specific type offset" in text

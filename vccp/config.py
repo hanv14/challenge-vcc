@@ -589,6 +589,17 @@ class Rehearsal:
     #: Off by default because each screen costs a full grid of official
     #: scorings, which is the slow part of the rehearsal.
     calibrate_per_dataset: bool = False
+    #: Learn what a perturbation does from LINCS alone, adapt to a Replogle
+    #: screen through its control cells, and score (PLAN_PERCELL.md §7.7).
+    #: Variant 2 is cross-*context*, the same assay in a different cell line;
+    #: this is cross-*assay*, which is what every submission actually does —
+    #: the challenge is a different lab, protocol and sequencing depth from
+    #: Replogle. It is evidence for the write-up rather than score for the
+    #: leaderboard, so it is off by default and never runs in a deadline run.
+    cross_assay: bool = False
+    #: Screens it runs on. It retrains nothing, but each screen costs an
+    #: adaptation, a prior rebuild and three scored arms.
+    cross_assay_contexts: int = 1
     #: The A/B that decides `phase2.perturbation_mode` (PLAN_PERCELL.md §12).
     #: Off by default because it retrains one Phase 2 arm per configuration:
     #: it is a deliberate measurement, not something every run should pay for.
@@ -628,6 +639,8 @@ class Rehearsal:
             )
         if self.mode_sweep_contexts < 1:
             raise ConfigError("rehearsal.mode_sweep_contexts must be at least 1")
+        if self.cross_assay_contexts < 1:
+            raise ConfigError("rehearsal.cross_assay_contexts must be at least 1")
 
 
 @dataclass(frozen=True)
