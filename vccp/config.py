@@ -326,6 +326,18 @@ class Phase2:
     #: Replogle is CRISPR interference, as the challenge is — the two share
     #: a type row, which is the transfer this vocabulary exists to allow.
     pert_type: str = "crispri"
+    #: Start Phase 2 from the Phase 1 core. On by default because that is the
+    #: three-phase design of CLAUDE.md §4, and off is a deliberate answer to a
+    #: measurement: the `core_scratch` ablation exists to say whether the warm
+    #: start earns its place, and on the server's 6,000-step run it did not —
+    #: the warm arms sat at ~1.0 against no-change while the scratch arm
+    #: reached 0.807 and was still improving (DECISIONS.md D76).
+    #:
+    #: Turning this off makes the shipped model a two-phase one, which is a
+    #: deviation from §4 and has to be recorded as one. It also makes the
+    #: ablation redundant, and Phase 2 says so rather than training an
+    #: identical third arm.
+    warm_start: bool = True
     #: Phase 2 has the data to support training the core, and is where the
     #: forgetting guard is worth having (DECISIONS.md D3).
     unfreeze_core: bool = True

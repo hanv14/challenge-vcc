@@ -920,16 +920,26 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
 
     def arm_record(arm: str, unfreeze_core: bool, result, frozen, steps: int, warm: bool):
         replayed = sum((result.replay or {}).get("steps_replayed", {}).values())
-        divergence = result.divergence
-        diverged = divergence is not None and divergence > DIVERGENCE_RATIO
+        divergence, instability = result.divergence, result.instability
+        # Two ways a run can be untrustworthy, and `final / best` only sees
+        # one: an arm that swings to 2.46 mid-run and lands at 1.25 reads as
+        # steady at 1.15x. The swing is the thing that says the optimisation
+        # is not under control.
+        diverged = (divergence is not None and divergence > DIVERGENCE_RATIO) or (
+            instability is not None and instability > DIVERGENCE_RATIO
+        )
         if diverged:
             log.warning(
-                "  %s diverged: %s ended at %.4f, %.2fx its own best of %.4f at step %s. "
-                "The ablations read the best, and the saved checkpoint is the final "
-                "one — lower train.lr or shorten this arm.",
-                arm, SELECTION_METRIC, result.final_metrics.get(SELECTION_METRIC, float("nan")),
-                divergence, result.best_metrics.get(SELECTION_METRIC, float("nan")),
-                result.best_step,
+                "  %s is unstable on %s: best %.4f at step %s, worst %.4f at step %s, "
+                "ended %.4f (%.2fx best; swing %.2fx). The ablations read the best, "
+                "and the checkpoint saved is the final one — lower train.lr.",
+                arm, SELECTION_METRIC,
+                result.best_metrics.get(SELECTION_METRIC, float("nan")), result.best_step,
+                result.worst_value if result.worst_value is not None else float("nan"),
+                result.worst_step,
+                result.final_metrics.get(SELECTION_METRIC, float("nan")),
+                divergence if divergence is not None else float("nan"),
+                instability if instability is not None else float("nan"),
             )
         return {
             "unfreeze_core": unfreeze_core,
@@ -948,14 +958,25 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             "validation_final": result.final_metrics,
             "best_step": result.best_step,
             "divergence_final_over_best": divergence,
+            "instability_worst_over_best": instability,
             "diverged": diverged,
             "trainable": frozen,
         }
 
     main_arm = "core_unfrozen" if cfg.phase2.unfreeze_core else "core_frozen"
-    model, result, frozen = train_arm(main_arm, cfg.phase2.unfreeze_core, cfg.phase2.steps)
+    if not cfg.phase2.warm_start:
+        log.warning(
+            "phase2.warm_start is off: the shipped model starts from the priors, not "
+            "from Phase 1. That is a deviation from CLAUDE.md §4's three-phase design "
+            "and is recorded as one."
+        )
+    model, result, frozen = train_arm(
+        main_arm, cfg.phase2.unfreeze_core, cfg.phase2.steps,
+        warm_start=cfg.phase2.warm_start,
+    )
     arms[main_arm] = arm_record(
-        main_arm, cfg.phase2.unfreeze_core, result, frozen, cfg.phase2.steps, True
+        main_arm, cfg.phase2.unfreeze_core, result, frozen, cfg.phase2.steps,
+        cfg.phase2.warm_start,
     )
 
     save_core(
@@ -992,7 +1013,12 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     # all. The gap between this arm and the warm ones is what the first phase
     # is worth, and until it was measured the three-phase design rested on an
     # assumption (PLAN_PERCELL.md §7.6).
-    if cfg.train.phase1_contribution_ablation:
+    if cfg.train.phase1_contribution_ablation and not cfg.phase2.warm_start:
+        log.info(
+            "phase 2: skipping the core_scratch ablation — the main arm already "
+            "trains without Phase 1, so the arm would be a duplicate"
+        )
+    elif cfg.train.phase1_contribution_ablation:
         steps = scratch_arm_steps(cfg)
         log.info("phase 2 ablation: core_scratch (no Phase 1) for %d steps", steps)
         scratch_model, scratch_result, scratch_frozen = train_arm(
@@ -1021,6 +1047,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         "device": device,
         "main_arm": main_arm,
         "perturbation_mode": cfg.phase2.perturbation_mode,
+        "warm_started_from_phase1": cfg.phase2.warm_start,
         "ot": {
             "epsilon": cfg.phase2.ot_epsilon,
             "batch_cells": cfg.phase2.ot_batch_cells,

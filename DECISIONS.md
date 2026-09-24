@@ -1434,3 +1434,51 @@ and the `None` in `rehearsal.mode_sweep_epsilons` — which *is* the pooled arm
 **A gap closed while here:** `steps: 1.5` used to pass validation and travel
 into `range()`, which truncates silently. A fractional count is now rejected,
 while `steps: 200.0` is accepted as 200.
+
+### D76. Phase 1's warm start measurably hurts Phase 2, and `phase2.warm_start` can turn it off
+
+**Measured**, server, 6,000 steps, matched Phase 2 budgets, each arm read at
+its best:
+
+| arm | map pearson | delta ÷ no-change | pert ÷ no-change | pert pearson |
+|---|---|---|---|---|
+| `core_unfrozen` (warm) | −0.021 | 1.001 | 1.080 | 0.095 |
+| `core_frozen` (warm) | −0.022 | 1.006 | 1.010 | 0.089 |
+| **`core_scratch`** (no Phase 1) | **+0.105** | **0.839** | **0.807** | **0.433** |
+
+`phase1_contribution` = **−0.274**. Both warm arms sit at "no better than
+predicting nothing" on every head, with a panel→rest mapping whose
+correlation with the truth is *negative*. The scratch arm learns on all of
+them, monotonically, and was still improving when its budget ran out
+(0.918 → 0.921 → 0.857 → 0.807).
+
+At 600 steps this looked like "nothing is learning and the budget is too
+small". At 6,000 it is clear that the budget was only part of it: **the
+scratch arm learns at this budget and the warm arms do not.**
+
+**Decision.** `phase2.warm_start` (default true) can turn the warm start off,
+making the shipped model a two-phase one. Default stays true because the
+three-phase design is CLAUDE.md §4 and turning it off is a deviation that has
+to be recorded as one — but the measurement now exists to justify it, and the
+option is one line rather than a fork. A cold main arm makes the
+`core_scratch` ablation a duplicate, so Phase 2 skips it and says why.
+
+**What is still confounded.** The scratch arm differs from a warm arm in
+three ways at once: no warm start, no L2-SP anchor, and no replay steps
+interfering with the Phase 2 objective (the step *count* is matched, the
+interference is not). Which of the three is doing the damage needs one run
+with `train.l2sp_weight: 0` and `train.replay_fraction: 0` on a warm arm — if
+that matches the scratch arm, the initialization is fine and the forgetting
+guard is the problem.
+
+### D77. Instability is measured as `worst / best`, not only `final / best`
+
+**Decision.** `TrainResult` records `worst_value`/`worst_step` beside the
+best, and an arm is flagged when **either** `final / best` or `worst / best`
+exceeds `DIVERGENCE_RATIO`.
+
+**Reason.** D74's check saw only how a run *ended*. The 6,000-step
+`core_unfrozen` arm hit **2.4615** at step 4500 and ended at 1.2458 — 1.15x
+its best, under the threshold — so it read as steady while swinging by 2.28x.
+A run that swings that far and happens to land near its best is not under
+control, and the ending cannot show it.

@@ -275,6 +275,45 @@ def test_a_run_that_diverges_is_judged_at_its_best_not_its_last_step():
     assert TrainResult(steps=10).divergence is None
 
 
+def test_a_run_that_swings_mid_training_is_unstable_even_if_it_lands_well():
+    """`final / best` cannot see a swing that recovers.
+
+    The 6000-step server arm hit 2.4615 at step 4500 and ended at 1.2458 —
+    1.15x its best, under the divergence threshold — so it read as steady
+    while being anything but.
+    """
+    from vccp.train.loop import TrainResult
+
+    result = TrainResult(steps=6000)
+    result.selected_on = phase2_mod.SELECTION_METRIC
+    result.best_metrics = {phase2_mod.SELECTION_METRIC: 1.0804}
+    result.best_step = 3000
+    result.worst_value, result.worst_step = 2.4615, 4500
+    result.final_metrics = {phase2_mod.SELECTION_METRIC: 1.2458}
+
+    assert result.divergence == pytest.approx(1.153, abs=1e-3)
+    assert result.divergence < phase2_mod.DIVERGENCE_RATIO, "the ending looks fine"
+    assert result.instability == pytest.approx(2.278, abs=1e-3)
+    assert result.instability > phase2_mod.DIVERGENCE_RATIO, "the swing does not"
+
+    # A genuinely steady run trips neither.
+    steady = TrainResult(steps=4500)
+    steady.selected_on = phase2_mod.SELECTION_METRIC
+    steady.best_metrics = {phase2_mod.SELECTION_METRIC: 0.8068}
+    steady.worst_value = 0.9205
+    steady.final_metrics = {phase2_mod.SELECTION_METRIC: 0.8068}
+    assert steady.divergence == pytest.approx(1.0)
+    assert steady.instability < phase2_mod.DIVERGENCE_RATIO
+
+
+def test_a_cold_main_arm_makes_the_scratch_ablation_redundant():
+    """Turning the warm start off would otherwise train the same arm twice."""
+    from vccp.config import Phase2
+
+    assert Phase2().warm_start is True, "the three-phase design is the default"
+    Phase2(warm_start=False).validate()
+
+
 def test_the_contribution_names_the_arms_that_diverged():
     """The comparison uses the best, but the checkpoint on disk is the final
     one — so the number and the model are not the same thing."""

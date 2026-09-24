@@ -57,18 +57,33 @@ class TrainResult:
     #: that divergence instead of what it meant to measure.
     best_metrics: dict[str, float] = field(default_factory=dict)
     best_step: int | None = None
+    #: The *worst* the selected metric got, and when. A run that swings wildly
+    #: and happens to land near its best is unstable too, and `final / best`
+    #: alone cannot see it: the first 6000-step server arm hit 2.46 at step
+    #: 4500 and ended at 1.25, so it read as steady at 1.15x its best.
+    worst_value: float | None = None
+    worst_step: int | None = None
     selected_on: str | None = None
+
+    def _ratio(self, value: float | None) -> float | None:
+        best = self.best_metrics.get(self.selected_on) if self.selected_on else None
+        if best is None or value is None or abs(best) < 1e-12:
+            return None
+        return float(value) / float(best)
 
     @property
     def divergence(self) -> float | None:
         """`final / best` on the selected metric. Above 1 means it got worse."""
         if not self.selected_on or not self.best_metrics:
             return None
-        best = self.best_metrics.get(self.selected_on)
-        final = self.final_metrics.get(self.selected_on)
-        if best is None or final is None or abs(best) < 1e-12:
+        return self._ratio(self.final_metrics.get(self.selected_on))
+
+    @property
+    def instability(self) -> float | None:
+        """`worst / best`. How far the run swung, whatever it ended at."""
+        if not self.selected_on or not self.best_metrics:
             return None
-        return float(final) / float(best)
+        return self._ratio(self.worst_value)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -76,8 +91,11 @@ class TrainResult:
             "final_metrics": self.final_metrics,
             "best_metrics": self.best_metrics,
             "best_step": self.best_step,
+            "worst_value": self.worst_value,
+            "worst_step": self.worst_step,
             "selected_on": self.selected_on,
             "divergence_final_over_best": self.divergence,
+            "instability_worst_over_best": self.instability,
             "replay": self.replay,
             "l2sp_drift": self.l2sp_drift,
             "curve": self.curve,
@@ -173,6 +191,14 @@ def run_training(
                 if better:
                     result.best_metrics = dict(scores)
                     result.best_step = step
+                worse = result.worst_value is None or (
+                    current > result.worst_value
+                    if select_lower_is_better
+                    else current < result.worst_value
+                )
+                if worse:
+                    result.worst_value = current
+                    result.worst_step = step
             if result.curve:
                 result.curve[-1].update({f"val_{k}": v for k, v in scores.items()})
             log.info(
