@@ -486,13 +486,26 @@ def _phase1_contribution_text(contribution: dict[str, Any]) -> str:
         ["metric", "scratch − warm"],
         [[key, _fmt(value, 4)] for key, value in sorted(contribution["improvement"].items())],
     )
+    favours = contribution.get("budget_favours")
     text += (
-        f"\nThe two arms did not spend equal effort on Phase 2's own objective: "
-        f"the warm arm gave some of its steps to replaying Phase 1 "
-        f"({steps.get('warm')} against {steps.get('scratch')}). That difference "
-        "favours `core_scratch`, so a small positive number here is a stronger "
-        "result than it looks, and a small negative one is weaker.\n\n"
+        f"\nThe two arms spent {steps.get('warm')} and {steps.get('scratch')} steps "
+        "on Phase 2's own objective (warm, scratch). A warm arm gives some of its "
+        "steps to replaying Phase 1, and the scratch arm's total budget is "
+        "`train.ablation_steps_fraction` of the main arm's, so the two rarely "
+        "match."
     )
+    if favours == "warm":
+        text += (
+            " Here the difference **favours the warm arm**, so a positive number "
+            "above is weaker than it looks and a negative one is stronger.\n\n"
+        )
+    elif favours:
+        text += (
+            " Here the difference **favours `core_scratch`**, so a positive number "
+            "above is stronger than it looks and a negative one is weaker.\n\n"
+        )
+    else:
+        text += " Here they match, so the comparison is clean.\n\n"
     return text
 
 

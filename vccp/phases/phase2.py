@@ -1064,11 +1064,16 @@ def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
     """What warm-starting from Phase 1 bought, per metric.
 
     `scratch - warm` on a ratio where lower is better, so a **positive**
-    number means Phase 1 helped by that much. Reported rather than judged:
-    the arms differ in how many steps went to Phase 2's own objective
-    (`n_phase2_steps`), and that difference favours the scratch arm, so a
-    small positive value is a stronger result than it looks and a small
-    negative one is weaker.
+    number means Phase 1 helped by that much.
+
+    Reported rather than judged, because the arms rarely spend equal effort
+    on Phase 2's own objective. A warm arm gives `train.replay_fraction` of
+    its steps to Phase 1, and the scratch arm's total budget is
+    `train.ablation_steps_fraction` of the main arm's — so which way the
+    inequality runs depends on both settings and cannot be stated once and
+    for all. `n_phase2_steps` carries the two counts and `favours` names the
+    arm the difference helps, so the reading is available rather than
+    assumed.
     """
     scratch = arms.get(SCRATCH_ARM)
     warm = next(
@@ -1082,16 +1087,24 @@ def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
         a, b = scratch["validation"].get(key), warm["validation"].get(key)
         if a is not None and b is not None:
             deltas[key] = float(a) - float(b)
+    warm_steps = warm.get("n_phase2_steps")
+    scratch_steps = scratch.get("n_phase2_steps")
+    favours = None
+    if warm_steps is not None and scratch_steps is not None:
+        if scratch_steps > warm_steps:
+            favours = SCRATCH_ARM
+        elif warm_steps > scratch_steps:
+            favours = "warm"
     return {
         "measured": bool(deltas),
         "warm_arm": next(name for name in arms if name != SCRATCH_ARM),
         "lower_is_better": True,
         "positive_means_phase1_helped": True,
         "improvement": deltas,
-        "n_phase2_steps": {
-            "warm": warm.get("n_phase2_steps"),
-            "scratch": scratch.get("n_phase2_steps"),
-        },
+        "n_phase2_steps": {"warm": warm_steps, "scratch": scratch_steps},
+        # Which arm the unequal budgets help. A result that survives a budget
+        # running against it is stronger than the number alone suggests.
+        "budget_favours": favours,
     }
 
 

@@ -3,7 +3,9 @@
 **Status: agreed and scheduled (§14). P0 `can-fit` on `mini_data` and on the
 server; P1 landed (`vccp/train/ot.py`); P2 landed (the delta term, the type
 vocabulary, the `core_scratch` arm); P3 landed (`perturbation_mode: percell`,
-the per-pair delta, and the coupling premise check that gated it).**
+the per-pair delta, and the coupling premise check that gated it); P4 landed
+(per-cell prediction and generator, measured end to end in both modes).
+Next: P5, the rehearsal A/B that decides which mode is the default.**
 
 The current perturbation module predicts one mean effect per (context,
 target). This replaces it with one that maps **a cell** to **that cell
@@ -579,6 +581,16 @@ constant delta is then a constant shift in log space, which preserves the
 spread the drawn cells brought with them instead of collapsing every cell
 onto one profile — the failure sanity check 5 exists to catch.
 
+**Measured end to end on `mini_data`**, both modes back to back and
+otherwise identical: **706 s pooled against 1653 s per-cell, 2.34x**. Sanity
+comes out the same in both — 5 pass, 2 warn, 0 fail — and check 5's variance
+ratio moves only from ~0.95 to ~0.89, well inside its 0.5–2.0 band. That is
+the direct test of the paragraph above: the per-cell folds do **not** cancel
+the drawn cells' spread. Nothing here says per-cell is *better* — at 150
+Phase 2 steps neither objective is learned at all (`pert_percell` 1.00,
+`map_delta` 1.00 against a 0.24 floor) — only that the path runs, costs what
+it should, and leaves the generator sound.
+
 **A gene with no counts in a drawn cell is left alone.** A multiplicative
 generator cannot move a zero, so the fold change there is a statement about
 `predict.cpm_floor` rather than about the prediction — and a per-cell
@@ -789,7 +801,7 @@ means one server run answers both transfer questions.
 | **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; marginals uniform) | ✅ 16 tests green; ε made relative and the grid revised (§4) |
 | **P2** | the delta term, group-mean form, pooled mode; `core_scratch` arm; type vocabulary | ✅ Phase 2 reports `map_delta_ratio_to_no_change` with its noise floor, and `phase1_contribution` per metric |
 | **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | ✅ premise checked on real cells first — `informative` (§11); both modes scored on both questions |
-| **P4** | per-cell prediction and generator | `all` green on mini in both modes, runtime measured |
+| **P4** | per-cell prediction and generator | ✅ `all` green in both modes; 706 s pooled against 1653 s per-cell (2.34x); sanity identical, no variance collapse |
 | **P5** | rehearsal A/B, ε swept, per-assay scale | a table of leaderboard-scale numbers, both modes |
 | **P6** | server run, submission | a leaderboard number to compare against −0.131 |
 

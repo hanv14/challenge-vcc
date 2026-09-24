@@ -237,9 +237,33 @@ def test_the_contribution_is_reported_with_the_step_budgets_that_qualify_it():
     assert report["improvement"]["pert_mse_ratio_to_no_change"] == pytest.approx(0.1)
     # ...and negative means it did not, on that metric.
     assert report["improvement"]["map_delta_ratio_to_no_change"] == pytest.approx(-0.1)
-    # The budgets are reported because they are unequal and the inequality
-    # favours the scratch arm.
+    # The budgets are reported because they are unequal, and which arm the
+    # inequality helps is measured rather than assumed: a warm arm gives
+    # steps to replay, but the scratch arm's whole budget is
+    # `ablation_steps_fraction` of the main arm's, so either can come out
+    # ahead.
     assert report["n_phase2_steps"] == {"warm": 450, "scratch": 600}
+    assert report["budget_favours"] == phase2_mod.SCRATCH_ARM
+
+
+def test_the_budget_bias_can_run_the_other_way():
+    """On `mini.yaml` it does: ablation_steps_fraction 0.5 leaves the scratch
+    arm with fewer Phase 2 steps than the warm one, not more."""
+    def report(warm_steps, scratch_steps):
+        return phase2_mod._phase1_contribution({
+            "core_unfrozen": {
+                "validation": {"pert_mse_ratio_to_no_change": 0.8},
+                "n_phase2_steps": warm_steps,
+            },
+            phase2_mod.SCRATCH_ARM: {
+                "validation": {"pert_mse_ratio_to_no_change": 0.9},
+                "n_phase2_steps": scratch_steps,
+            },
+        })
+
+    assert report(113, 75)["budget_favours"] == "warm"
+    assert report(75, 113)["budget_favours"] == phase2_mod.SCRATCH_ARM
+    assert report(100, 100)["budget_favours"] is None
 
 
 def test_the_contribution_says_so_when_it_cannot_be_measured():

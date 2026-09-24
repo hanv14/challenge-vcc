@@ -988,11 +988,18 @@ module at 1.036 on its own training targets it is entirely possible that it
 contributes nothing, and the three-phase design would then rest on an
 assumption at the proposal defense.
 
-**The comparison is not symmetric, and the report says so.** A warm arm
-spends `replay_fraction` of its steps on Phase 1's objective and the scratch
-arm spends none, so the scratch arm gets more training on Phase 2's own
-objective. `n_phase2_steps` is recorded per arm: the bias favours scratch, so
-a small positive contribution is a stronger result than it looks.
+**The comparison is not symmetric, and the report says which way.** Two
+settings pull against each other: a warm arm gives `train.replay_fraction` of
+its steps to Phase 1, while the scratch arm's whole budget is
+`train.ablation_steps_fraction` of the main arm's. At the default fraction of
+1.0 the scratch arm ends up with more Phase 2 steps; on `mini.yaml`, where
+the fraction is 0.5, it ends up with fewer (75 against 113). So the direction
+cannot be stated once and for all — `n_phase2_steps` carries both counts and
+`budget_favours` names the arm the difference helps, and the summary reads
+the result accordingly.
+
+*(Corrected after P4: this entry first claimed the bias always favours the
+scratch arm, which is only true when `ablation_steps_fraction` is 1.0.)*
 
 **Alternative.** Give the scratch arm replay too, to equalize the budgets.
 That would put back through the side door exactly what the ablation removes.
@@ -1163,3 +1170,35 @@ nothing downstream would notice.
 
 §4.7's requirement is untouched: the draw is still fresh and independent per
 target, it has just moved one call earlier.
+
+### D65. P4's measurement: per-cell costs 2.3x and does not collapse the cells
+
+**Measured**, `python -m vccp all` on `mini_data`, CPU, both modes, back to
+back and otherwise identical:
+
+| | wall clock | sanity | check 5 variance ratio (band 0.5–2.0) |
+|---|---|---|---|
+| `pooled` | 706 s | 5 pass, 2 warn, 0 fail | 0.94 / 0.95 / 0.95 |
+| `percell` | 1653 s | 5 pass, 2 warn, 0 fail | 0.89 / 0.89 / 0.90 |
+
+**2.34x the wall clock**, which is the estimate cycle C needs: per-cell
+prediction pushes `cells_per_pert` rows through the encoder per target
+instead of one, and Phase 2 pushes `ot_batch_cells x ot_targets_per_step`
+rather than `batch_size` pseudobulk rows.
+
+**Check 5 answers the risk D62 was reasoning about.** Per-cell fold changes
+are taken against each cell's own baseline, and the concern was that they
+would cancel the drawn cells' spread and pull every cell onto one profile.
+They do not: the variance ratio moves from ~0.95 to ~0.89, well inside the
+band, and no target falls outside it. The head predicting a change *added to
+its input* is what preserves it, as D62 argued.
+
+The two warnings are checks 6 and 7 in both modes, which is expected on
+`mini_data` and is why `mini.yaml` sets `sanity.accept_warnings`.
+
+**Nothing here says per-cell is better.** At 150 Phase 2 steps on 1,983 genes
+the model barely trains: `pert_percell_ratio_to_no_change` is 1.00 in both
+modes and `map_delta_ratio_to_no_change` is 1.00 against a noise floor of
+0.24, so neither objective has been learned at all. P4 was testing that the
+path runs, costs what it should, and does not break the generator. P5's
+rehearsal is what compares them.
