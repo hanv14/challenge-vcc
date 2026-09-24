@@ -37,6 +37,7 @@ from ..paths import DataPaths, RunPaths
 from ..phases import adapt, phase1, phase2, phase3
 from ..rehearsal import common
 from . import generator as generator_mod
+from . import percell
 from . import knockdown as knockdown_mod
 
 #: Fraction of `resources.max_ram_gb` a context's control-count block may take
@@ -144,58 +145,38 @@ def predicted_log2fc_percell(
     context: phase3.ChallengeContext,
     target_idx: torch.Tensor | None,
     baseline_sd: np.ndarray,
-    n_genes: int,
+    control_counts: np.ndarray,
     cpm_floor: float,
     pert_type: str | None = None,
     cells_per_forward: int = 64,
 ) -> tuple[np.ndarray, bool]:
     """The per-cell path: these cells in, these cells perturbed out.
 
-    `baseline_sd` is the drawn control cells over the **whole** gene axis in
-    control-SD units, `(n_cells, n_genes)`. Each row goes through the
-    perturbation module and the adapted mapping on its own, and the fold
-    change is taken against that same row — the generator multiplies that
-    cell's own counts, so taking the ratio against the population mean
-    instead would apply the cell's deviation from the mean twice.
-
-    The model's head predicts a *change* added to its input, so a row comes
-    back as its own baseline plus a predicted delta. A constant delta is
-    therefore a constant shift in log space, which preserves the
-    cell-to-cell variation the drawn cells brought with them rather than
-    collapsing it.
-
-    Cells go through in chunks of `cells_per_forward`: the encoder's cost is
-    linear in the number of rows, and 400 rows over the whole panel at once
-    is the shape most likely to exhaust a GPU.
+    `baseline_sd` is the drawn control cells over the whole gene axis in
+    control-SD units and `control_counts` is the same cells' raw counts, row
+    for row. The work is `predict.percell`'s, shared with the rehearsal so
+    that an A/B between the two modes measures the models rather than two
+    prediction routines.
     """
-    n_cells = int(baseline_sd.shape[0])
+    n_cells, n_genes = int(baseline_sd.shape[0]), int(baseline_sd.shape[1])
     if target_idx is None:
         return np.zeros((n_cells, n_genes), dtype=np.float32), False
 
-    panel_baseline = baseline_sd[:, context.panel_positions]
-    predicted = np.zeros((n_cells, n_genes), dtype=np.float32)
-
-    model.eval()
-    with torch.no_grad():
-        for start in range(0, n_cells, max(1, cells_per_forward)):
-            block = panel_baseline[start : start + max(1, cells_per_forward)]
-            values = torch.as_tensor(block, dtype=torch.float32, device=context.device)
-            targets = target_idx.reshape(1).expand(values.shape[0])
-            panel = phase2.predict_perturbed_panel(
-                model, context, values, targets, pert_type
-            )
-            rest = adapt.map_panel_to_rest(model, context, panel)
-            stop = start + values.shape[0]
-            predicted[start:stop, context.panel_positions] = panel.cpu().numpy()
-            predicted[start:stop, context.rest_positions] = rest.cpu().numpy()
-
+    predicted = percell.predict_cells(
+        model,
+        context,
+        target_idx,
+        baseline_sd,
+        context.panel_positions,
+        context.rest_positions,
+        context.device,
+        pert_type,
+        cells_per_forward,
+    )
     return (
-        common.sd_units_to_log2fc(
-            predicted,
-            context.ctrl_mean,
-            context.ctrl_std,
-            cpm_floor,
-            baseline_sd=baseline_sd,
+        percell.log2fc_for_cells(
+            predicted, baseline_sd, control_counts,
+            context.ctrl_mean, context.ctrl_std, cpm_floor,
         ),
         True,
     )
@@ -346,16 +327,11 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                     context,
                     target_idx,
                     control_sd[rows],
-                    n_genes,
+                    control_counts[rows],
                     cfg.predict.cpm_floor,
                     cfg.phase3.pert_type,
                     cfg.predict.cells_per_forward,
                 )
-                # A gene with no counts in a drawn cell cannot be moved by a
-                # multiplicative generator, so its fold change is a statement
-                # about the floor rather than about the prediction. Zeroing it
-                # keeps the reported effect sizes honest and changes no output.
-                log2fc[control_counts[rows] == 0] = 0.0
             else:
                 log2fc, used_token = predicted_log2fc(
                     model,

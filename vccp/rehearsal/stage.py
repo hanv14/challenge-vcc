@@ -63,6 +63,18 @@ def run_rehearsal(cfg: Config) -> dict[str, Any]:
     )
     release_gpu_memory()
 
+    # The A/B that decides `phase2.perturbation_mode` (PLAN_PERCELL.md §12).
+    # Off unless asked for: it retrains one Phase 2 arm per configuration, so
+    # it is a deliberate measurement rather than something every run pays for.
+    sweep: list[variants.VariantResult] = []
+    if cfg.rehearsal.mode_sweep:
+        log.info("rehearsal: the mode sweep (perturbation_mode, ot_epsilon)")
+        sweep = variants.run_mode_sweep(
+            cfg, features, contexts, gene_index, device, run_paths, paths
+        )
+        results += sweep
+        release_gpu_memory()
+
     policy_calibration = _calibrate(cfg, cross, contexts, gene_index, device, log)
 
     report = {
@@ -80,6 +92,7 @@ def run_rehearsal(cfg: Config) -> dict[str, Any]:
             "truth, so these are NOT end-to-end performance",
         },
         "variants": [result.as_dict() for result in results],
+        "mode_sweep": _mode_sweep_table(cfg, sweep),
         "calibration": policy_calibration.as_dict(),
         "scale": _leaderboard_scale(cfg, results),
         "note": (
@@ -150,10 +163,169 @@ def _calibrate(cfg, cross, contexts, gene_index, device, log):
             "real cells to score against"
         )
 
-    return calibration_module.calibrate(
+    calibration = calibration_module.calibrate(
         cfg, predictions, control_counts, real_counts, real_labels, cells_per_target,
         gene_names, "cross_context", "non-targeting",
     )
+    # Which assay the settings came from, and which one they will be applied
+    # to. They differ — the rehearsal runs on Replogle and the submission is
+    # the challenge — so this is a transfer assumption sitting in the middle
+    # of the submission path, and it should be reported rather than implied
+    # (PLAN_PERCELL.md §7.5).
+    calibration.fitted_assay = cfg.phase2.pert_type
+    calibration.applied_assay = cfg.phase3.pert_type
+    calibration.per_dataset = _per_dataset_calibration(
+        cfg, usable, chosen, contexts, device, log
+    )
+    calibration.per_dataset["spread"] = _settings_spread(
+        chosen.context, calibration.settings, calibration.per_dataset
+    )
+    return calibration
+
+
+def _per_dataset_calibration(cfg, usable, chosen, contexts, device, log) -> dict[str, Any]:
+    """The same fit on the other screens, when it was asked for.
+
+    One global setting fitted on one screen and applied to the challenge is
+    an assumption; fitting it on every screen says whether the assumption
+    holds. Screens that agree are evidence the transfer is safe, screens that
+    disagree are evidence it is not, and either reading is worth having before
+    a submission rests on it.
+
+    Off by default because each screen costs a full grid of official
+    scorings, which is the slow part of the rehearsal.
+    """
+    others = [r for r in usable if r.context != chosen.context]
+    if not cfg.rehearsal.calibrate_per_dataset:
+        return {
+            "ran": False,
+            "reason": "rehearsal.calibrate_per_dataset is off",
+            "would_have_fitted": [r.context for r in others],
+        }
+    if not others:
+        return {"ran": False, "reason": "only one screen produced a scorable arm"}
+
+    fits = {}
+    for result in others:
+        tensors = contexts[result.context]
+        stored = result.detail.get("predictions", {})
+        if not stored:
+            fits[result.context] = {"error": "no stored predictions"}
+            continue
+        rng = np.random.default_rng(cfg.seed)
+        gene_names, _, _ = variants.gene_axis(tensors)
+        control_counts = variants.control_counts_for(tensors, cfg, rng)
+        targets = list(stored)
+        real_counts, real_labels, cells_per_target = variants.real_cells_for(
+            tensors, targets, cfg, rng
+        )
+        predictions = {
+            target: common.TargetPrediction(
+                target, np.asarray(values, dtype=np.float32), {"arm": common.METHOD}
+            )
+            for target, values in stored.items()
+            if target in cells_per_target
+        }
+        if len(predictions) < 2:
+            fits[result.context] = {"error": "fewer than two scorable targets"}
+            continue
+        log.info("  calibrating again on cross_context/%s, for the spread", result.context)
+        fit = calibration_module.calibrate(
+            cfg, predictions, control_counts, real_counts, real_labels,
+            cells_per_target, gene_names, "cross_context", "non-targeting",
+        )
+        fits[result.context] = fit.settings.as_dict()
+
+    return {
+        "ran": True,
+        "fitted_on": chosen.context,
+        "others": fits,
+        "reading": (
+            "settings that agree across screens are evidence the transfer to the "
+            "challenge is safe; settings that disagree are evidence it is not"
+        ),
+    }
+
+
+def _settings_spread(chosen_context: str, chosen, per_dataset: dict[str, Any]) -> dict[str, Any]:
+    """How far the fitted settings move between screens.
+
+    The number that says whether one screen's calibration can be trusted on
+    another assay. `spread` is max minus min over the screens that fitted;
+    `agree` is whether both settings stayed inside one step of the grid.
+    """
+    fits = {chosen_context: chosen.as_dict()}
+    for context, entry in (per_dataset.get("others") or {}).items():
+        if "error" not in entry:
+            fits[context] = entry
+    if len(fits) < 2:
+        return {"measured": False, "reason": "only one screen fitted", "fits": fits}
+
+    spread = {}
+    for key in ("confidence_threshold", "effect_scale"):
+        values = [float(f[key]) for f in fits.values() if key in f]
+        spread[key] = {"min": min(values), "max": max(values), "range": max(values) - min(values)}
+    return {
+        "measured": True,
+        "fits": fits,
+        "spread": spread,
+        "reading": (
+            "a wide range here means the generator's settings are a property of "
+            "the screen they were fitted on rather than of the method, and "
+            "carrying them to the challenge — a different lab and protocol — is "
+            "the weakest link in the submission path"
+        ),
+    }
+
+
+def _mode_sweep_table(cfg, sweep) -> dict[str, Any]:
+    """The A/B as a table: one row per configuration, leaderboard scale where
+    it could be built, the six raw metrics either way.
+
+    `overall` is the mean of the six on the leaderboard's 0–1 scale, which is
+    what the leaderboard reports and what disagreed with the calibration
+    objective the last time the two were compared. The floor row is predicting
+    that nothing happened, and a configuration that does not beat it has not
+    earned a submission.
+    """
+    if not cfg.rehearsal.mode_sweep:
+        return {"ran": False, "reason": "rehearsal.mode_sweep is off"}
+    if not sweep:
+        return {"ran": False, "reason": "the sweep produced no scorable screen"}
+
+    datasets = {}
+    for result in sweep:
+        rows = []
+        for arm in sorted(result.arms):
+            scored = result.arms[arm].get(common.END_TO_END, {})
+            if "error" in scored:
+                rows.append({"arm": arm, "error": scored["error"]})
+                continue
+            scale = scored.get("leaderboard_scale") or {}
+            rows.append({
+                "arm": arm,
+                "overall": scale.get("overall"),
+                "scaled": scale.get("metrics"),
+                "raw": {k: scored.get(k) for k in official.SCORED if k in scored},
+            })
+        scorable = [r for r in rows if r.get("overall") is not None]
+        datasets[result.context] = {
+            "n_targets": result.detail.get("n_targets"),
+            "learned_from": result.detail.get("learned_from"),
+            "rows": rows,
+            "best": (
+                max(scorable, key=lambda r: r["overall"])["arm"] if scorable else None
+            ),
+            "scale_built": bool(scorable),
+        }
+    return {
+        "ran": True,
+        "epsilons": list(cfg.rehearsal.mode_sweep_epsilons),
+        "datasets": datasets,
+        "note": "one Phase 2 arm per configuration, everything else held fixed; "
+                "`overall` is the mean of the six official metrics on the "
+                "leaderboard's 0 = baseline / 1 = replicate scale",
+    }
 
 
 def _leaderboard_scale(cfg, results) -> dict[str, Any]:
@@ -228,12 +400,68 @@ def policy_settings(policy: dict[str, Any]) -> GeneratorSettings:
     return GeneratorSettings.from_dict(policy["generator"])
 
 
+def _summarize_mode_sweep(sweep: dict[str, Any]) -> list[str]:
+    """The A/B table, first in the summary because it decides the default."""
+    if not sweep.get("ran"):
+        return []
+
+    lines = ["Mode sweep — which perturbation_mode, and at which ot_epsilon",
+             "=" * 62]
+    for context, entry in sorted(sweep.get("datasets", {}).items()):
+        lines.append(
+            f"  {context}: {entry.get('n_targets', '?')} targets, learned from "
+            f"{', '.join(entry.get('learned_from') or [])}"
+        )
+        if not entry.get("scale_built"):
+            lines.append(
+                "    the leaderboard scale could not be built on this dataset, so "
+                "only the six raw metrics are available (see report.json)"
+            )
+        lines.append(f"    {'arm':<18}{'overall':>10}   the six, scaled")
+        for row in entry.get("rows", []):
+            if "error" in row:
+                lines.append(f"    {row['arm']:<18}{'—':>10}   {row['error']}")
+                continue
+            overall = row.get("overall")
+            scaled = row.get("scaled") or {}
+            detail = "  ".join(
+                f"{official.short_name(k)} {v:+.2f}"
+                for k in official.SCORED
+                if (v := scaled.get(k)) is not None
+            ) if scaled else "(raw only)"
+            lines.append(
+                f"    {row['arm']:<18}"
+                + (f"{overall:>+10.4f}" if overall is not None else f"{'—':>10}")
+                + f"   {detail}"
+            )
+        best = entry.get("best")
+        if best:
+            lines.append(
+                f"    best: {best}. Read it against the `floor` row — a configuration "
+                "that does not beat predicting no change has not earned a submission."
+            )
+        lines.append("")
+    lines.append(
+        "  One Phase 2 arm per row, everything else held fixed: same screen, same "
+        "targets,"
+    )
+    lines.append(
+        "  same control draw, same seed. `overall` is the mean of the six official "
+        "metrics"
+    )
+    lines.append("  on the leaderboard's 0 = baseline / 1 = replicate scale.")
+    lines.append("")
+    return lines
+
+
 def summarize(report: dict[str, Any]) -> str:
     """The readable summary §4.6 asks for beside the JSON."""
     lines = ["Rehearsal — Phase 3's procedure where the answers are known", ""]
     if not report["scorer"]["available"]:
         lines.append("cell-eval2 is not installed; the official metrics were not computed.")
         lines.append("")
+
+    lines += _summarize_mode_sweep(report.get("mode_sweep") or {})
 
     for entry in report["variants"]:
         header = f"{entry['variant']} / {entry['context']}"

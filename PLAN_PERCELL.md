@@ -484,6 +484,16 @@ fitted per rehearsal dataset and recorded in `phase3_policy.json` alongside
 the assay it came from, turns a hidden assumption into a reported number.
 Nearly free, and it is the honest form of what is already happening.
 
+**Built in P5.** `phase3_policy.json`'s calibration now records
+`fitted_assay`, `applied_assay` and `transfers_across_assays`, which costs
+nothing and turns the assumption into a line anyone reading the policy can
+see. `rehearsal.calibrate_per_dataset` (off by default, because each screen
+costs a full grid of official scorings) additionally fits the settings on
+every scorable screen and reports the **spread**: settings that agree across
+screens are evidence the transfer to the challenge is safe, settings that
+disagree are evidence it is not — and either reading is worth more than the
+single number the policy carries.
+
 ### 7.6 Change 3 — measure what Phase 1 is actually worth
 
 Phase 2 has two arms, `core_unfrozen` and `core_frozen`, and **both are
@@ -725,6 +735,24 @@ The comparison is `cross_context`, both modes, on the leaderboard scale
 (0 = organizers' baseline, 1 = split-half replicate) — the reading that
 disagreed with my calibration objective and turned out to be the one the
 leaderboard agreed with.
+
+**P5 built it as a stage.** `rehearsal.mode_sweep` (off by default) runs the
+cross-context variant once per configuration on one held-out screen, with
+everything else held fixed — same targets, same control draw, same seed — so
+the difference between rows is the configuration and nothing else. Each row
+retrains one Phase 2 arm under the cross-context scope, adapts it on the
+held-out screen's controls, predicts **in its own mode**, and is scored with
+the six official metrics on the leaderboard scale. The `floor` row costs no
+training and is the reference every other row is read against.
+
+Both modes predict through the same code (`vccp/predict/percell.py`), shared
+with the submission path. An A/B whose two sides predicted differently would
+be measuring the difference between two prediction routines rather than
+between two trained models.
+
+The default grid is `{pooled, 0.005, 0.01, 0.02, 0.05}` on one screen —
+`rehearsal.mode_sweep_contexts` — which is §14's budget of five runs rather
+than ninety.
 
 Today's numbers to beat, per dataset (method arm, default generator
 settings): **+0.027** (K562_essential), **−0.001** (K562_gwps), **−0.226**

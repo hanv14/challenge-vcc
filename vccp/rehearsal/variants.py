@@ -38,6 +38,7 @@ from ..phases import adapt, phase1, phase2
 from ..predict.generator import GeneratorSettings
 from ..priors.build import build_priors
 from ..priors.scope import controls_only_scope, cross_context_scope, unseen_genes_scope
+from ..runtime import release_gpu_memory
 from ..train.loop import run_training
 from . import common
 
@@ -166,6 +167,86 @@ def panel_rest_positions(tensors: phase2.ContextTensors) -> tuple[np.ndarray, np
     """Where the panel and rest genes sit in `genes.csv` order."""
     is_panel = (tensors.context.genes["split"] == "panel").to_numpy()
     return np.flatnonzero(is_panel), np.flatnonzero(~is_panel)
+
+
+def _per_gene(log2_fold_change: np.ndarray) -> np.ndarray:
+    """One value per gene, whether the prediction was per cell or per target."""
+    values = np.asarray(log2_fold_change, dtype=np.float32)
+    return values.mean(axis=0) if values.ndim == 2 else values
+
+
+def predict_targets(
+    cfg,
+    model,
+    tensors: phase2.ContextTensors,
+    targets: list[str],
+    gene_index,
+    device: str,
+    *,
+    arm: str,
+    variant: str,
+    control_counts: np.ndarray,
+    cells_per_target: dict[str, int],
+    settings: GeneratorSettings,
+) -> dict[str, common.TargetPrediction]:
+    """One arm's predictions for every target, in whichever mode is configured.
+
+    `pooled` predicts one profile per target from the screen's control
+    pseudobulk. `percell` predicts one profile per *cell*, and takes the fold
+    change against that cell's own values (PLAN_PERCELL.md §9).
+
+    The per-cell path draws exactly the rows `common.build_cells` will draw —
+    same variant, same target, same seed — so row `i` of the prediction meets
+    cell `i` of the generated block. That also keeps D7 intact: every arm
+    still scores on the same control draw, so a comparison between arms is
+    still about the fold changes alone.
+    """
+    from ..predict import percell as percell_mod
+
+    gene_names, ctrl_mean, ctrl_std = gene_axis(tensors)
+    panel_positions, rest_positions = panel_rest_positions(tensors)
+    per_cell = cfg.phase2.perturbation_mode == phase2.PERCELL
+    baseline_sd = (
+        percell_mod.control_sd_units(control_counts, ctrl_mean, ctrl_std)
+        if per_cell
+        else None
+    )
+
+    model.eval()
+    out: dict[str, common.TargetPrediction] = {}
+    for target in targets:
+        target_idx = as_index([gene_index[target]], device)
+        if per_cell:
+            rows = common.control_rows_for(
+                variant, target, cfg.seed, control_counts.shape[0],
+                cells_per_target[target], settings,
+            )
+            predicted = percell_mod.predict_cells(
+                model, tensors, target_idx, baseline_sd[rows],
+                panel_positions, rest_positions, device,
+                cfg.phase2.pert_type, cfg.predict.cells_per_forward,
+            )
+            log2fc = percell_mod.log2fc_for_cells(
+                predicted, baseline_sd[rows], control_counts[rows],
+                ctrl_mean, ctrl_std, cfg.predict.cpm_floor,
+            )
+        else:
+            with torch.no_grad():
+                panel = phase2.predict_perturbed_panel(
+                    model, tensors, tensors.control_panel.unsqueeze(0),
+                    target_idx, cfg.phase2.pert_type,
+                )
+                rest = adapt.map_panel_to_rest(model, tensors, panel)
+            full = np.zeros(len(gene_names), dtype=np.float32)
+            full[panel_positions] = panel.squeeze(0).cpu().numpy()
+            full[rest_positions] = rest.squeeze(0).cpu().numpy()
+            log2fc = common.sd_units_to_log2fc(
+                full, ctrl_mean, ctrl_std, cfg.predict.cpm_floor
+            )
+        out[target] = common.TargetPrediction(
+            target, log2fc, {"arm": arm, "per_cell": per_cell}
+        )
+    return out
 
 
 def score_arms(
@@ -441,38 +522,24 @@ def run_cross_context(
         )
 
         rng = np.random.default_rng(cfg.seed)
-        gene_names, ctrl_mean, ctrl_std = gene_axis(tensors)
-        panel_positions, rest_positions = panel_rest_positions(tensors)
+        gene_names, _, _ = gene_axis(tensors)
         control_counts = control_counts_for(tensors, cfg, rng)
         real_counts, real_labels, cells_per_target = real_cells_for(tensors, targets, cfg, rng)
 
-        predictions = {common.METHOD: {}, common.UPPER_BOUND: {}, common.FLOOR: {}}
-        for target in targets:
-            target_idx = as_index([gene_index[target]], device)
-            for arm, model in ((common.METHOD, method_model), (common.UPPER_BOUND, bound_model)):
-                model.use_adapters([adapt.context_adapter(held_out)])
-                model.eval()
-                with torch.no_grad():
-                    # Control profile + perturbation token -> perturbed panel,
-                    # then the adapted mapping -> the rest. The whole chain,
-                    # exactly as Phase 3 will run it.
-                    panel = phase2.predict_perturbed_panel(
-                        model,
-                        tensors,
-                        tensors.control_panel.unsqueeze(0),
-                        target_idx,
-                        cfg.phase2.pert_type,
-                    )
-                    rest = adapt.map_panel_to_rest(model, tensors, panel)
-                full = np.zeros(len(gene_names), dtype=np.float32)
-                full[panel_positions] = panel.squeeze(0).cpu().numpy()
-                full[rest_positions] = rest.squeeze(0).cpu().numpy()
-                predictions[arm][target] = common.TargetPrediction(
-                    target, common.sd_units_to_log2fc(full, ctrl_mean, ctrl_std, cfg.predict.cpm_floor), {"arm": arm}
-                )
-            predictions[common.FLOOR][target] = common.zero_prediction(target, len(gene_names))
-
         settings = GeneratorSettings()
+        predictions = {common.FLOOR: {
+            target: common.zero_prediction(target, len(gene_names)) for target in targets
+        }}
+        # The whole chain, exactly as Phase 3 will run it — and in whichever
+        # mode Phase 3 is configured for, so the A/B compares the models
+        # rather than two prediction routines.
+        for arm, model in ((common.METHOD, method_model), (common.UPPER_BOUND, bound_model)):
+            model.use_adapters([adapt.context_adapter(held_out)])
+            predictions[arm] = predict_targets(
+                cfg, model, tensors, targets, gene_index, device,
+                arm=arm, variant=variant, control_counts=control_counts,
+                cells_per_target=cells_per_target, settings=settings,
+            )
         scale_reference = leaderboard_scale(
             cfg, run_paths, variant, held_out, real_counts, real_labels,
             control_counts, gene_names, "non-targeting",
@@ -494,8 +561,13 @@ def run_cross_context(
                     "leaderboard_scale": scale_reference.as_dict(),
                     "adaptation": adaptation.as_dict(),
                     "prior_scope": scope.describe(),
+                    # A per-cell prediction is stored as its mean over cells:
+                    # what §5's predicted-vs-true scatter plots, and what the
+                    # calibration re-scores, are both per-gene quantities.
                     "predictions": {
-                        target: predictions[common.METHOD][target].log2_fold_change.tolist()
+                        target: _per_gene(
+                            predictions[common.METHOD][target].log2_fold_change
+                        ).tolist()
                         for target in targets[: cfg.rehearsal.n_saved_predictions]
                     },
                     # The same targets' measured change, so §5's predicted-vs-true
@@ -646,3 +718,171 @@ def run_unseen_genes(
             )
         )
     return results
+
+
+# --------------------------------------------------------------------------- #
+# the A/B that decides `perturbation_mode` (PLAN_PERCELL.md §12)
+# --------------------------------------------------------------------------- #
+def run_mode_sweep(
+    cfg, features, contexts, gene_index, device: str, run_paths, paths
+) -> list[VariantResult]:
+    """Cross-context, once per configuration, on the leaderboard scale.
+
+    The question this exists to answer: **should `perturbation_mode` be
+    `pooled` or `percell`, and at which `ot_epsilon`?** The specification
+    asks for a per-cell model and so does the user, but a default that has
+    not been measured is a guess, and the pooled arm is the one with a
+    leaderboard number behind it (DECISIONS.md D59).
+
+    Each configuration retrains one Phase 2 arm under the cross-context
+    scope, adapts it on the held-out screen's controls, predicts in its own
+    mode, and is scored with the six official metrics on the leaderboard's
+    0–1 scale. So it costs `len(mode_sweep_epsilons)` Phase 2 arms per screen,
+    which is why it is off by default and why `mode_sweep_contexts` is 1: §14
+    budgets five runs, not ninety.
+
+    Everything outside the configuration is held fixed — the same held-out
+    screen, the same targets, the same control draw, the same seed — so the
+    difference between rows is the configuration and nothing else.
+    """
+    variant = "mode_sweep"
+    results: list[VariantResult] = []
+    names = sorted(contexts)
+    if len(names) < 2:
+        log.info("  %s: skipped, needs two Replogle screens", variant)
+        return results
+
+    chosen = _sweep_contexts(cfg, contexts, names)
+    if not chosen:
+        log.info("  %s: skipped, no screen shares enough targets with the others", variant)
+        return results
+
+    for held_out, targets in chosen:
+        others = [n for n in names if n != held_out]
+        tensors = contexts[held_out]
+        log.info(
+            "  %s/%s: %d configurations over %d targets, learning from %s",
+            variant, held_out, len(cfg.rehearsal.mode_sweep_epsilons), len(targets),
+            ", ".join(others),
+        )
+
+        scope = cross_context_scope(held_out, targets)
+        scoped_features = build_priors(cfg, scope, reference_layouts=features.layouts)
+
+        rng = np.random.default_rng(cfg.seed)
+        gene_names, _, _ = gene_axis(tensors)
+        control_counts = control_counts_for(tensors, cfg, rng)
+        real_counts, real_labels, cells_per_target = real_cells_for(
+            tensors, targets, cfg, rng
+        )
+        settings = GeneratorSettings()
+        scale_reference = leaderboard_scale(
+            cfg, run_paths, variant, held_out, real_counts, real_labels,
+            control_counts, gene_names, "non-targeting",
+        )
+
+        arms: dict[str, dict[str, Any]] = {}
+        detail_rows = []
+        for epsilon in cfg.rehearsal.mode_sweep_epsilons:
+            arm = sweep_arm_name(epsilon)
+            arm_cfg = sweep_config(cfg, epsilon)
+            log.info("    %s: training and scoring", arm)
+
+            model = build_and_load(arm_cfg, scoped_features, device)
+            load_core(
+                run_paths.core_checkpoint(phase1.PHASE), model,
+                layout_hash=scoped_features.layout_hash(), strict=False,
+            )
+            training = train_phase2_arm(
+                arm_cfg, model, {n: contexts[n] for n in others}, gene_index, device,
+                arm_cfg.rehearsal.phase2_steps, f"rehearsal:{variant}:{held_out}:{arm}",
+            )
+            adaptation = adapt.adapt_on_controls(
+                model, tensors, arm_cfg, steps=arm_cfg.rehearsal.adapt_steps,
+                device=device, rng=np.random.default_rng(arm_cfg.seed), phase="rehearsal",
+            )
+            model.use_adapters([adapt.context_adapter(held_out)])
+            predictions = predict_targets(
+                arm_cfg, model, tensors, targets, gene_index, device,
+                arm=arm, variant=variant, control_counts=control_counts,
+                cells_per_target=cells_per_target, settings=settings,
+            )
+            scored = score_arms(
+                arm_cfg, variant, {arm: predictions}, control_counts, real_counts,
+                real_labels, cells_per_target, gene_names, settings, "non-targeting",
+                common.END_TO_END, scale_reference=scale_reference,
+            )
+            arms[arm] = scored[arm]
+            detail_rows.append({
+                "arm": arm,
+                "perturbation_mode": arm_cfg.phase2.perturbation_mode,
+                "ot_epsilon": epsilon,
+                "adaptation": adaptation.as_dict(),
+                "final_training_metrics": getattr(training, "final_metrics", {}),
+            })
+            del model
+            release_gpu_memory()
+
+        # The floor is the reference every row is read against, and it costs
+        # no training: predict that nothing happened.
+        arms.update(score_arms(
+            cfg, variant,
+            {common.FLOOR: {
+                t: common.zero_prediction(t, len(gene_names)) for t in targets
+            }},
+            control_counts, real_counts, real_labels, cells_per_target, gene_names,
+            settings, "non-targeting", common.END_TO_END, scale_reference=scale_reference,
+        ))
+
+        results.append(VariantResult(
+            variant=variant,
+            context=held_out,
+            arms=arms,
+            detail={
+                "n_targets": len(targets),
+                "learned_from": others,
+                "leaderboard_scale": scale_reference.as_dict(),
+                "configurations": detail_rows,
+                "prior_scope": scope.describe(),
+                "note": "one Phase 2 arm per configuration, everything else held "
+                        "fixed; the difference between rows is the configuration",
+            },
+        ))
+    return results
+
+
+def sweep_arm_name(epsilon: float | None) -> str:
+    """`pooled` for the control arm, `percell:<epsilon>` for the rest."""
+    return phase2.POOLED if epsilon is None else f"{phase2.PERCELL}:{epsilon:g}"
+
+
+def sweep_config(cfg, epsilon: float | None):
+    """`cfg` with one configuration of the sweep selected."""
+    mode = phase2.POOLED if epsilon is None else phase2.PERCELL
+    phase2_cfg = dataclasses.replace(
+        cfg.phase2,
+        perturbation_mode=mode,
+        **({} if epsilon is None else {"ot_epsilon": float(epsilon)}),
+    )
+    return dataclasses.replace(cfg, phase2=phase2_cfg)
+
+
+def _sweep_contexts(cfg, contexts, names) -> list[tuple[str, list[str]]]:
+    """The screens to sweep on, most shared targets first."""
+    scored = []
+    for held_out in names:
+        others = [n for n in names if n != held_out]
+        tensors = contexts[held_out]
+        shared = sorted(
+            set(tensors.pert_train_targets + tensors.pert_val_targets).intersection(
+                *[
+                    set(contexts[o].pert_train_targets + contexts[o].pert_val_targets)
+                    for o in others
+                ]
+            )
+        )
+        targets = held_out_targets(tensors, cfg, shared)
+        if len(targets) >= 2:
+            scored.append((held_out, targets))
+    scored.sort(key=lambda item: -len(item[1]))
+    return scored[: cfg.rehearsal.mode_sweep_contexts]

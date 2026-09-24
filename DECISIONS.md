@@ -1202,3 +1202,63 @@ modes and `map_delta_ratio_to_no_change` is 1.00 against a noise floor of
 0.24, so neither objective has been learned at all. P4 was testing that the
 path runs, costs what it should, and does not break the generator. P5's
 rehearsal is what compares them.
+
+## P5 — the A/B that decides the default
+
+### D66. The mode sweep is a rehearsal stage, off by default
+
+**Decision.** `rehearsal.mode_sweep` runs the cross-context variant once per
+configuration — `pooled`, then `percell` at each `ot_epsilon` — on
+`rehearsal.mode_sweep_contexts` screens (1), scored with the six official
+metrics on the leaderboard scale. Default off.
+
+**Reason.** The default `perturbation_mode` has to rest on a measurement
+(D59), and the measurement has to be the one the leaderboard agrees with —
+which the calibration objective was not, the last time the two were compared.
+Everything outside the configuration is held fixed: the same held-out screen,
+the same targets, the same control draw, the same seed. The difference
+between rows is then the configuration and nothing else.
+
+Off by default because each row retrains a Phase 2 arm: it is a deliberate
+measurement, not something every `all` run should pay for. One screen and a
+five-point grid is §14's budget of five runs rather than ninety.
+
+**The `floor` row costs no training** and is the reference every other row is
+read against. A configuration that does not beat predicting no change has not
+earned a submission, whatever it scores relative to the others.
+
+### D67. Both modes predict through the same code
+
+**Decision.** `vccp/predict/percell.py` holds the per-cell prediction core,
+and both `predict/run.py` and `rehearsal/variants.py` call it.
+`variants.predict_targets` dispatches on `cfg.phase2.perturbation_mode` for
+both arms of every variant.
+
+**Reason.** An A/B whose two sides predict differently measures the
+difference between two prediction routines rather than between two trained
+models. Before this the rehearsal always predicted from the pooled control
+profile, so a per-cell-trained model would have been scored through the
+pooled path and the comparison would have said nothing.
+
+**The per-cell path draws exactly the rows `common.build_cells` will draw** —
+same variant, same target, same seed, through `common.control_rows_for` —
+so row `i` of the prediction meets cell `i` of the generated block. That also
+keeps D7 intact: every arm still scores on the same control draw, so the
+comparison between arms is still about the fold changes alone.
+
+### D68. The calibration records which assay it was fitted on
+
+**Decision.** The calibration carries `fitted_assay`, `applied_assay` and
+`transfers_across_assays` into `phase3_policy.json`.
+`rehearsal.calibrate_per_dataset` (default off) additionally fits the
+settings on every scorable screen and reports the spread.
+
+**Reason.** The generator's two settings are fitted on Replogle and applied
+to the challenge, which is a different lab and protocol — an unstated
+cross-assay assumption sitting in the middle of the submission path. The
+provenance costs nothing and makes it a line anyone reading the policy can
+see. The per-screen refit costs a full grid of official scorings per screen,
+which is the slow part of the rehearsal, so it is opt-in; when it runs, a
+wide `spread` means the settings are a property of the screen they were
+fitted on rather than of the method, and carrying them to the challenge is
+the weakest link in the submission path.

@@ -39,6 +39,22 @@ SCORED = (
     "de_wilcoxon_sig_jaccard",
 )
 
+#: Short names, for tables narrow enough to read on a terminal or a slide.
+#: The full names are what everything is keyed by; these are for display only.
+SHORT_NAMES = {
+    "pds_cosine": "pds",
+    "expr_mse_unbiased_capped_norm": "expr",
+    "de_wilcoxon_lfc_nmae": "nmae",
+    "de_wilcoxon_direction_fidelity_yield_raw": "fid",
+    "de_wilcoxon_direction_reach_raw": "reach",
+    "de_wilcoxon_sig_jaccard": "jac",
+}
+
+
+def short_name(metric: str) -> str:
+    return SHORT_NAMES.get(metric, metric)
+
+
 #: Diagnostics sanity check 7 reads. Not in the `vcc2026` profile, so they
 #: are requested explicitly.
 DIAGNOSTICS = ("de_wilcoxon_nsig_counts_real", "de_wilcoxon_nsig_counts_pred")
@@ -249,7 +265,22 @@ def with_controls(prediction, real, pert_col: str, control_label: str):
 
 
 #: What a pool says when it is asked for more threads than it has.
-THREAD_REFUSALS = ("number of threads", "thread pool", "num_threads")
+THREAD_REFUSALS = (
+    "number of threads",
+    "thread pool",
+    "num_threads",
+    # numba, when something has already started its pool at a different size:
+    # "Cannot set NUMBA_NUM_THREADS to a different value once the threads have
+    # been launched". A different sentence from the one D47 was about, and a
+    # different exception type, but the same cost if it is not caught.
+    "threads have been launched",
+)
+
+#: The exception types a pool refusal arrives as. numba raises `RuntimeError`
+#: for an already-launched pool and `ValueError` for a count it cannot take,
+#: so catching one of the two is catching half the problem. The message gate
+#: below is what keeps this from swallowing anything else.
+THREAD_REFUSAL_ERRORS = (ValueError, RuntimeError)
 
 
 def _is_thread_refusal(exc: Exception) -> bool:
@@ -268,7 +299,7 @@ def score(cfg, prediction, real, *, pert_col: str, control_label: str) -> Offici
     extra_warnings: list[str] = []
     try:
         result = compute_metrics(scoring_prediction, real, config=config)
-    except ValueError as exc:
+    except THREAD_REFUSAL_ERRORS as exc:
         if not _is_thread_refusal(exc):
             raise
         # One pool would not take the thread count. Scoring slowly beats not

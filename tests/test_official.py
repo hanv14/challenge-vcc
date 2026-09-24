@@ -191,6 +191,28 @@ def test_a_thread_refusal_is_recognized():
     assert official._is_thread_refusal(ValueError("thread pool size exceeded"))
     assert not official._is_thread_refusal(ValueError("perturbation sets differ"))
 
+    # numba's *other* refusal, raised when something already started its pool
+    # at a different size. A different sentence from D47's and a different
+    # exception type, so a retry that caught only ValueError caught half the
+    # problem and let the rest take the rehearsal down with it.
+    already_launched = RuntimeError(
+        "Cannot set NUMBA_NUM_THREADS to a different value once the threads "
+        "have been launched (currently have 1, trying to set 4)"
+    )
+    assert official._is_thread_refusal(already_launched)
+    assert isinstance(already_launched, official.THREAD_REFUSAL_ERRORS)
+
+
+def test_the_retry_covers_both_exception_types_and_nothing_else():
+    """The message gate is what keeps the wider catch from swallowing bugs."""
+    assert ValueError in official.THREAD_REFUSAL_ERRORS
+    assert RuntimeError in official.THREAD_REFUSAL_ERRORS
+    # A real scoring failure raised as either type still has to escape.
+    for kind in official.THREAD_REFUSAL_ERRORS:
+        assert not official._is_thread_refusal(
+            kind("the sum of expr_distance_unbiased is not positive")
+        )
+
 
 def test_the_cap_holds_in_a_process_that_really_has_numba_capped(repo_root):
     """The bug only existed where the two variables disagreed, so this sets

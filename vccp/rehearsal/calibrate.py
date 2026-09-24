@@ -61,12 +61,31 @@ class Calibration:
     grid: list[CalibrationPoint] = field(default_factory=list)
     context: str | None = None
     fallback_reason: str | None = None
+    #: The assay the settings were fitted on, and the one they are applied to.
+    #: They differ: the rehearsal runs on Replogle and the submission is the
+    #: challenge, which is a different lab and protocol (PLAN_PERCELL.md §7).
+    #: Recording both turns a silent transfer assumption into a reported one.
+    fitted_assay: str | None = None
+    applied_assay: str | None = None
+    #: The same fit on every other usable screen, when
+    #: `rehearsal.calibrate_per_dataset` asked for it. Screens that agree are
+    #: evidence the transfer is safe; screens that disagree are evidence it
+    #: is not, and either reading is worth more than the single number.
+    per_dataset: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "settings": self.settings.as_dict(),
             "objective_definition": nochange.summarize({})["objective_definition"],
             "fitted_on": self.context,
+            "fitted_assay": self.fitted_assay,
+            "applied_assay": self.applied_assay,
+            "transfers_across_assays": bool(
+                self.fitted_assay
+                and self.applied_assay
+                and self.fitted_assay != self.applied_assay
+            ),
+            "per_dataset": self.per_dataset,
             "best": self.best.as_dict() if self.best else None,
             "grid": [point.as_dict() for point in self.grid],
             "fallback_reason": self.fallback_reason,

@@ -582,6 +582,28 @@ class Rehearsal:
     #: Grid searched for the generator's two calibration settings (§4.7).
     calibration_thresholds: tuple[float, ...] = (0.0, 0.05, 0.1, 0.25)
     calibration_scales: tuple[float, ...] = (0.25, 0.5, 1.0, 1.5)
+    #: Fit the generator's two settings on **every** scorable screen rather
+    #: than only the one with the most targets, and report the spread
+    #: (PLAN_PERCELL.md §7.5). One screen's fit carried to the challenge is a
+    #: cross-assay assumption; fitting it on several says whether it holds.
+    #: Off by default because each screen costs a full grid of official
+    #: scorings, which is the slow part of the rehearsal.
+    calibrate_per_dataset: bool = False
+    #: The A/B that decides `phase2.perturbation_mode` (PLAN_PERCELL.md §12).
+    #: Off by default because it retrains one Phase 2 arm per configuration:
+    #: it is a deliberate measurement, not something every run should pay for.
+    mode_sweep: bool = False
+    #: The configurations it compares. `None` is the pooled arm — the control
+    #: the per-cell mode has to beat — and each number is `phase2.ot_epsilon`
+    #: as a fraction of the batch's mean cost. The grid spans the window
+    #: where the coupling actually changes: below ~0.005 nothing converges,
+    #: and by 0.05 the coupling is already near-uniform (DECISIONS.md D52,
+    #: D61).
+    mode_sweep_epsilons: tuple[float | None, ...] = (None, 0.005, 0.01, 0.02, 0.05)
+    #: Screens the sweep runs on. One by default: each screen multiplies the
+    #: cost by the length of the grid, and §14's budget is five runs rather
+    #: than ninety.
+    mode_sweep_contexts: int = 1
 
     def validate(self) -> None:
         if self.max_targets < 2:
@@ -597,6 +619,15 @@ class Rehearsal:
             raise ConfigError("rehearsal.calibration_thresholds must not be negative")
         if any(s <= 0 for s in self.calibration_scales):
             raise ConfigError("rehearsal.calibration_scales must be positive")
+        if not self.mode_sweep_epsilons:
+            raise ConfigError("rehearsal.mode_sweep_epsilons must not be empty")
+        if any(e is not None and not e > 0 for e in self.mode_sweep_epsilons):
+            raise ConfigError(
+                "rehearsal.mode_sweep_epsilons must be positive, or null for the "
+                "pooled arm"
+            )
+        if self.mode_sweep_contexts < 1:
+            raise ConfigError("rehearsal.mode_sweep_contexts must be at least 1")
 
 
 @dataclass(frozen=True)
