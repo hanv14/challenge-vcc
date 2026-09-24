@@ -1,0 +1,79 @@
+# The A/B that decides `phase2.perturbation_mode`, on the server.
+#
+#     source scripts/server_env.sh
+#     python scripts/coupling_check.py --config configs/server.yaml
+#     python -m vccp rehearsal --config configs/server_sweep.yaml --force
+#
+# Run it on a run directory that already has `priors` and Phase 1 — the sweep
+# retrains Phase 2 itself, under the cross-context scope, once per
+# configuration. Read the "Mode sweep" table at the top of
+# `runs/server_sweep/rehearsal/summary.txt`, then set the winner in
+# `server.yaml` and rerun `all`.
+#
+# Everything outside `rehearsal:` is `server.yaml` unchanged, so the only
+# thing that differs between rows is the configuration being measured.
+
+data_root: /data/han/projects/VCC/data
+vcc_root: /data/share/han/VCC
+output_root: /data/han/projects/VCC/runs
+device: auto
+
+run_name: server_sweep
+seed: 0
+
+resources:
+  cpu_threads: 4
+  num_workers: 2
+  gpu_memory_fraction: 0.5
+  max_ram_gb: 64
+
+train:
+  deterministic: true
+  output_genes_per_step: 2048
+  core_freeze_ablation: true
+
+phase1:
+  steps: 400
+  batch_size: 32
+
+phase2:
+  steps: 600
+  batch_size: 32
+  cells_per_draw: 16
+
+rehearsal:
+  max_targets: 100
+  phase2_steps: 300
+  adapt_steps: 150
+  calibration_thresholds: [0.0, 0.05, 0.1, 0.25]
+  calibration_scales: [0.25, 0.5, 1.0, 1.5]
+
+  # The A/B. Each row retrains one Phase 2 arm, so this costs roughly
+  # `len(mode_sweep_epsilons) x phase2_steps` on top of a normal rehearsal.
+  mode_sweep: true
+  # `null` is the pooled arm — the control the per-cell mode has to beat.
+  # Each number is `ot_epsilon` as a fraction of the batch's mean cost. The
+  # grid spans the window where the coupling actually changes: below ~0.005
+  # Sinkhorn does not converge, and by 0.05 the coupling is already
+  # near-uniform (DECISIONS.md D52, D61).
+  mode_sweep_epsilons: [null, 0.005, 0.01, 0.02, 0.05]
+  # One screen. Each additional screen multiplies the cost by the whole grid,
+  # and one is enough to choose a mode; confirm the winner on the others
+  # afterwards if it is close.
+  mode_sweep_contexts: 1
+  # Also fit the generator's two settings on every scorable screen and report
+  # the spread. They are fitted on Replogle and applied to the challenge — a
+  # different lab and protocol — so a wide spread means those settings belong
+  # to the screen rather than to the method (DECISIONS.md D68).
+  calibrate_per_dataset: true
+
+phase3:
+  adapt_steps: 300
+  batch_size: 32
+
+eval:
+  de_backend: pdex
+  build_scale: true
+
+sanity:
+  accept_warnings: false

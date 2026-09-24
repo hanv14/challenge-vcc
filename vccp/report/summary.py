@@ -509,11 +509,72 @@ def _phase1_contribution_text(contribution: dict[str, Any]) -> str:
     return text
 
 
+def _mode_sweep_section(sweep: dict[str, Any]) -> str:
+    """The A/B that chose `perturbation_mode`, for the defense.
+
+    It goes first in the rehearsal section because it is the answer to the
+    question the whole redesign was about: does supervising the perturbation
+    module per cell beat supervising it on pooled means, and at which
+    `ot_epsilon`?
+    """
+    if not sweep.get("ran"):
+        return ""
+
+    text = "### Which perturbation mode, and at which ε\n\n"
+    text += (
+        "One Phase 2 arm per row, everything else held fixed — same screen, same "
+        "targets, same control draw, same seed — so the difference between rows is "
+        "the configuration and nothing else. `overall` is the mean of the six "
+        "official metrics on the leaderboard's 0 = baseline / 1 = replicate scale. "
+        "The `floor` row is predicting that nothing happened: an arm below it has "
+        "not earned a submission, however it ranks against the others.\n\n"
+    )
+
+    for context, entry in sorted((sweep.get("datasets") or {}).items()):
+        text += (
+            f"**{context}** — {entry.get('n_targets', '?')} targets, learned from "
+            f"{', '.join(entry.get('learned_from') or [])}\n\n"
+        )
+        rows = entry.get("rows", [])
+        failed = [r for r in rows if "error" in r]
+        if rows and len(failed) == len(rows):
+            reasons = {r["error"] for r in failed}
+            text += (
+                f"All {len(rows)} configurations ran and all failed to score"
+                + (" identically" if len(reasons) == 1 else "")
+                + ". That is a property of this dataset rather than of the "
+                "configurations:\n\n"
+            )
+            text += "```\n" + "\n".join(sorted(reasons)) + "\n```\n\n"
+            continue
+
+        text += _table(
+            ["arm", "overall", "note"],
+            [
+                [
+                    row["arm"],
+                    _fmt(row.get("overall"), 4),
+                    row.get("error", "")[:80] if "error" in row else "",
+                ]
+                for row in rows
+            ],
+        )
+        if entry.get("best"):
+            text += f"\nBest on this dataset: **{entry['best']}**.\n"
+        if not entry.get("scale_built"):
+            text += (
+                "\nThe leaderboard scale could not be built here, so only the six "
+                "raw metrics are available — see `rehearsal/report.json`.\n"
+            )
+        text += "\n"
+    return text
+
+
 def _rehearsal_section(rehearsal: dict[str, Any], common) -> str:
     if not rehearsal:
         return "_the rehearsal has not run in this run directory._\n"
 
-    text = ""
+    text = _mode_sweep_section(rehearsal.get("mode_sweep") or {})
     rows = []
     for entry in rehearsal.get("variants", []):
         for key, label in ((common.END_TO_END, "end-to-end"),

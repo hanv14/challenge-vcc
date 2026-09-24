@@ -1262,3 +1262,41 @@ which is the slow part of the rehearsal, so it is opt-in; when it runs, a
 wide `spread` means the settings are a property of the screen they were
 fitted on rather than of the method, and carrying them to the challenge is
 the weakest link in the submission path.
+
+**A field named for the wrong thing is worse than no field.** The first
+version reported `transfers_across_assays`, computed by comparing
+`phase2.pert_type` with `phase3.pert_type` — which both read `crispri`, so it
+came out **false** about a risk that is entirely real. A matching modality is
+not the same assay: Replogle and the challenge differ in lab, protocol and
+sequencing depth (~20,000 UMIs against 11,000–15,000), and nothing in the
+model represents that. The comparison is now named `modality_differs` for
+what it actually compares, and `carried_across_assays` is recorded
+**unconditionally** beside it with a note saying why. The spread in
+`per_dataset` is the only measurement of whether it matters.
+
+## P6 — hand-off
+
+### D69. A shared scorer failure is reported once, not once per row
+
+**Decision.** When every row of the mode sweep fails to score with the same
+message, the summary says so once and names the reason, instead of repeating
+the scorer's message per row.
+
+**Reason.** Found on the `mini_data` sweep: four configurations each carried
+the same 500-character `expr_mse_unbiased_capped_norm` refusal, which filled
+the table and buried the one thing worth knowing — that all four *ran*, and
+the failure is a property of the dataset rather than of any configuration.
+A row that fails on its own still gets its own line, because that one *is*
+about that arm.
+
+### D70. `configs/server_sweep.yaml` rather than instructions to edit a config
+
+**Decision.** The A/B ships as its own config, identical to `server.yaml`
+except for the `rehearsal.mode_sweep` block, writing to `runs/server_sweep/`.
+
+**Reason.** The sweep's whole claim is that the only thing differing between
+rows is the configuration being measured. A hand-edited config is the easiest
+way to break that claim without noticing, and a separate `run_name` keeps the
+measurement from overwriting the run a submission came from — which is
+exactly the confusion that made the earlier threshold-and-scale mystery so
+slow to resolve.

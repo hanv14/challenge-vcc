@@ -379,3 +379,83 @@ def test_the_verdict_calls_a_degenerate_coupling_what_it_is():
     assert verdict == "informative"
     assert "1.35" in loud and "does not reduce the residual" in loud
     assert "does not reduce the residual" not in quiet
+
+
+# --------------------------------------------------------------------------- #
+# the mode sweep's table (PLAN_PERCELL.md §12)
+# --------------------------------------------------------------------------- #
+
+
+def _sweep(rows, scale_built=True):
+    scorable = [r for r in rows if r.get("overall") is not None]
+    best = max(scorable, key=lambda r: r["overall"])["arm"] if scorable else None
+    return {
+        "ran": True,
+        "epsilons": [None, 0.005],
+        "datasets": {
+            "rpe1": {
+                "n_targets": 14,
+                "learned_from": ["K562_gwps"],
+                "rows": rows,
+                "best": best,
+                "scale_built": scale_built,
+            }
+        },
+    }
+
+
+def test_one_shared_scorer_failure_is_reported_once():
+    """Four rows failing identically is a fact about the data, and repeating
+    a 500-character scorer message four times buries it."""
+    from vccp.rehearsal import stage
+
+    message = (
+        "ValueError: the reference panel carries no measurable aggregate effect at "
+        "this cell depth, which is a property of the reference rather than of the "
+        "submission, so the ratio of sums is undefined and cannot be reported here."
+    )
+    rows = [{"arm": name, "error": message} for name in ("pooled", "percell:0.005", "floor")]
+    text = "\n".join(stage._summarize_mode_sweep(_sweep(rows, scale_built=False)))
+
+    # Said once, not once per row.
+    assert text.count("no measurable aggregate effect") == 1, text
+    assert "all 3 configurations failed to score" in text
+    assert "property of this dataset, not of the configurations" in text
+    # And it is folded to a width a terminal can show.
+    assert max(len(line) for line in text.splitlines()) < 110
+
+
+def test_rows_that_fail_differently_are_each_reported():
+    """A single arm failing is about that arm, and must not be folded away."""
+    from vccp.rehearsal import stage
+
+    rows = [
+        {"arm": "pooled", "overall": -0.1, "scaled": {"pds_cosine": 0.0}},
+        {"arm": "percell:0.005", "error": "ValueError: something specific to this arm"},
+    ]
+    text = "\n".join(stage._summarize_mode_sweep(_sweep(rows)))
+    assert "something specific to this arm" in text
+    assert "failed to score, identically" not in text
+    assert "pooled" in text
+
+
+def test_the_table_names_the_best_arm_and_keeps_the_floor_in_view():
+    from vccp.rehearsal import stage
+
+    rows = [
+        {"arm": "floor", "overall": 0.0, "scaled": {}},
+        {"arm": "pooled", "overall": -0.13, "scaled": {"pds_cosine": 0.0}},
+        {"arm": "percell:0.02", "overall": 0.08, "scaled": {"pds_cosine": 0.2}},
+    ]
+    text = "\n".join(stage._summarize_mode_sweep(_sweep(rows)))
+    assert "best: percell:0.02" in text
+    # The floor is what "best" has to be read against: an arm can be the best
+    # of a bad field.
+    assert "floor" in text and "has not earned a submission" in text
+
+
+def test_an_off_sweep_prints_nothing():
+    from vccp.rehearsal import stage
+
+    assert stage._summarize_mode_sweep({"ran": False, "reason": "off"}) == []
+    assert stage._summarize_mode_sweep({}) == []

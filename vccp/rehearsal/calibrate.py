@@ -61,10 +61,12 @@ class Calibration:
     grid: list[CalibrationPoint] = field(default_factory=list)
     context: str | None = None
     fallback_reason: str | None = None
-    #: The assay the settings were fitted on, and the one they are applied to.
-    #: They differ: the rehearsal runs on Replogle and the submission is the
-    #: challenge, which is a different lab and protocol (PLAN_PERCELL.md §7).
-    #: Recording both turns a silent transfer assumption into a reported one.
+    #: The perturbation *modality* the settings were fitted on, and the one
+    #: they are applied to. These usually match — Replogle and the challenge
+    #: are both CRISPR interference — which is exactly why the recording must
+    #: not stop there: the two are still different labs, protocols and
+    #: sequencing depths (PLAN_PERCELL.md §7). `carried_across_assays` says so
+    #: unconditionally, and the spread in `per_dataset` is the measurement.
     fitted_assay: str | None = None
     applied_assay: str | None = None
     #: The same fit on every other usable screen, when
@@ -78,12 +80,27 @@ class Calibration:
             "settings": self.settings.as_dict(),
             "objective_definition": nochange.summarize({})["objective_definition"],
             "fitted_on": self.context,
-            "fitted_assay": self.fitted_assay,
-            "applied_assay": self.applied_assay,
-            "transfers_across_assays": bool(
+            "fitted_modality": self.fitted_assay,
+            "applied_modality": self.applied_assay,
+            "modality_differs": bool(
                 self.fitted_assay
                 and self.applied_assay
                 and self.fitted_assay != self.applied_assay
+            ),
+            # Said explicitly because `modality_differs: false` would
+            # otherwise read as "no transfer risk here", and that is wrong.
+            # Replogle and the challenge are both CRISPR interference, so the
+            # modality matches — but they are different labs, different
+            # protocols and ~20,000 UMIs per cell against 11,000-15,000. These
+            # settings are still carried from one assay to another, and
+            # nothing in the model represents that difference. The spread in
+            # `per_dataset` is the only measurement of whether it matters.
+            "carried_across_assays": True,
+            "assay_note": (
+                "fitted on the rehearsal's Replogle screens and applied to the "
+                "challenge. A matching modality is not the same assay: the two "
+                "differ in lab, protocol and sequencing depth, and that "
+                "difference is not represented in the model"
             ),
             "per_dataset": self.per_dataset,
             "best": self.best.as_dict() if self.best else None,

@@ -4,8 +4,14 @@
 server; P1 landed (`vccp/train/ot.py`); P2 landed (the delta term, the type
 vocabulary, the `core_scratch` arm); P3 landed (`perturbation_mode: percell`,
 the per-pair delta, and the coupling premise check that gated it); P4 landed
-(per-cell prediction and generator, measured end to end in both modes).
-Next: P5, the rehearsal A/B that decides which mode is the default.**
+(per-cell prediction and generator, measured end to end in both modes); P5
+landed (the A/B stage, one prediction path for both modes, calibration
+provenance). P6 is the server run, which is yours: `configs/server_sweep.yaml`
+and README §5b are the hand-off.**
+
+**Not built: §7.7's cross-assay rehearsal variant.** §14 named it the slip
+candidate because it produces evidence for the defense rather than score for
+the leaderboard, and P5's A/B took the window. It stands as specified.
 
 The current perturbation module predicts one mean effect per (context,
 target). This replaces it with one that maps **a cell** to **that cell
@@ -831,7 +837,7 @@ means one server run answers both transfer questions.
 | **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | ✅ premise checked on real cells first — `informative` (§11); both modes scored on both questions |
 | **P4** | per-cell prediction and generator | ✅ `all` green in both modes; 706 s pooled against 1653 s per-cell (2.34x); sanity identical, no variance collapse |
 | **P5** | rehearsal A/B, ε swept, per-assay scale | a table of leaderboard-scale numbers, both modes |
-| **P6** | server run, submission | a leaderboard number to compare against −0.131 |
+| **P6** | server run, submission | **yours to run** — `configs/server_sweep.yaml` and README §5b are the hand-off; a leaderboard number to compare against −0.131 |
 
 ### Three things that could break it
 

@@ -135,6 +135,56 @@ runs every stage in order and is **resumable**: a stage that finished under
 the same config is skipped, so an interrupted run continues where it stopped.
 `--force` reruns anyway.
 
+### 5b. Choosing `perturbation_mode`, once
+
+The perturbation module can be supervised two ways, and which is better is a
+measurement rather than a judgement (DECISIONS.md D59):
+
+* **`pooled`** — one control pseudobulk in, the target's pseudobulk out. One
+  mean effect per (context, target).
+* **`percell`** — a *cell* in, that cell perturbed out, with the truth built
+  by optimal transport between a drawn control batch and a drawn perturbed
+  batch. This is what CLAUDE.md §4.2 asks for.
+
+`pooled` is the default because it is the arm with a leaderboard number
+behind it. To decide, run the A/B **once**, on a copy of a finished run so
+the priors and the Phase 1 core are already there:
+
+```bash
+# Is the coupling informative on this data at all? Seconds, and it gates
+# everything below: a degenerate coupling makes per-cell training identical
+# to pooled training, and the two look the same from their curves.
+python scripts/coupling_check.py --config configs/server.yaml
+
+# The A/B itself. One Phase 2 arm per configuration, so budget for
+# len(mode_sweep_epsilons) x rehearsal.phase2_steps on top of a normal
+# rehearsal.
+python -m vccp rehearsal --config configs/server_sweep.yaml --force
+```
+
+`configs/server_sweep.yaml` is `server.yaml` with a `rehearsal.mode_sweep`
+block and nothing else changed, so the only thing that differs between rows
+is the configuration being measured. It writes to `runs/server_sweep/`, so
+it leaves your main run alone.
+
+Then read the **Mode sweep** table at the top of
+`runs/<run>/rehearsal/summary.txt`:
+
+| what to look for | what it means |
+|---|---|
+| the `floor` row | predicting no change. An arm below it has not earned a submission, however it ranks against the others |
+| `overall` | the mean of the six official metrics on the leaderboard's 0–1 scale — the reading the leaderboard agreed with, where the calibration objective did not |
+| every row failing identically | a property of the dataset, not of the configurations; the table says so and names the scorer's reason |
+
+If a `percell` row wins, set `phase2.perturbation_mode: percell` and its
+`ot_epsilon` in `server.yaml` and rerun `all`. If `pooled` wins, change
+nothing. Either way the losing mode stays in the codebase as the control.
+
+**`percell` costs about 2.3x the wall clock** (measured on `mini_data`: 706 s
+against 1653 s), since it pushes `cells_per_pert` rows through the encoder
+per target instead of one. Lower `predict.cells_per_forward` first if the GPU
+runs out.
+
 ### 6. Check the submission with the challenge's own tool, then package it
 
 Our own `validate` stage has already checked every rule of §8 and, if `vcc` is

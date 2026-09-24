@@ -167,11 +167,12 @@ def _calibrate(cfg, cross, contexts, gene_index, device, log):
         cfg, predictions, control_counts, real_counts, real_labels, cells_per_target,
         gene_names, "cross_context", "non-targeting",
     )
-    # Which assay the settings came from, and which one they will be applied
-    # to. They differ — the rehearsal runs on Replogle and the submission is
-    # the challenge — so this is a transfer assumption sitting in the middle
-    # of the submission path, and it should be reported rather than implied
-    # (PLAN_PERCELL.md §7.5).
+    # Where the settings came from and where they are going. The modalities
+    # usually match, since Replogle and the challenge are both CRISPR
+    # interference — which is why `carried_across_assays` is recorded
+    # unconditionally beside them: a matching modality is not the same assay,
+    # and these settings still cross a change of lab, protocol and sequencing
+    # depth that nothing in the model represents (PLAN_PERCELL.md §7.5).
     calibration.fitted_assay = cfg.phase2.pert_type
     calibration.applied_assay = cfg.phase3.pert_type
     calibration.per_dataset = _per_dataset_calibration(
@@ -400,6 +401,16 @@ def policy_settings(policy: dict[str, Any]) -> GeneratorSettings:
     return GeneratorSettings.from_dict(policy["generator"])
 
 
+def _wrap(message: str, indent: int, width: int = 96) -> str:
+    """One long scorer message, folded so a terminal can show it."""
+    import textwrap
+
+    text = " ".join(str(message).split())
+    lines = textwrap.wrap(text, width=width) or [""]
+    pad = " " * indent
+    return ("\n" + pad).join(lines)
+
+
 def _summarize_mode_sweep(sweep: dict[str, Any]) -> list[str]:
     """The A/B table, first in the summary because it decides the default."""
     if not sweep.get("ran"):
@@ -412,15 +423,36 @@ def _summarize_mode_sweep(sweep: dict[str, Any]) -> list[str]:
             f"  {context}: {entry.get('n_targets', '?')} targets, learned from "
             f"{', '.join(entry.get('learned_from') or [])}"
         )
+        rows = entry.get("rows", [])
+        # When every row fails the same way the failure is about the data,
+        # not about the configurations — saying it once is the readable form,
+        # and repeating a 500-character scorer message per row is not.
+        failed = [row for row in rows if "error" in row]
+        errors = {row["error"] for row in failed}
+        shared_error = (
+            next(iter(errors)) if rows and len(errors) == 1 and len(failed) == len(rows) else None
+        )
+        if shared_error:
+            lines.append(
+                f"    all {len(rows)} configurations failed to score, identically:"
+            )
+            lines.append(f"      {_wrap(shared_error, 8)}")
+            lines.append(
+                "    that is a property of this dataset, not of the configurations: "
+                "they all ran."
+            )
+            lines.append("")
+            continue
+
         if not entry.get("scale_built"):
             lines.append(
                 "    the leaderboard scale could not be built on this dataset, so "
                 "only the six raw metrics are available (see report.json)"
             )
         lines.append(f"    {'arm':<18}{'overall':>10}   the six, scaled")
-        for row in entry.get("rows", []):
+        for row in rows:
             if "error" in row:
-                lines.append(f"    {row['arm']:<18}{'—':>10}   {row['error']}")
+                lines.append(f"    {row['arm']:<18}{'—':>10}   {_wrap(row['error'], 24)}")
                 continue
             overall = row.get("overall")
             scaled = row.get("scaled") or {}
