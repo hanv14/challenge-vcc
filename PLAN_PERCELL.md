@@ -1,14 +1,14 @@
-# Per-cell perturbation module — design for review
+# Per-cell perturbation module — design
 
-**Status: proposal. No code written yet.**
+**Status: agreed. P0 answered on `mini_data`; implementation not started.**
 
 The current perturbation module predicts one mean effect per (context,
-target). This proposes replacing it with one that maps **a cell** to **that
-cell perturbed**, supervised by entropic optimal transport between drawn
-control cells and drawn perturbed cells.
+target). This replaces it with one that maps **a cell** to **that cell
+perturbed**, supervised by entropic optimal transport between drawn control
+cells and drawn perturbed cells.
 
-Read §1 for why, §7 for what could go wrong, and §9 for the three decisions
-I need from you.
+Read §1 for why, §2 for the method end to end, §10 for what could go wrong,
+and §12 for what was decided.
 
 ---
 
@@ -32,7 +32,14 @@ direction fidelity at −0.70.
 
 **It answers the wrong question.** The specification asks for a model over
 `(gene embedding, value)` tokens of a cell (§4.2). What was built pools the
-control cells into one profile per context and predicts one mean response.
+control cells into one profile per context and predicts one mean response:
+
+```python
+# phase2.py, make_step — the same profile for every target, the pooled mean as truth
+baseline   = tensors.control_panel.unsqueeze(0).expand(len(chosen), -1)
+bulk_truth = torch.stack([tensors.pseudobulk[t] for t in chosen])
+```
+
 Per-cell heterogeneity in the submission comes entirely from resampled
 control cells, not from the network. That was my decision, taken for the
 measurement reason in DECISIONS.md D27 — in control-SD units the mean of *n*
@@ -46,7 +53,97 @@ problem. It is to change what the module is supervised *against*.
 
 ---
 
-## 2. What the module becomes
+## 2. The method, end to end
+
+```
+Model 1 — LINCS (bulk: 688 paired wells, 955 panel genes)
+  control profile + target token → signature (sig, gmt) → perturbed profile
+                                   [the pair is OBSERVED]
+
+Model 2 — Replogle (single cells; panel ⊂ 955, rest ≈ 7,000 of 17,578)
+  control cell (B × 955) + target token ─── OT pairing ──→ perturbed cell (B × 955)
+         │                                                        │
+         │        shared gene-query decoder (same weights)        │
+         ▼                                                        ▼
+  control rest (B × N_rest)                           perturbed rest (B × N_rest)
+         └──────────── delta consistency penalty ──────────────────┘
+                  (their difference = the observed rest change)
+
+Challenge
+  Phase 3 adapt on that context's controls (context adapters + δ for genes
+  first seen here); then
+  control cell + target token → Model 2 (perturbation module frozen) → perturbed cell
+```
+
+Three changes from what is built: the perturbation input becomes a **cell**
+rather than a pooled profile (§3), its target comes from **OT** rather than a
+pseudobulk mean (§4), and the two decoder arms gain a **delta consistency**
+term (§5). Everything else — the gene vocabulary, the core, the adapters,
+the rehearsal, the generator, the submission path — is unchanged.
+
+### 2.1 Three facts about the data that constrain this
+
+**LINCS has no cells.** `phase1_lincs.h5ad` is `(688, 955)`: 688 rows, each a
+bulk well average over 6–235 wells (`obs.n_pert_wells`, `n_ctrl_wells`).
+Model 1 can only ever be profile-level. The cell-level claim starts at
+Model 2, and the defense write-up must say so.
+
+**The arrow is well-posed exactly where there are no cells.**
+
+| | has cells? | is the pair (control → perturbed) observed? |
+|---|---|---|
+| LINCS (Model 1) | no — bulk wells | **yes** — `layers['ctrl']` / `layers['pert']`, same plate |
+| Replogle (Model 2) | yes — ~2M cells | **no** — destructive assay |
+| challenge | yes — controls only | no; that is the task |
+
+Replogle cell *i* (control) and cell *j* (perturbed) are different cells:
+*i* was never perturbed and *j* was never observed unperturbed. So
+`control cell + target token → that cell perturbed` has **no `y` for its
+`x`**. It is a distribution transport problem, not supervised regression,
+and the pairing rule has to be named. That is the gap that produced the
+failure — the current code resolves it by collapsing both sides to a pooled
+mean. **Filling in the pairing rule is the whole fix**; nothing downstream
+of the perturbation arrow was the broken part.
+
+**The rest genes narrow and then widen.**
+
+| | panel | rest |
+|---|---|---|
+| challenge (server) | 955 | 17,578 |
+| challenge (`mini_data`) | 955 | 1,028 |
+| Replogle K562_gwps (mini) | 716 measured | 414 measured |
+| Replogle rpe1 (mini) | 812 measured | 432 measured |
+| Replogle (server) | part of 955 | ≈ 7,000 |
+
+So the decoder is *trained* on ~7,000 rest genes and *required* on 17,578;
+roughly 10,000 challenge genes are observed nowhere except the challenge
+controls. A fixed-width output head cannot span that — the decoder must stay
+**query-based** (a gene's embedding in, its value out), with the
+prior-initialized vocabulary carrying the unseen genes. That is the existing
+design and it is load-bearing.
+
+### 2.2 Why panel first, then rest
+
+Perturbation supervision exists only for the 955 panel genes (LINCS) and for
+the ~7,000 Replogle rest genes. Expanding first and perturbing second would
+demand perturbation supervision on genes that have none. Perturbing the
+panel and then expanding confines the hard problem to where the data is.
+This is the built order and it is kept.
+
+### 2.3 What stays from CLAUDE.md
+
+Two things a cell-level sketch tends to drop, both of which stay:
+
+* **Phase 1's `sig`/`gmt` heads and the two-step** (control + perturbation →
+  signature; control + signature → perturbed) — §4.4 and checklist item 8,
+  artifact `phase1/metrics.json`.
+* **Phase 3 adaptation** on each context's challenge controls — checklist
+  item 11. Unavoidable: the context is new and ~10,000 of its genes are
+  first seen there.
+
+---
+
+## 3. What the module becomes
 
 Today:
 
@@ -70,7 +167,7 @@ What changes is the **loss**, the **batch shape**, and the **generator**.
 
 ---
 
-## 3. The loss: entropic OT with a barycentric target
+## 4. The loss: entropic OT with a barycentric target
 
 A perturbed cell has no matched control cell. Supervision has to construct
 one.
@@ -122,22 +219,102 @@ the rehearsal can *measure* where the optimum sits rather than us guessing.
 
 ---
 
-## 4. What changes, file by file
+## 5. The delta consistency penalty
+
+The two decoder arms share weights (§4.5, `phase2.py:279-292`), but nothing
+constrains the **difference** between them — and that difference is the only
+quantity the six official metrics ever score. Each arm's MSE is dominated by
+the baseline expression level, so the mapping can look healthy on both arms
+while getting the rest-gene *change* badly wrong.
+
+The OT coupling fixes this for free. It is computed on the panel, but it
+pairs *cells*, so the same `P̂` applies to those cells' rest values:
+
+```
+T_i^rest = Σ_j P̂_ij · perturbed_rest_j                     # the paired truth, rest genes
+observed change_i   = T_i^rest − control_rest_i
+predicted change_i  = decode(perturbed panel_i) − decode(control panel_i)
+
+delta loss = mean‖predicted change_i − observed change_i‖²  ÷  mean‖observed change_i‖²
+```
+
+masked to the genes the screen measures, and normalized by its own
+no-change baseline so 1.0 means "predicted no change in the rest genes",
+the same convention as everywhere else.
+
+**Which perturbed panel feeds the decoder** is a config key,
+`phase2.delta_through_prediction`:
+
+* `false` (default): the decoder is fed the **OT-paired true** perturbed
+  panel. The term then trains the mapping only, on changes, and keeps
+  decoder error out of the perturbation module's gradient. This is exactly
+  the quantity rehearsal variant 1 measures.
+* `true`: the decoder is fed the **predicted** perturbed panel, training the
+  composition end to end — which is what Phase 3 actually runs at inference.
+  Worth measuring, but not first: it lets a bad perturbation prediction
+  corrupt the mapping.
+
+In pooled mode there is no coupling, so the term falls back to group means
+(mean perturbed rest − mean control rest against the same for the decoded
+arms). That keeps both modes runnable and makes the term independently
+measurable before OT lands.
+
+Weight: `phase2.loss_delta`, default 0.5 alongside `loss_mapping`.
+
+---
+
+## 6. Considered and dropped: an autoregressive gene decoder
+
+An scGPT-style generative decoder over the rest genes was considered for
+both arms of Model 2 and is **not** being built. Two readings, both answered:
+
+**Strictly gene-by-gene.** The submission is 3 × 300 × 400 = 360,000 cells ×
+17,578 rest genes = **6.3 × 10⁹ sequential decode steps**, each a forward
+pass over a growing context. That is not affordable in the ~12-hour budget
+of §0, by orders of magnitude.
+
+**scGPT's actual scheme** — iterative masked refinement, all masked genes
+predicted in parallel each round, K ≈ 3–10 rounds — *is* affordable, at K×
+the current decoder. But it buys nothing that can be scored here:
+
+* `pds_cosine` and `expr_mse_unbiased_capped_norm` operate on a **group-sum
+  pseudobulk**. Gene-gene dependence within a cell averages out and does not
+  change the pseudobulk.
+* All four DE metrics are a **per-gene Wilcoxon test**. The statistic for
+  gene *g* depends only on gene *g*'s marginal across cells. Cross-gene
+  dependence within a cell does not enter it.
+
+So none of the six metrics can see the correlation structure autoregression
+exists to produce. K× the compute, zero expected score.
+
+The gene-query decoder already in place *is* the generative head — "given a
+gene's embedding, predict its value" — simply non-autoregressive, and
+parallel over genes, which is what makes 17,578 output genes tractable.
+
+**If cross-gene realism is wanted later** (for the biology, not for the
+score), the cheap route is stochastic **latents**: a conditional VAE over the
+64-latent bottleneck. Sampling the latent per cell induces correlated
+variation across all genes at once, at essentially no extra cost, and keeps
+the decoder parallel. Deferred until OT is measured.
+
+---
+
+## 7. What changes, file by file
 
 | file | change |
 |---|---|
 | `vccp/train/ot.py` | **new.** Log-domain Sinkhorn (~40 lines), cost matrix, barycentric projection. Pure tensor code, no new dependency, runs on the GPU beside the batch. |
-| `vccp/phases/phase2.py` | `make_step`: the perturbation half draws `ot_batch_cells` control and perturbed cells per target for `ot_targets_per_step` targets, builds the coupling, and takes the loss against the barycentric target. `perturbation_mode: pooled \| percell` selects the old path. |
-| `vccp/config.py` | `phase2.perturbation_mode`, `ot_epsilon`, `ot_batch_cells`, `ot_targets_per_step`, `ot_iterations`. |
+| `vccp/phases/phase2.py` | `make_step`: the perturbation half draws `ot_batch_cells` control and perturbed cells per target for `ot_targets_per_step` targets, builds the coupling, and takes the loss against the barycentric target. The same coupling feeds the §5 delta term. `perturbation_mode: pooled \| percell` selects the old path. |
+| `vccp/config.py` | `phase2.perturbation_mode`, `ot_epsilon`, `ot_batch_cells`, `ot_targets_per_step`, `ot_iterations`, `loss_delta`, `delta_through_prediction`. |
 | `vccp/predict/run.py` | per-cell prediction: each drawn control cell goes through the perturbation module and the mapping individually; the result is a fold-change **matrix** (cells × genes), not a vector. |
 | `vccp/predict/generator.py` | `generate_counts` accepts a per-cell fold-change matrix as well as a vector; thresholding and scaling apply elementwise. The knockdown exemption becomes a column mask. |
 | `vccp/rehearsal/variants.py` | the cross-context variant runs both modes so the report compares them directly. |
 | `vccp/phases/adapt.py`, `phase3.py` | unchanged — the mapping is already per cell and the policy already forbids adapting the perturbation module. |
-| `vccp/phases/phase1.py` | **unchanged.** LINCS is one row per (cell line, target, time); there are no cells to be per-cell about. Phase 1 stays profile-level and the shared core absorbs both. |
+| `vccp/phases/phase1.py` | **unchanged.** LINCS is 688 bulk wells; there are no cells to be per-cell about (§2.1). Phase 1 stays profile-level, keeps its `sig`/`gmt` heads and its two-step, and the shared core absorbs both. |
 
 ---
 
-## 5. Prediction and the generator
+## 8. Prediction and the generator
 
 Today, per (context, target): one forward pass, one fold-change vector,
 applied to 400 resampled control cells.
@@ -160,23 +337,15 @@ resampling.
 
 ---
 
-## 6. Step 0 — a capacity check before any of this
+## 9. Step 0 — the capacity check
 
-The module cannot fit its **training** targets (1.036). OT changes what it is
-supervised against, not whether it can learn. Before building any of the
-above:
+The module could not fit its **training** targets (1.036). OT changes what it
+is supervised against, not whether it can learn, so before building any of
+the above:
 
 > Train the current pooled module on **8 targets from one screen** with
 > validation disabled, for enough steps to overfit, and report the training
 > ratio.
-
-* **It reaches ≪ 1.0** → the module can learn; the problem is signal, scale
-  or optimisation, and OT is worth building.
-* **It stays ~1.0** → there is a bug or a capacity limit in the perturbation
-  path, and OT would inherit it. Fix that first.
-
-Half a day, decisive either way, and it stops us building on a broken
-foundation. I would not skip it.
 
 `scripts/capacity_check.py` implements it. It reports three numbers per
 checkpoint — the error ratio, the correlation, and **the size of the
@@ -196,21 +365,26 @@ parameter trainable, warm-started from the Phase 1 core):
 
 **Verdict: can-fit.** The module drove training error to 4% of no-change and
 predicted changes of the right magnitude and direction. So the architecture,
-the perturbation token and the optimiser are all capable of representing a
-response — the failure at 1.003 / 1.036 on the real training targets is
-about signal or supervision, not about the module.
+the perturbation token, the conditioning and the optimiser are all capable
+of representing a response — the failure at 1.003 / 1.036 on the real
+training targets is about signal and supervision, not about the module.
 
 That is what makes the per-cell OT redesign worth building rather than a
 bug hunt. **It still needs confirming on the server data**, where the
 targets are 4,968 rather than 51 and the panel is the real one:
 
 ```bash
+source scripts/server_env.sh
 python scripts/capacity_check.py --config configs/server.yaml --targets 8 --steps 2000
 ```
 
+P1 and P2 are low-risk and independent of the verdict, so they proceed in
+parallel with that run. If the server comes back `cannot-fit` or
+`collapses`, P3 onward stops until it is understood.
+
 ---
 
-## 7. What could go wrong
+## 10. What could go wrong
 
 * **The module learns the identity.** With a per-cell input and a per-cell
   target that is "a nearby cell", predicting `output = input` scores well.
@@ -223,6 +397,10 @@ python scripts/capacity_check.py --config configs/server.yaml --targets 8 --step
   intended mechanism, but if library size dominates completely the module
   may learn a depth correction and nothing else. Diagnostic: the correlation
   between predicted change and library-size difference, reported per step.
+* **The delta term fights the level term.** A mapping tuned for changes may
+  drift on absolute level, which the rest-gene predictions still need.
+  Both are reported separately in `phase2/metrics.json`, and `loss_delta`
+  is the knob.
 * **Prediction gets slow or large.** Measured on mini before the server.
 * **It does not help.** Entirely possible. The rehearsal's cross-context
   variant, on the leaderboard scale, is the arbiter, and the pooled arm
@@ -230,7 +408,7 @@ python scripts/capacity_check.py --config configs/server.yaml --targets 8 --step
 
 ---
 
-## 8. How we will know
+## 11. How we will know
 
 The comparison is `cross_context`, both modes, on the leaderboard scale
 (0 = organizers' baseline, 1 = split-half replicate) — the reading that
@@ -244,25 +422,31 @@ still is not learning, whatever the rehearsal says.
 
 ---
 
-## 9. Decisions I need from you
+## 12. Decisions taken
 
-1. **Step 0 first?** I recommend yes — half a day, and it tells us whether
-   OT is worth building at all.
-2. **`ε` default.** I would start the sweep at `{0.01, 0.05, 0.2, 1.0, ∞}`
-   in cost units (the cost is normalized per gene, so these are comparable
-   across panels), with the rehearsal reporting each.
-3. **Does the pooled mode stay?** I recommend yes, as the control arm and as
-   a fallback — it costs one config branch, and `perturbation_mode` is a
-   setting, not a code fork (§1.1's "one code path" is about mini vs server,
-   not about a measured A/B).
+1. **Step 0 first.** Done on mini: `can-fit` (§9). The server confirmation
+   runs in parallel with P1–P2 and gates P3.
+2. **`ε` sweep** starts at `{0.01, 0.05, 0.2, 1.0, ∞}` in cost units (the
+   cost is normalized per gene, so these are comparable across panels), with
+   the rehearsal reporting each.
+3. **The pooled mode stays**, as the control arm and as a fallback. It costs
+   one config branch, and `perturbation_mode` is a setting, not a code fork
+   (§1.1's "one code path" is about mini vs server, not about a measured
+   A/B).
+4. **No autoregressive decoder** (§6). The gene-query decoder stays; a
+   stochastic-latent VAE is the deferred option if cross-gene realism is
+   wanted later.
+5. **The delta consistency term is added** (§5), defaulting to the
+   OT-paired-true-panel form.
 
-## 10. Milestones
+## 13. Milestones
 
 | | content | exit condition |
 |---|---|---|
-| **P0** | capacity check on 8 targets | a number, and a go/no-go |
+| **P0** | capacity check on 8 targets | ✅ `can-fit` on mini; server run outstanding |
 | **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; coupling rows sum to 1) | `pytest` green |
-| **P2** | `phase2.perturbation_mode: percell`, both modes training on mini | training ratio reported for both |
-| **P3** | per-cell prediction and generator | `all` green on mini, runtime and memory measured |
-| **P4** | rehearsal A/B, ε swept | a table of leaderboard-scale numbers, both modes |
-| **P5** | server run, submission | a leaderboard number to compare against −0.131 |
+| **P2** | the delta consistency term, group-mean form, in pooled mode | Phase 2 reports a rest-gene *change* ratio; measured against today |
+| **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term, both modes training on mini | training ratio reported for both |
+| **P4** | per-cell prediction and generator | `all` green on mini, runtime and memory measured |
+| **P5** | rehearsal A/B, ε swept | a table of leaderboard-scale numbers, both modes |
+| **P6** | server run, submission | a leaderboard number to compare against −0.131 |
