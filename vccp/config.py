@@ -179,6 +179,17 @@ class Train:
     phase1_contribution_ablation: bool = True
     #: The ablation arm's budget, as a fraction of the main arm's.
     ablation_steps_fraction: float = 1.0
+    #: Give the `core_scratch` arm the same number of steps on **Phase 2's
+    #: own objective** as the warm arm gets, rather than the same total.
+    #:
+    #: Without it the comparison is confounded and the confound is large: a
+    #: warm arm gives `replay_fraction` of its steps to Phase 1, so at the
+    #: defaults the scratch arm trains 36% longer on the objective they are
+    #: being compared on, and any advantage it shows is partly just that.
+    #: The first server run measured -0.202 with the budgets 442 against 600,
+    #: which is a result that cannot be read. On by default because an
+    #: unequal comparison is worse than none: it looks like evidence.
+    match_phase2_steps: bool = True
     #: L2 pull on each assay's perturbation-type offset, which starts at
     #: zero. It is what keeps a knockout row and a knockdown row near their
     #: shared base instead of each phase training its own in isolation

@@ -246,6 +246,65 @@ def test_the_contribution_is_reported_with_the_step_budgets_that_qualify_it():
     assert report["budget_favours"] == phase2_mod.SCRATCH_ARM
 
 
+def test_the_scratch_arm_is_given_the_warm_arms_phase2_steps():
+    """Equal totals are unequal training: the warm arm spends some of its
+    steps on Phase 1 and the scratch arm spends none.
+
+    The first server run measured the contribution at −0.202 with budgets of
+    442 against 600 — 36% more training for the arm that won — which is a
+    number that cannot be read.
+    """
+    import dataclasses
+
+    from vccp.config import load_config
+
+    cfg = load_config("configs/server.yaml")
+    warm_phase2 = cfg.phase2.steps * (1.0 - cfg.train.replay_fraction)
+    assert phase2_mod.scratch_arm_steps(cfg) == pytest.approx(warm_phase2, abs=1)
+
+    off = dataclasses.replace(
+        cfg, train=dataclasses.replace(cfg.train, match_phase2_steps=False)
+    )
+    assert phase2_mod.scratch_arm_steps(off) == cfg.phase2.steps
+    assert phase2_mod.scratch_arm_steps(off) > phase2_mod.scratch_arm_steps(cfg)
+
+    # `ablation_steps_fraction` still applies on top, and the floor is 1.
+    half = dataclasses.replace(
+        cfg, train=dataclasses.replace(cfg.train, ablation_steps_fraction=0.5)
+    )
+    assert phase2_mod.scratch_arm_steps(half) == pytest.approx(warm_phase2 / 2, abs=1)
+    tiny = dataclasses.replace(
+        cfg,
+        phase2=dataclasses.replace(cfg.phase2, steps=1),
+        train=dataclasses.replace(cfg.train, ablation_steps_fraction=0.01),
+    )
+    assert phase2_mod.scratch_arm_steps(tiny) == 1
+
+
+def test_budgets_that_match_are_reported_as_matched():
+    """Replay is sampled per step, so two arms meant to train equally land a
+    few steps apart. Reporting that as a bias reports noise."""
+    def report(warm_steps, scratch_steps):
+        return phase2_mod._phase1_contribution({
+            "core_unfrozen": {
+                "validation": {"pert_mse_ratio_to_no_change": 0.8},
+                "n_phase2_steps": warm_steps,
+            },
+            phase2_mod.SCRATCH_ARM: {
+                "validation": {"pert_mse_ratio_to_no_change": 0.9},
+                "n_phase2_steps": scratch_steps,
+            },
+        })
+
+    matched = report(450, 447)
+    assert matched["budgets_matched"] is True
+    assert matched["budget_favours"] is None
+
+    skewed = report(442, 600)
+    assert skewed["budgets_matched"] is False
+    assert skewed["budget_favours"] == phase2_mod.SCRATCH_ARM
+
+
 def test_the_budget_bias_can_run_the_other_way():
     """On `mini.yaml` it does: ablation_steps_fraction 0.5 leaves the scratch
     arm with fewer Phase 2 steps than the warm one, not more."""

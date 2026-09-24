@@ -490,10 +490,15 @@ def _phase1_contribution_text(contribution: dict[str, Any]) -> str:
     text += (
         f"\nThe two arms spent {steps.get('warm')} and {steps.get('scratch')} steps "
         "on Phase 2's own objective (warm, scratch). A warm arm gives some of its "
-        "steps to replaying Phase 1, and the scratch arm's total budget is "
-        "`train.ablation_steps_fraction` of the main arm's, so the two rarely "
-        "match."
+        "steps to replaying Phase 1, so `train.match_phase2_steps` sets the scratch "
+        "arm's budget to compensate."
     )
+    if contribution.get("budgets_matched"):
+        text += (
+            " Here they **match**, so the difference above is about Phase 1 rather "
+            "than about how long each arm trained.\n\n"
+        )
+        return text
     if favours == "warm":
         text += (
             " Here the difference **favours the warm arm**, so a positive number "

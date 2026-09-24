@@ -971,7 +971,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     # is worth, and until it was measured the three-phase design rested on an
     # assumption (PLAN_PERCELL.md §7.6).
     if cfg.train.phase1_contribution_ablation:
-        steps = max(1, int(round(cfg.phase2.steps * cfg.train.ablation_steps_fraction)))
+        steps = scratch_arm_steps(cfg)
         log.info("phase 2 ablation: core_scratch (no Phase 1) for %d steps", steps)
         scratch_model, scratch_result, scratch_frozen = train_arm(
             SCRATCH_ARM, cfg.phase2.unfreeze_core, steps, warm_start=False
@@ -1060,6 +1060,28 @@ CONTRIBUTION_KEYS = (
 )
 
 
+#: Budgets within this of each other count as matched. Replay is sampled per
+#: step rather than scheduled, so two arms meant to train equally land a few
+#: steps apart; reporting that as a bias would be reporting noise.
+BUDGET_TOLERANCE = 0.02
+
+
+def scratch_arm_steps(cfg: Config) -> int:
+    """How long the `core_scratch` arm trains.
+
+    With `train.match_phase2_steps` it gets the warm arm's *Phase 2* steps
+    rather than its total. The warm arm spends `replay_fraction` of its steps
+    on Phase 1's objective and the scratch arm spends none, so equal totals
+    mean unequal training on the objective the two are compared on — at the
+    defaults, 36% more for the scratch arm. An advantage measured that way is
+    partly just the extra steps, and the number cannot be read.
+    """
+    steps = cfg.phase2.steps * cfg.train.ablation_steps_fraction
+    if cfg.train.match_phase2_steps:
+        steps *= 1.0 - cfg.train.replay_fraction
+    return max(1, int(round(steps)))
+
+
 def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
     """What warm-starting from Phase 1 bought, per metric.
 
@@ -1091,10 +1113,9 @@ def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
     scratch_steps = scratch.get("n_phase2_steps")
     favours = None
     if warm_steps is not None and scratch_steps is not None:
-        if scratch_steps > warm_steps:
-            favours = SCRATCH_ARM
-        elif warm_steps > scratch_steps:
-            favours = "warm"
+        larger = max(warm_steps, scratch_steps, 1)
+        if abs(warm_steps - scratch_steps) / larger >= BUDGET_TOLERANCE:
+            favours = SCRATCH_ARM if scratch_steps > warm_steps else "warm"
     return {
         "measured": bool(deltas),
         "warm_arm": next(name for name in arms if name != SCRATCH_ARM),
@@ -1102,9 +1123,12 @@ def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
         "positive_means_phase1_helped": True,
         "improvement": deltas,
         "n_phase2_steps": {"warm": warm_steps, "scratch": scratch_steps},
-        # Which arm the unequal budgets help. A result that survives a budget
-        # running against it is stronger than the number alone suggests.
+        # Which arm the unequal budgets help, or `None` when they match to
+        # within `BUDGET_TOLERANCE`. A result that survives a budget running
+        # against it is stronger than the number alone suggests; a result the
+        # budget runs *for* cannot be read at all.
         "budget_favours": favours,
+        "budgets_matched": favours is None,
     }
 
 

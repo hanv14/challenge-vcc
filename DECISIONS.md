@@ -1345,3 +1345,34 @@ assay the submission actually faces.
 
 **Cost:** one extra scored arm, no extra training — it is the same weights
 through a different token.
+
+### D73. The scratch arm is given the warm arm's *Phase 2* steps, not its total
+
+**Decision.** `train.match_phase2_steps` (default true) sets the
+`core_scratch` arm's budget to `phase2.steps x ablation_steps_fraction x
+(1 - replay_fraction)`, so both arms train equally long on the objective they
+are compared on. `budget_favours` now returns `None` when the two are within
+`BUDGET_TOLERANCE` (2%), and `budgets_matched` says so.
+
+**Reason.** The first server run measured the contribution at **−0.202** with
+budgets of **442 against 600** — the arm that won had trained 36% longer on
+the objective. That is not a small confound and it points the same way as the
+result, so the number could not be read at all. D57 anticipated the
+asymmetry and reported it; reporting a confound is not the same as removing
+one, and a comparison that cannot be read is worse than no comparison because
+it looks like evidence.
+
+**Why default on.** The arm exists for one purpose: to say what Phase 1 is
+worth. An unequal version of that measurement does not serve the purpose, and
+nothing else uses the arm.
+
+**What it does not fix.** The warm arm is still warm-started *and* held by
+L2-SP toward Phase 1's weights, so "Phase 1's contribution" remains those two
+together. Separating them takes a third setting (`train.l2sp_weight: 0`) and
+another run; `pert_train_mse_ratio_to_no_change` is the number to watch,
+because a warm start that hurts *training* fit is an optimization problem
+rather than a transfer one.
+
+**The tolerance exists because replay is sampled per step** rather than
+scheduled, so two arms meant to train equally land a few steps apart.
+Reporting that as a bias would be reporting noise.
