@@ -1,14 +1,15 @@
 # Per-cell perturbation module — design
 
-**Status: agreed. P0 answered on `mini_data`; implementation not started.**
+**Status: agreed and scheduled (§14). P0 answered `can-fit` on `mini_data`
+and on the server; P1 landed (`vccp/train/ot.py`, 15 tests).**
 
 The current perturbation module predicts one mean effect per (context,
 target). This replaces it with one that maps **a cell** to **that cell
 perturbed**, supervised by entropic optimal transport between drawn control
 cells and drawn perturbed cells.
 
-Read §1 for why, §2 for the method end to end, §10 for what could go wrong,
-and §12 for what was decided.
+Read §1 for why, §2 for the method end to end, §7 for cross-assay
+transfer, §11 for what could go wrong, and §13 for what was decided.
 
 ---
 
@@ -217,6 +218,37 @@ So `phase2.ot_epsilon` is one config key that moves continuously from the
 current formulation to hard OT, the pooled arm stays alive as a control, and
 the rehearsal can *measure* where the optimum sits rather than us guessing.
 
+### `epsilon` is a fraction of the cost, and the window is narrow
+
+Measured during P1 on a realistic batch — 256 against 256 cells over 955
+genes in control-SD units, where the mean cost comes out at ~2.0:
+
+| `epsilon` (× mean cost) | Sinkhorn iterations | effective partners per cell |
+|---|---|---|
+| 0.005 | did not converge in 300 | 4.5 |
+| 0.01 | 36 | 15.9 |
+| 0.05 | 3 | 209.5 |
+| 0.2 | 2 | 252.8 |
+| 1.0 | 2 | 255.5 |
+| ∞ | — | 256 (pooled) |
+
+Three things follow, and all three are now in the code:
+
+1. **`epsilon` is expressed as a fraction of the batch's mean cost**, not as
+   an absolute distance. The entire pooled-to-hard transition happens between
+   0.005 and 0.05 of it — too narrow a window, and too dependent on a
+   screen's noise level, for an absolute value to land in reliably on every
+   screen.
+2. **The swept grid moves to `{0.005, 0.01, 0.02, 0.05, ∞}`.** The grid
+   originally proposed (§13.2, absolute) put three of its five values in the
+   region where the coupling is already pooled, which would have spent three
+   quarters of cycle C measuring the same thing.
+3. **Below ~0.01 nothing converges affordably.** That is a property of the
+   problem, not of the iteration ceiling. The barycentric target from a
+   partly converged coupling is still a usable weighted average, so the
+   solver reports its residual (`marginal_drift`) rather than pretending; a
+   run at the concentrated end is visibly approximate instead of silently so.
+
 ---
 
 ## 5. The delta consistency penalty
@@ -299,7 +331,124 @@ the decoder parallel. Deferred until OT is measured.
 
 ---
 
-## 7. What changes, file by file
+## 7. Cross-assay transfer: leveraging Model 1 in Model 2
+
+**The challenge is already a different assay from Replogle** — different lab,
+different protocol, ~20,000 UMIs against Replogle's 11,000–15,000. So
+cross-assay transfer is not preparation for hypothetical future data; it is
+the task being scored, and the pipeline has never measured it.
+
+### 7.1 The principle: split by what a new assay's controls reveal
+
+| what varies across assays | visible in its controls? | mechanism |
+|---|---|---|
+| depth, batch, dynamic range, cell state | **yes** | amortize — compute it from the controls |
+| perturbation modality (KO vs KDi vs drug) | **no** — controls look identical either way | a discrete type token |
+| effect magnitude for that modality | no | a fitted per-assay scale |
+
+Amortize what the controls show; use a discrete token for what they do not;
+fit a scale for what neither gives. That split decides the three changes
+below, and it is the line the defense can be argued along.
+
+### 7.2 What is already right
+
+The context vector is **amortized, not learned per context**:
+
+```python
+# core.py:225-227
+pooled  = self.value_encoder(context_profile).mean(dim=-2)
+latents = self.film(latents, self.context_encoder(pooled))
+```
+
+A brand-new context needs *zero* fitted parameters — the first row of the
+table is already solved, and it is why §4.7's Phase 3 works at all. Phase 2
+also warm-starts from the Phase 1 core, adds per-phase adapters, and is held
+back by L2-SP and Phase 1 replay (§4.3). The transfer machinery exists.
+
+### 7.3 The gap: one type token for every assay
+
+```python
+core.py:146   self.knockdown_type = nn.Parameter(torch.zeros(dim))   # ONE vector
+core.py:209   pert = self.vocabulary(target_idx, role=TARGET) + self.knockdown_type
+```
+
+A single constant is added to every perturbation token in every phase, so
+LINCS CRISPR **knockout** and Replogle/challenge CRISPR **interference** are
+indistinguishable to the model. CLAUDE.md §3.3 states that directions and
+affected genes transfer between them but *magnitudes and the target gene's
+own level do not* — and the architecture currently has nowhere to put that
+distinction. Phase 1's knockout evidence is therefore absorbed into Phase 2
+as though it were knockdown evidence.
+
+### 7.4 Change 1 — a type vocabulary, in the gene vocabulary's shape
+
+```
+type(assay) = base + δ_assay          δ initialized to zero, L2-regularized
+```
+
+The `W·prior + δ` pattern of §4.1, one level up. `base` is trained by every
+phase and carries what all knockdown-like perturbations share — **that is
+Model 1's contribution to Model 2, as an explicit named quantity** rather
+than an assumption buried in a warm start. `δ_assay` absorbs what is
+specific to knockout, and is penalized toward zero so the two cannot quietly
+diverge until nothing transfers at all. A new assay is one new `δ` row,
+initialized from the nearest existing type.
+
+This is a faithful reading of §4.2's "a learned knockdown-type embedding"
+rather than an added component: a type embedding with exactly one type is
+the degenerate case. Config: `model.pert_types` (read from the data, never
+enumerated in code) and `train.type_delta_penalty`.
+
+Not oversold: the module currently *under*-predicts, so importing oversized
+knockout magnitudes is not the active failure. This is a correctness fix and
+an assay-generalization mechanism, not a predicted leaderboard gain.
+
+### 7.5 Change 2 — a per-assay effect scale
+
+The third row of the table already has a knob: the generator's
+`effect_scale`, fitted on the rehearsal (§4.7). But it is **one global number
+fitted on Replogle and applied to the challenge** — an unstated cross-assay
+assumption sitting in the middle of the submission path. Making it per-assay,
+fitted per rehearsal dataset and recorded in `phase3_policy.json` alongside
+the assay it came from, turns a hidden assumption into a reported number.
+Nearly free, and it is the honest form of what is already happening.
+
+### 7.6 Change 3 — measure what Phase 1 is actually worth
+
+Phase 2 has two arms, `core_unfrozen` and `core_frozen`, and **both are
+warm-started from Phase 1**. There is no from-scratch arm, so Phase 1's
+contribution has never been measured. With the module sitting at 1.036 it is
+entirely possible that Phase 1 contributes nothing, and we would not know.
+
+A third arm, `core_scratch`, initialized from the priors without the Phase 1
+checkpoint. One config flag, one extra arm in `train_arm`, and the
+three-phase story in the defense stops being a claim and becomes a number.
+It is the cheapest high-value item in this document, and it runs in the same
+server cycle as change 1 — so **one cycle answers both transfer questions**.
+
+If the scratch arm matches the warm-started arms, changes 1 and 7.7 need
+rethinking before anything is built on top of them, which is why this comes
+first rather than last.
+
+### 7.7 Change 4 — a cross-assay rehearsal variant
+
+Rehearsal variant 2 is cross-**context**, same assay. The cross-**assay**
+analogue, on data already on disk:
+
+> Train the perturbation module on LINCS only. Adapt to a Replogle screen
+> using **its controls only**. Predict its perturbed panel for the targets
+> the two share, and score.
+
+That is literally "a new assay arrives, adapt with controls only, measure" —
+an extension of variant 2 rather than a new component, and a more honest
+analogue of the challenge than variant 2 is, for the reason at the top of
+this section. It produces **evidence, not score**: it cannot improve the
+submission, so it is built behind a config flag
+(`rehearsal.cross_assay: false`) and never slows a deadline run.
+
+---
+
+## 8. What changes, file by file
 
 | file | change |
 |---|---|
@@ -310,11 +459,15 @@ the decoder parallel. Deferred until OT is measured.
 | `vccp/predict/generator.py` | `generate_counts` accepts a per-cell fold-change matrix as well as a vector; thresholding and scaling apply elementwise. The knockdown exemption becomes a column mask. |
 | `vccp/rehearsal/variants.py` | the cross-context variant runs both modes so the report compares them directly. |
 | `vccp/phases/adapt.py`, `phase3.py` | unchanged — the mapping is already per cell and the policy already forbids adapting the perturbation module. |
+| `vccp/models/core.py` | `knockdown_type` becomes a type vocabulary, `base + δ_assay` (§7.4), with the δ penalty beside the gene vocabulary's. |
+| `vccp/phases/phase2.py` (2) | a third arm, `core_scratch`, initialized from the priors without the Phase 1 checkpoint (§7.6). |
+| `vccp/rehearsal/variants.py` (2) | the cross-assay variant, LINCS → Replogle, behind `rehearsal.cross_assay` (§7.7). |
+| `vccp/predict/run.py` (2), `phase3.py` | `effect_scale` resolved per assay rather than globally, and the assay it was fitted on recorded in `phase3_policy.json` (§7.5). |
 | `vccp/phases/phase1.py` | **unchanged.** LINCS is 688 bulk wells; there are no cells to be per-cell about (§2.1). Phase 1 stays profile-level, keeps its `sig`/`gmt` heads and its two-step, and the shared core absorbs both. |
 
 ---
 
-## 8. Prediction and the generator
+## 9. Prediction and the generator
 
 Today, per (context, target): one forward pass, one fold-change vector,
 applied to 400 resampled control cells.
@@ -337,7 +490,7 @@ resampling.
 
 ---
 
-## 9. Step 0 — the capacity check
+## 10. Step 0 — the capacity check
 
 The module could not fit its **training** targets (1.036). OT changes what it
 is supervised against, not whether it can learn, so before building any of
@@ -369,22 +522,36 @@ the perturbation token, the conditioning and the optimiser are all capable
 of representing a response — the failure at 1.003 / 1.036 on the real
 training targets is about signal and supervision, not about the module.
 
-That is what makes the per-cell OT redesign worth building rather than a
-bug hunt. **It still needs confirming on the server data**, where the
-targets are 4,968 rather than 51 and the panel is the real one:
+**Result on the server** (8 targets from K562_essential, 2,000 steps, 35
+seconds on one GPU):
 
-```bash
-source scripts/server_env.sh
-python scripts/capacity_check.py --config configs/server.yaml --targets 8 --steps 2000
-```
+| step | ratio ÷ no-change | pearson | \|pred\| ÷ \|true\| |
+|---|---|---|---|
+| 1 | 9.671 | +0.01 | 3.20 |
+| 500 | 0.078 | +0.960 | 0.936 |
+| 1000 | 0.034 | +0.993 | 0.987 |
+| 2000 | **0.000** | **+1.000** | **1.000** |
 
-P1 and P2 are low-risk and independent of the verdict, so they proceed in
-parallel with that run. If the server comes back `cannot-fit` or
-`collapses`, P3 onward stops until it is understood.
+**Verdict: CAN-FIT**, and more decisively than on mini — complete
+memorization, with the predicted change the exact size of the true one. The
+architecture, the perturbation token, the context conditioning and the
+optimiser are all sound on the real panel with the real screens.
+
+**What this does and does not establish.** Memorizing 8 targets proves the
+module has somewhere to *put* a response — it can store the answer in the
+target-role embedding, which is a per-target parameter. It rules a broken
+module **out**. It does not rule generalization **in**, and it was never
+meant to: it is a negative control that had to pass before the redesign was
+worth starting. It passed, so P1 onward proceeds.
+
+(The `Memory Efficient attention defaults to a non-deterministic algorithm`
+warning in that log is expected: `runtime.set_determinism` uses
+`warn_only=True`, so attention warns rather than raising, and the run stays
+reproducible everywhere else.)
 
 ---
 
-## 10. What could go wrong
+## 11. What could go wrong
 
 * **The module learns the identity.** With a per-cell input and a per-cell
   target that is "a nearby cell", predicting `output = input` scores well.
@@ -393,6 +560,21 @@ parallel with that run. If the server comes back `cannot-fit` or
   exposed the current failure.
 * **ε is hard to set.** Mitigated by it spanning the pooled formulation at
   one end; the rehearsal sweeps it.
+* **Distances concentrate, and the coupling carries no information.** The
+  most serious risk in this document, and P1 found it. In 955 dimensions the
+  pairwise costs measured above span 1.69 to 2.47 around a mean of 2.04 —
+  on *independent noise*, every control cell is nearly equidistant from every
+  perturbed cell, and a coupling built on such a cost is uniform whatever
+  `epsilon` says. OT would then degenerate into exactly the pooled objective
+  it is meant to replace, and would do so silently.
+  Real cells are not independent noise: they differ in depth and cell state,
+  which is the structure the pairing exists to exploit. But that is an
+  expectation, not a measurement. `coupling_diagnostics` therefore reports
+  **`cost_spread`** (the cost's standard deviation over its mean) alongside
+  `effective_partners`, and P3's first output is those two numbers on real
+  drawn cells. A spread near zero there means the premise fails and OT should
+  be abandoned rather than tuned — that reading is cheap and it comes before
+  any training.
 * **The coupling matches on depth and the residual is depth.** This is the
   intended mechanism, but if library size dominates completely the module
   may learn a depth correction and nothing else. Diagnostic: the correlation
@@ -408,7 +590,7 @@ parallel with that run. If the server comes back `cannot-fit` or
 
 ---
 
-## 11. How we will know
+## 12. How we will know
 
 The comparison is `cross_context`, both modes, on the leaderboard scale
 (0 = organizers' baseline, 1 = split-half replicate) — the reading that
@@ -422,13 +604,15 @@ still is not learning, whatever the rehearsal says.
 
 ---
 
-## 12. Decisions taken
+## 13. Decisions taken
 
-1. **Step 0 first.** Done on mini: `can-fit` (§9). The server confirmation
+1. **Step 0 first.** Done on mini and on the server: `can-fit` (§10). The server confirmation
    runs in parallel with P1–P2 and gates P3.
-2. **`ε` sweep** starts at `{0.01, 0.05, 0.2, 1.0, ∞}` in cost units (the
-   cost is normalized per gene, so these are comparable across panels), with
-   the rehearsal reporting each.
+2. **`ε` sweep** is `{0.005, 0.01, 0.02, 0.05, ∞}` as a **fraction of the
+   batch's mean cost**, revised from the absolute grid first proposed after
+   P1 measured where the transition actually sits (§4). The rehearsal reports
+   each, with `effective_partners` beside it so the sweep is read in terms of
+   what the coupling did rather than what the config asked for.
 3. **The pooled mode stays**, as the control arm and as a fallback. It costs
    one config branch, and `perturbation_mode` is a setting, not a code fork
    (§1.1's "one code path" is about mini vs server, not about a measured
@@ -438,15 +622,72 @@ still is not learning, whatever the rehearsal says.
    wanted later.
 5. **The delta consistency term is added** (§5), defaulting to the
    OT-paired-true-panel form.
+6. **A perturbation-type vocabulary** replaces the single shared type
+   constant (§7.4). Lands with P3, in the same file OT is already rewriting.
+7. **A `core_scratch` arm** measures Phase 1's contribution (§7.6). Lands
+   first, with P2, because its answer can change 6 and 7.7.
+8. **`effect_scale` becomes per-assay** (§7.5), fitted per rehearsal dataset.
+9. **A cross-assay rehearsal variant**, opt-in (§7.7). Evidence for the
+   defense, not score for the leaderboard, so it is the one item allowed to
+   slip past the deadline.
 
-## 13. Milestones
+## 14. Schedule
+
+**Validation-round deadline: 2026-10-15** (extended from 09-30). The final
+test round follows on **2026-10-22** with new contexts and a different
+target list, which CLAUDE.md requires the pipeline to run on with only a
+config change — so the freeze below is real, not a formality.
+
+**The binding constraint is server cycles, not coding time.** §1.2 allows one
+GPU process at a time, so server runs are strictly serial, and each costs
+about a day of turnaround once launching and reporting back are counted. The
+plan needs five.
+
+| dates | code, verified on `mini_data` | server cycle |
+|---|---|---|
+| **Sep 24–27** | **P1** `train/ot.py` + tests · **P2** delta term, group-mean form, pooled mode · **#1** type vocabulary · **#3** `core_scratch` arm | **A** — capacity check, then Phase 2 with three arms and the delta term |
+| **Sep 28–Oct 2** | **P3** per-cell mode + per-pair delta · **P4** per-cell prediction and generator | **B** — Phase 2, per-cell against pooled |
+| **Oct 3–7** | **P5** rehearsal A/B harness · **#2** per-assay `effect_scale` · **#4** cross-assay variant, opt-in | **C** — rehearsal, ε swept, mode chosen |
+| **Oct 8–11** | integration and fixes; **code freeze Oct 11** | **D** — full `all`, submission, validate, package |
+| **Oct 12–15** | buffer only | **E** — second submission with whatever D taught us |
+
+### Why this order
+
+**Cycle A is the highest-value cycle and it comes first**, because #3 answers
+a question that changes the rest of the plan: if Phase 2 from scratch matches
+Phase 2 warm-started, Phase 1 contributes nothing and §7.4 and §7.7 need
+rethinking *before* they are built on rather than after. The same cycle says
+whether the delta term alone moves the rest-gene change ratio — a result
+that arrives before OT lands and de-risks everything downstream.
+
+#1 moves earlier than first proposed for the same reason: it is ~20 lines in
+`core.py` and `phase2.py`, which P3 rewrites anyway, and pairing it with #3
+means one server run answers both transfer questions.
+
+### Exit conditions
 
 | | content | exit condition |
 |---|---|---|
-| **P0** | capacity check on 8 targets | ✅ `can-fit` on mini; server run outstanding |
-| **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; coupling rows sum to 1) | `pytest` green |
-| **P2** | the delta consistency term, group-mean form, in pooled mode | Phase 2 reports a rest-gene *change* ratio; measured against today |
-| **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term, both modes training on mini | training ratio reported for both |
+| **P0** | capacity check on 8 targets | ✅ `can-fit` on mini **and** on the server (§10) |
+| **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; marginals uniform) | ✅ 16 tests green; ε made relative and the grid revised (§4) |
+| **P2** | the delta term, group-mean form, pooled mode; `core_scratch` arm; type vocabulary | Phase 2 reports a rest-gene *change* ratio, and a number for Phase 1's contribution |
+| **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | `cost_spread` and `effective_partners` on real drawn cells **first** (§11), then the training ratio for both modes |
 | **P4** | per-cell prediction and generator | `all` green on mini, runtime and memory measured |
-| **P5** | rehearsal A/B, ε swept | a table of leaderboard-scale numbers, both modes |
+| **P5** | rehearsal A/B, ε swept, per-assay scale | a table of leaderboard-scale numbers, both modes |
 | **P6** | server run, submission | a leaderboard number to compare against −0.131 |
+
+### Three things that could break it
+
+1. **The ε sweep can eat cycle C.** Five ε values × three rehearsal datasets
+   × two modes × three variants is a combinatorial trap. Bound it to the
+   **cross-context variant, method arm, one dataset, 100 held-out targets** —
+   five runs, not ninety — then confirm the winner on the other two datasets.
+2. **Turnaround latency.** Five serial cycles in 21 days leaves no room for a
+   cycle that sits unlaunched for three days. This is the likeliest way the
+   schedule slips, and it is not something code can fix.
+3. **Oct 22.** Whatever is in the repo at the Oct 11 freeze has to be a
+   working pipeline for the final round, not a half-landed refactor.
+
+**If OT does not beat pooled in cycle C**, we submit the pooled arm carrying
+the delta term and #1–#3. That is what the pooled mode stays in the codebase
+for (§13.3), and it is why no cycle depends on OT succeeding.

@@ -860,3 +860,61 @@ data — everything except which code read them. A `.vcc` on a server six
 weeks after the fact is unattributable without it, and the user is about to
 submit several versions and compare their scores. It can never fail a run: a
 tree that is not a git checkout reports what it can.
+
+## P1 — per-cell OT
+
+### D52. `ot_epsilon` is a fraction of the cost, not an absolute distance
+
+**Decision.** The OT regularization strength is expressed as a fraction of
+the batch's mean transport cost, resolved inside `paired_target`; the solver
+`sinkhorn_log` keeps an absolute value. The swept grid is
+`{0.005, 0.01, 0.02, 0.05, ∞}`.
+
+**Reason.** Measured on a realistic batch (256 × 256 cells, 955 genes,
+control-SD units) the mean cost is ~2.0 and the whole pooled-to-hard
+transition happens between 0.005 and 0.05 of it. An absolute value would have
+to be retuned for every screen whose cells are noisier or quieter, and the
+grid first proposed — `{0.01, 0.05, 0.2, 1.0, ∞}` absolute — put three of its
+five points in the region where the coupling is already pooled.
+
+**Alternative.** Resolve `epsilon` against a per-screen constant estimated
+once, rather than per batch. Cleaner statistically, since the effective
+`epsilon` would then not vary step to step, but it needs a calibration pass
+and the per-batch variation is small next to what the cell draw itself
+contributes. Revisit in P3 if the training curves show it.
+
+### D53. The OT solver reports its residual rather than asserting convergence
+
+**Decision.** `sinkhorn_log` stops at a marginal drift of 1e-4 or at
+`DEFAULT_ITERATIONS` (200), whichever comes first, and
+`coupling_diagnostics` reports the drift it finished at.
+
+**Reason.** At the concentrated end of the sweep (`epsilon` ≲ 0.01) Sinkhorn
+does not converge in any affordable number of iterations — 300 was not enough
+at 0.005, against 36 at 0.01 and 3 at 0.05. That is a property of entropic OT
+near the hard-assignment limit, not something more iterations fix. A partly
+converged coupling still gives a usable weighted average, so the run should
+continue and say so rather than fail or silently pretend.
+
+**Alternative.** Raise the ceiling until everything converges (unaffordable
+inside a training step), or refuse to run below 0.01 (would remove the
+interesting end of the sweep before measuring it).
+
+### D54. `cost_spread` is reported because it tests the premise of the method
+
+**Decision.** `coupling_diagnostics` reports the transport cost's standard
+deviation over its mean, and P3's first output is that number on real drawn
+cells, before any training.
+
+**Reason.** In high dimension pairwise distances concentrate. On 955 genes of
+independent noise the costs span 1.69–2.47 around 2.04, so every control cell
+is nearly equidistant from every perturbed cell and the coupling is uniform
+whatever `epsilon` says — OT would degenerate into the pooled objective it
+exists to replace, and would do so silently. Real cells differ in depth and
+cell state, which is the structure the pairing exploits, but that is an
+expectation rather than a measurement. A spread near zero on real data means
+the premise fails and the approach should be abandoned rather than tuned.
+
+**Alternative.** Discover it from the training curves instead. Much more
+expensive: a degenerate coupling looks exactly like a correctly configured
+pooled run, so it would cost a server cycle to distinguish.
