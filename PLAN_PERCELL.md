@@ -1,7 +1,8 @@
 # Per-cell perturbation module — design
 
 **Status: agreed and scheduled (§14). P0 answered `can-fit` on `mini_data`
-and on the server; P1 landed (`vccp/train/ot.py`, 15 tests).**
+and on the server; P1 landed (`vccp/train/ot.py`); P2 landed (the delta term,
+the type vocabulary, the `core_scratch` arm).**
 
 The current perturbation module predicts one mean effect per (context,
 target). This replaces it with one that maps **a cell** to **that cell
@@ -293,6 +294,29 @@ measurable before OT lands.
 
 Weight: `phase2.loss_delta`, default 0.5 alongside `loss_mapping`.
 
+### What P2 built, and the one number that makes it readable
+
+The group-mean form is in `phase2.make_step`, and the evaluation reports
+
+| key | what it says |
+|---|---|
+| `map_delta_ratio_to_no_change` | the change error, against predicting no change |
+| `map_delta_noise_floor_ratio` | what a **perfect** predictor would score |
+
+The floor exists because an observed change is a difference of two sampled
+means and carries noise of its own. That noise inflates the ratio without
+moving the loss's minimum — the expected squared error against `true + noise`
+is still minimized at `true` — so the loss is sound and only the *reading*
+would mislead. At the training draw of 16 cells a perfect predictor would
+score around 0.76; `phase2.delta_eval_cells` is therefore 128 for scoring,
+where the floor is nearer 0.28. It is estimated directly, from two
+independent control draws whose mean difference is pure sampling noise of the
+same size.
+
+A ratio at the floor means the mapping has learned everything these cells can
+show it. A ratio at 1.0 means it has learned nothing about the change,
+whatever the per-state MSEs say.
+
 ---
 
 ## 6. Considered and dropped: an autoregressive gene decoder
@@ -396,8 +420,21 @@ initialized from the nearest existing type.
 
 This is a faithful reading of §4.2's "a learned knockdown-type embedding"
 rather than an added component: a type embedding with exactly one type is
-the degenerate case. Config: `model.pert_types` (read from the data, never
-enumerated in code) and `train.type_delta_penalty`.
+the degenerate case.
+
+**Built in P2.** `core.knockdown_type` becomes `pert_type_base` plus a
+`pert_type_delta` row per assay, penalized toward zero by
+`train.type_delta_l2`. The assay is named by `phase1.pert_type`
+(`crispr_ko`), `phase2.pert_type` and `phase3.pert_type` (both `crispri` —
+they are the same modality, and that sharing *is* the transfer). Every call
+site that builds a perturbation token must pass one; the model raises rather
+than defaulting, because a silent default would let a knockout be treated as
+a knockdown, which is the exact failure the vocabulary exists to prevent.
+
+One property worth knowing, found by a test: the blocks normalize tokens, so
+a type offset that is **constant** across the embedding's dimensions is
+removed before the latents ever see it. A type row speaks through its
+direction, never through a uniform shift.
 
 Not oversold: the module currently *under*-predicts, so importing oversized
 knockout magnitudes is not the active failure. This is a correctness fix and
@@ -429,6 +466,19 @@ server cycle as change 1 — so **one cycle answers both transfer questions**.
 If the scratch arm matches the warm-started arms, changes 1 and 7.7 need
 rethinking before anything is built on top of them, which is why this comes
 first rather than last.
+
+**Built in P2**, behind `train.phase1_contribution_ablation` (default on).
+`phase2/metrics.json` gains `phase1_contribution`: a per-metric
+`scratch − warm` difference on ratios where lower is better, so a positive
+number means Phase 1 helped. The summary prints it as its own section.
+
+**The comparison is not symmetric, and the report says so.** A warm arm gives
+`replay_fraction` of its steps to Phase 1's objective and the scratch arm
+gives none, so the scratch arm gets *more* training on Phase 2's own
+objective. `n_phase2_steps` is recorded per arm. The bias runs against Phase
+1, so a small positive contribution is a stronger result than it looks, and a
+small negative one is weaker. Equalizing it by giving the scratch arm replay
+too would put back through the side door exactly what the ablation removes.
 
 ### 7.7 Change 4 — a cross-assay rehearsal variant
 
@@ -670,7 +720,7 @@ means one server run answers both transfer questions.
 |---|---|---|
 | **P0** | capacity check on 8 targets | ✅ `can-fit` on mini **and** on the server (§10) |
 | **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; marginals uniform) | ✅ 16 tests green; ε made relative and the grid revised (§4) |
-| **P2** | the delta term, group-mean form, pooled mode; `core_scratch` arm; type vocabulary | Phase 2 reports a rest-gene *change* ratio, and a number for Phase 1's contribution |
+| **P2** | the delta term, group-mean form, pooled mode; `core_scratch` arm; type vocabulary | ✅ Phase 2 reports `map_delta_ratio_to_no_change` with its noise floor, and `phase1_contribution` per metric |
 | **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | `cost_spread` and `effective_partners` on real drawn cells **first** (§11), then the training ratio for both modes |
 | **P4** | per-cell prediction and generator | `all` green on mini, runtime and memory measured |
 | **P5** | rehearsal A/B, ε swept, per-assay scale | a table of leaderboard-scale numbers, both modes |

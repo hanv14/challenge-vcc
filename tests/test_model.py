@@ -120,12 +120,13 @@ def test_the_perturbation_token_changes_the_answer(session_cfg, built_priors):
     wake_heads(model)
     gene_in, gene_out = as_index(np.arange(60)), as_index(np.arange(60))
     values = profile(2, 60)
+    assay = session_cfg.phase2.pert_type
 
     model.eval()
     with torch.no_grad():
         unperturbed = model(values, gene_in, gene_out)
-        a = model(values, gene_in, gene_out, target_idx=as_index([3, 3]))
-        b = model(values, gene_in, gene_out, target_idx=as_index([900, 900]))
+        a = model(values, gene_in, gene_out, target_idx=as_index([3, 3]), pert_type=assay)
+        b = model(values, gene_in, gene_out, target_idx=as_index([900, 900]), pert_type=assay)
 
     assert not torch.allclose(unperturbed, a, atol=1e-6)
     assert not torch.allclose(a, b, atol=1e-6), "two targets must not look identical"
@@ -168,12 +169,16 @@ def test_heads_are_separate_outputs(session_cfg, built_priors):
 def test_both_gene_roles_are_used(model_and_cfg):
     """Input tokens use the feature role, the perturbation token the target
     role (CLAUDE.md §4.1)."""
-    model, _ = model_and_cfg
+    model, cfg = model_and_cfg
     gene_in = as_index(np.arange(20))
-    tokens = model.tokenize(profile(1, 20), gene_in, target_idx=as_index([7]))
+    tokens = model.tokenize(
+        profile(1, 20), gene_in, target_idx=as_index([7]), pert_type=cfg.phase2.pert_type
+    )
 
     assert tokens.shape == (1, 21, model.dim)
-    expected = model.vocabulary(as_index([7]), role=TARGET) + model.knockdown_type
+    expected = model.vocabulary(as_index([7]), role=TARGET) + model.perturbation_type(
+        cfg.phase2.pert_type
+    )
     assert torch.allclose(tokens[:, -1], expected, atol=1e-5)
     feature = model.vocabulary(gene_in, role=FEATURE)
     assert torch.allclose(tokens[0, :20] - model.value_encoder(profile(1, 20))[0], feature, atol=1e-5)

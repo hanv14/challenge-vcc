@@ -147,7 +147,7 @@ def adapt_on_controls(
         )
         predicted = map_panel_to_rest(model, source, panel, output_idx)
         loss = masked_mse(predicted, rest[:, positions])
-        return loss + model.vocabulary.delta_penalty(), {"mapping": float(loss.detach())}
+        return loss + model.regularization(), {"mapping": float(loss.detach())}
 
     l2sp = L2SP(model, cfg.train.l2sp_weight)
     result = run_training(

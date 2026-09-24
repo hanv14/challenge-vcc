@@ -168,8 +168,22 @@ class Train:
     #: validation under both, so the `unfreeze_core` default rests on a
     #: measurement rather than on a judgement (PLAN.md §8.9).
     core_freeze_ablation: bool = True
+    #: Train a third Phase 2 arm with **no Phase 1 input at all** — no warm
+    #: start from its checkpoint and no replay of its objective — so that
+    #: what the first phase contributes is a measurement rather than an
+    #: assumption (PLAN_PERCELL.md §7.6). The arm gets the full step budget
+    #: on Phase 2's own objective where the warm arms spend
+    #: `replay_fraction` of theirs on Phase 1's, which biases the comparison
+    #: *against* Phase 1; `n_phase2_steps` is reported per arm so the
+    #: comparison can be read with that in view.
+    phase1_contribution_ablation: bool = True
     #: The ablation arm's budget, as a fraction of the main arm's.
     ablation_steps_fraction: float = 1.0
+    #: L2 pull on each assay's perturbation-type offset, which starts at
+    #: zero. It is what keeps a knockout row and a knockdown row near their
+    #: shared base instead of each phase training its own in isolation
+    #: (PLAN_PERCELL.md §7.4).
+    type_delta_l2: float = 1e-3
     #: Steps between logged curve points.
     log_every: int = 25
     #: Ask torch for deterministic kernels, turn TF32 off, and fix the cuBLAS
@@ -196,6 +210,8 @@ class Train:
             raise ConfigError("train.replay_fraction must be in [0, 1)")
         if not 0.0 < self.ablation_steps_fraction <= 1.0:
             raise ConfigError("train.ablation_steps_fraction must be in (0, 1]")
+        if self.type_delta_l2 < 0:
+            raise ConfigError("train.type_delta_l2 must not be negative")
         if self.log_every < 1:
             raise ConfigError("train.log_every must be at least 1")
         if self.output_genes_per_step < 0:
@@ -217,6 +233,11 @@ class Phase1:
     #: Feed the *true* signature into the second step instead of the
     #: predicted one. Off by default: the two steps train jointly.
     teacher_forcing: bool = False
+    #: The assay's perturbation modality. LINCS is CRISPR knockout, and the
+    #: challenge is CRISPR interference — §3.3 says directions transfer
+    #: between them but magnitudes do not, so they get separate rows of the
+    #: type vocabulary around a shared base (PLAN_PERCELL.md §7.4).
+    pert_type: str = "crispr_ko"
 
     def validate(self) -> None:
         _check_phase("phase1", self.steps, self.batch_size, self.val_fraction)
@@ -233,6 +254,23 @@ class Phase2:
     val_fraction: float = 0.2
     loss_mapping: float = 1.0
     loss_perturbation: float = 1.0
+    #: The delta consistency term: the difference between the mapping's two
+    #: arms has to equal the change that was observed (PLAN_PERCELL.md §5).
+    #: Each arm's own MSE is dominated by the baseline expression level, so
+    #: without this the mapping is never asked about the one quantity the six
+    #: official metrics score.
+    loss_delta: float = 0.5
+    #: Cells per draw when *scoring* the delta. Larger than `cells_per_draw`
+    #: on purpose: an observed change is a difference of two sampled means,
+    #: and its noise falls as 1/n, so a small draw would report a ratio near
+    #: 1.0 even for a perfect predictor. `map_delta_noise_floor_ratio` says
+    #: where the floor actually landed.
+    delta_eval_cells: int = 128
+    #: Held-out targets the delta is scored over.
+    delta_eval_targets: int = 8
+    #: Replogle is CRISPR interference, as the challenge is — the two share
+    #: a type row, which is the transfer this vocabulary exists to allow.
+    pert_type: str = "crispri"
     #: Phase 2 has the data to support training the core, and is where the
     #: forgetting guard is worth having (DECISIONS.md D3).
     unfreeze_core: bool = True
@@ -241,6 +279,12 @@ class Phase2:
         _check_phase("phase2", self.steps, self.batch_size, self.val_fraction)
         if self.cells_per_draw < 1:
             raise ConfigError("phase2.cells_per_draw must be at least 1")
+        if self.loss_delta < 0:
+            raise ConfigError("phase2.loss_delta must not be negative")
+        if self.delta_eval_cells < 2:
+            raise ConfigError("phase2.delta_eval_cells must be at least 2")
+        if self.delta_eval_targets < 1:
+            raise ConfigError("phase2.delta_eval_targets must be at least 1")
 
 
 def _check_phase(name: str, steps: int, batch_size: int, val_fraction: float) -> None:
@@ -262,6 +306,11 @@ class Phase3:
     #: A challenge context arrives as control cells and nothing else, so the
     #: core stays frozen here whatever Phase 2 did (DECISIONS.md D3).
     unfreeze_core: bool = False
+    #: The challenge is CRISPR interference, the same modality as Replogle,
+    #: so Phase 3 reuses Phase 2's type row rather than starting a new one.
+    #: The final test round is the same assay; a genuinely different one
+    #: would set a different value here and get its own row.
+    pert_type: str = "crispri"
     #: Where the knockdown prior's fold_expr comes from when the target is
     #: not in any Replogle bulk file.
     knockdown_source: str = "pooled"

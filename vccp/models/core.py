@@ -133,6 +133,8 @@ class GeneTokenModel(nn.Module):
         dropout: float = 0.0,
         adapter_rank: int = 8,
         heads: Iterable[str] = ("sig", "gmt", "value"),
+        pert_types: Iterable[str] = (),
+        type_delta_l2: float = 1e-3,
     ) -> None:
         super().__init__()
         dim = vocabulary.embedding_dim
@@ -143,7 +145,28 @@ class GeneTokenModel(nn.Module):
 
         self.value_encoder = ValueEncoder(dim)
         self.context_encoder = ContextEncoder(dim)
-        self.knockdown_type = nn.Parameter(torch.zeros(dim))
+
+        # The perturbation type, in the gene vocabulary's shape (§4.1):
+        #
+        #     type(assay) = base + delta[assay]
+        #
+        # `base` is trained by every phase and carries what all
+        # knockdown-like perturbations share — that is what Phase 1's LINCS
+        # data contributes to Phase 2, as an explicit named quantity rather
+        # than an assumption buried in a warm start. `delta` absorbs what is
+        # specific to one assay, starts at zero and is penalized toward it,
+        # so the rows cannot quietly drift apart until nothing transfers.
+        #
+        # This matters because LINCS is CRISPR **knockout** and the challenge
+        # is CRISPR **interference**: CLAUDE.md §3.3 says directions and
+        # affected genes carry over between them but magnitudes and the
+        # target's own level do not, and before this there was nowhere in the
+        # model to put that distinction. A new assay is one new `delta` row.
+        self.pert_types = tuple(sorted({str(name) for name in pert_types}))
+        self.type_delta_l2 = float(type_delta_l2)
+        self._pert_type_index = {name: i for i, name in enumerate(self.pert_types)}
+        self.pert_type_base = nn.Parameter(torch.zeros(dim))
+        self.pert_type_delta = nn.Parameter(torch.zeros(max(len(self.pert_types), 1), dim))
 
         self.latents = nn.Parameter(torch.randn(n_latents, dim) * 0.02)
         self.film = FiLM(dim, dim)
@@ -193,20 +216,59 @@ class GeneTokenModel(nn.Module):
         return adapter_parameters(self._core_modules(), names)
 
     # ---- the model -------------------------------------------------------
+    def perturbation_type(self, pert_type: str | None) -> torch.Tensor:
+        """`base + delta[pert_type]`, the "what kind of perturbation" vector."""
+        if not self.pert_types:
+            return self.pert_type_base
+        if pert_type is None:
+            raise ValueError(
+                "this model knows the perturbation types "
+                f"{list(self.pert_types)} but was given a perturbation token "
+                "without one; pass pert_type= from the phase's config key "
+                "(phase1.pert_type, phase2.pert_type, phase3.pert_type) so the "
+                "assay is declared rather than assumed"
+            )
+        if pert_type not in self._pert_type_index:
+            raise KeyError(
+                f"unknown perturbation type {pert_type!r}; this model was built "
+                f"for {list(self.pert_types)}. A new assay needs its type in the "
+                "config before the model is built, so it gets a row of its own."
+            )
+        return self.pert_type_base + self.pert_type_delta[self._pert_type_index[pert_type]]
+
+    def pert_type_penalty(self) -> torch.Tensor:
+        """L2 on the per-assay offsets, which start at zero.
+
+        The counterpart of the vocabulary's `delta_penalty`: it is what keeps
+        one assay's type row near the shared base, and so keeps Phase 1 and
+        Phase 2 sharing a perturbation representation instead of each
+        training its own in isolation.
+        """
+        if not self.pert_types:
+            return self.pert_type_delta.sum() * 0.0
+        return self.type_delta_l2 * (self.pert_type_delta**2).sum()
+
+    def regularization(self) -> torch.Tensor:
+        """Every penalty the model asks of a phase's loss."""
+        return self.vocabulary.delta_penalty() + self.pert_type_penalty()
+
     def tokenize(
         self,
         values: torch.Tensor,
         gene_idx: torch.Tensor,
         target_idx: torch.Tensor | None = None,
+        pert_type: str | None = None,
     ) -> torch.Tensor:
         """`(B, G, C)` values over `gene_idx` -> `(B, G[+1], D)` tokens."""
         gene_embedding = self.vocabulary(gene_idx, role=FEATURE)
         tokens = gene_embedding.unsqueeze(0) + self.value_encoder(values)
 
         if target_idx is not None:
-            # The perturbation token: what is being knocked down, and that it
-            # is a knockdown rather than some other kind of perturbation.
-            pert = self.vocabulary(target_idx, role=TARGET) + self.knockdown_type
+            # The perturbation token: what is being perturbed, and by what
+            # kind of perturbation.
+            pert = self.vocabulary(target_idx, role=TARGET) + self.perturbation_type(
+                pert_type
+            )
             tokens = torch.cat([tokens, pert.unsqueeze(1)], dim=1)
         return tokens
 
@@ -217,9 +279,10 @@ class GeneTokenModel(nn.Module):
         *,
         target_idx: torch.Tensor | None = None,
         context_profile: torch.Tensor | None = None,
+        pert_type: str | None = None,
     ) -> torch.Tensor:
         """Compress a profile into the latent bottleneck."""
-        tokens = self.tokenize(values, gene_idx, target_idx)
+        tokens = self.tokenize(values, gene_idx, target_idx, pert_type)
         latents = self.latents.unsqueeze(0).expand(tokens.shape[0], -1, -1)
 
         if context_profile is not None:
@@ -257,17 +320,23 @@ class GeneTokenModel(nn.Module):
         *,
         target_idx: torch.Tensor | None = None,
         context_profile: torch.Tensor | None = None,
+        pert_type: str | None = None,
         head: str = "value",
     ) -> torch.Tensor:
         latents = self.encode(
-            values, input_gene_idx, target_idx=target_idx, context_profile=context_profile
+            values,
+            input_gene_idx,
+            target_idx=target_idx,
+            context_profile=context_profile,
+            pert_type=pert_type,
         )
         return self.decode(latents, output_gene_idx, head)
 
     def extra_repr(self) -> str:
         return (
             f"dim={self.dim}, latents={self.latents.shape[0]}, blocks={len(self.blocks)}, "
-            f"heads={list(self.head_names)}, adapted_linears={self.n_adapted_linears}"
+            f"heads={list(self.head_names)}, pert_types={list(self.pert_types)}, "
+            f"adapted_linears={self.n_adapted_linears}"
         )
 
 
@@ -292,6 +361,20 @@ def build_model(cfg, prior_features, heads: Iterable[str] = ("sig", "gmt", "valu
         dropout=cfg.model.dropout,
         adapter_rank=cfg.model.adapter_rank,
         heads=heads,
+        pert_types=perturbation_types(cfg),
+        type_delta_l2=cfg.train.type_delta_l2,
+    )
+
+
+def perturbation_types(cfg) -> tuple[str, ...]:
+    """Every assay this config's phases will show the model.
+
+    Read from the config rather than listed here, so that a new assay — a
+    different screen, a drug perturbation, a future CRISPR flavour — is a
+    config change and one new `delta` row, not a code change.
+    """
+    return tuple(
+        sorted({cfg.phase1.pert_type, cfg.phase2.pert_type, cfg.phase3.pert_type})
     )
 
 

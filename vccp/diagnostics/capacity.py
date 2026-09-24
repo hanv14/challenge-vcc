@@ -119,7 +119,7 @@ class CapacityResult:
         }
 
 
-def evaluate(model, tensors, target_idx, truth) -> tuple[float, float, float]:
+def evaluate(model, tensors, target_idx, truth, pert_type) -> tuple[float, float, float]:
     """`(ratio, pearson, magnitude_ratio)` on the fitted targets."""
     from ..phases.phase2 import predict_perturbed_panel
     from ..train.loop import pearson as pearson_of
@@ -127,7 +127,9 @@ def evaluate(model, tensors, target_idx, truth) -> tuple[float, float, float]:
     model.eval()
     with torch.no_grad():
         baseline = tensors.control_panel.unsqueeze(0).expand(truth.shape[0], -1)
-        predicted = predict_perturbed_panel(model, tensors, baseline, target_idx)
+        predicted = predict_perturbed_panel(
+            model, tensors, baseline, target_idx, pert_type
+        )
     model.train()
 
     error = float(((predicted - truth) ** 2).mean())
@@ -205,7 +207,9 @@ def run_capacity_check(
 
     for step in range(1, steps + 1):
         baseline = tensors.control_panel.unsqueeze(0).expand(len(targets), -1)
-        predicted = predict_perturbed_panel(model, tensors, baseline, target_idx)
+        predicted = predict_perturbed_panel(
+            model, tensors, baseline, target_idx, cfg.phase2.pert_type
+        )
         loss = masked_mse(predicted, truth)
 
         optimizer.zero_grad(set_to_none=True)
@@ -215,7 +219,9 @@ def run_capacity_check(
         optimizer.step()
 
         if step % log_every == 0 or step == 1:
-            ratio, correlation, magnitude = evaluate(model, tensors, target_idx, truth)
+            ratio, correlation, magnitude = evaluate(
+                model, tensors, target_idx, truth, cfg.phase2.pert_type
+            )
             result.curve.append(
                 Checkpoint(step, float(loss.detach()), ratio, correlation, magnitude)
             )

@@ -296,9 +296,38 @@ def test_the_perturbation_module_predicts_a_change(tiny_cfg, built_priors, conte
     targets = as_index([gene_index[t] for t in tensors.pert_train_targets[:2]])
 
     with torch.no_grad():
-        predicted = phase2.predict_perturbed_panel(model, tensors, control, targets)
+        predicted = phase2.predict_perturbed_panel(
+            model, tensors, control, targets, tiny_cfg.phase2.pert_type
+        )
     assert predicted.shape == (2, tensors.n_panel)
     assert torch.isfinite(predicted).all()
+
+
+def test_the_delta_noise_floor_uses_disjoint_control_draws(tiny_cfg, contexts):
+    """Overlapping draws would understate the floor and flatter the mapping.
+
+    Two control samples drawn independently share cells, and two means over
+    overlapping cells differ by less than sampling noise. The floor would
+    then be too low and the mapping would look closer to optimal than it is,
+    which is the opposite of what the number is for.
+    """
+    tensors = next(iter(contexts.values()))
+    available = int(tensors.control_rows.size)
+    n_cells = min(tiny_cfg.phase2.delta_eval_cells, available // 2)
+    assert n_cells >= 2, "this screen is too small to estimate a floor at all"
+
+    rng = np.random.default_rng(0)
+    drawn = rng.choice(tensors.control_rows, 2 * n_cells, replace=False)
+    assert not set(drawn[:n_cells].tolist()) & set(drawn[n_cells:].tolist())
+
+    # The same rows, read twice, give the same cells: the draw is what makes
+    # the two halves differ, not the reader.
+    a = phase2.draw_cells(tensors, None, n_cells, rng, "cpu", rows=drawn[:n_cells])
+    b = phase2.draw_cells(tensors, None, n_cells, rng, "cpu", rows=drawn[:n_cells])
+    assert torch.allclose(a[0], b[0])
+
+    # No held-out target means no delta to report, and nothing touched.
+    assert phase2._score_delta(None, tensors, tiny_cfg, "cpu", rng, []) == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -361,7 +390,7 @@ def test_core_freeze_ablation_reports_both_arms(trained_run):
     ablation is what turns it into a measurement."""
     _, metrics, report = trained_run
 
-    assert set(metrics["arms"]) == {"core_unfrozen", "core_frozen"}
+    assert {"core_unfrozen", "core_frozen"} <= set(metrics["arms"])
     assert metrics["arms"]["core_unfrozen"]["unfreeze_core"] is True
     assert metrics["arms"]["core_frozen"]["unfreeze_core"] is False
 
@@ -370,6 +399,51 @@ def test_core_freeze_ablation_reports_both_arms(trained_run):
     assert set(ablation["arms"]) == {"core_unfrozen", "core_frozen"}
     assert ablation["better_arm"] in ablation["arms"]
     assert ablation["reading"]
+
+
+def test_the_phase1_contribution_is_measured_not_assumed(trained_run):
+    """Both warm arms are warm-started, so without a scratch arm nothing in
+    the pipeline says what Phase 1 is worth (PLAN_PERCELL.md §7.6)."""
+    _, metrics, _ = trained_run
+
+    assert phase2.SCRATCH_ARM in metrics["arms"]
+    scratch = metrics["arms"][phase2.SCRATCH_ARM]
+    assert scratch["warm_started_from_phase1"] is False
+    # No warm start means no Phase 1 to replay: replaying it would put back
+    # through the side door exactly what the ablation removes.
+    assert scratch["n_phase1_replay_steps"] == 0
+    assert scratch["n_phase2_steps"] == scratch["steps"]
+
+    warm = metrics["arms"]["core_unfrozen"]
+    assert warm["warm_started_from_phase1"] is True
+
+    contribution = metrics["phase1_contribution"]
+    assert contribution["measured"] is True
+    assert contribution["positive_means_phase1_helped"] is True
+    assert contribution["improvement"]
+    # The unequal step budgets are reported, because they qualify the reading.
+    assert contribution["n_phase2_steps"]["scratch"] >= contribution["n_phase2_steps"]["warm"]
+
+
+def test_phase2_reports_the_change_the_metrics_actually_score(trained_run):
+    """The per-state MSEs are dominated by the baseline level; the delta is
+    the quantity the six official metrics see (PLAN_PERCELL.md §5)."""
+    _, metrics, _ = trained_run
+
+    per_context = metrics["validation_per_context"]
+    scored = [s for s in per_context.values() if "map_delta_ratio_to_no_change" in s]
+    assert scored, f"no context reported a delta: {list(per_context)}"
+
+    for scores in scored:
+        assert scores["map_delta_mse"] >= 0
+        assert scores["map_delta_no_change"] > 0
+        assert scores["n_delta_targets_scored"] >= 1
+        # The floor a perfect predictor would hit at these cell counts. An
+        # observed change is a difference of two sampled means, so without
+        # this the ratio cannot be read at all.
+        floor = scores["map_delta_noise_floor_ratio"]
+        assert 0.0 <= floor
+        assert np.isfinite(scores["map_delta_ratio_to_no_change"])
 
 
 @pytest.mark.slow

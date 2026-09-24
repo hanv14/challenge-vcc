@@ -457,7 +457,11 @@ def run_cross_context(
                     # then the adapted mapping -> the rest. The whole chain,
                     # exactly as Phase 3 will run it.
                     panel = phase2.predict_perturbed_panel(
-                        model, tensors, tensors.control_panel.unsqueeze(0), target_idx
+                        model,
+                        tensors,
+                        tensors.control_panel.unsqueeze(0),
+                        target_idx,
+                        cfg.phase2.pert_type,
                     )
                     rest = adapt.map_panel_to_rest(model, tensors, panel)
                 full = np.zeros(len(gene_names), dtype=np.float32)

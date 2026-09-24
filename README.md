@@ -195,6 +195,23 @@ whose answers were hidden. Three variants, each against an **upper bound**
   fed the true panel values, so their official metrics are not end-to-end
   performance and must not be read as such.
 
+**`phase2/metrics.json`** — two readings that say whether the model is
+learning at all, before any of the above is worth looking at:
+
+* `map_delta_ratio_to_no_change`, the error on the **change** the mapping
+  predicts, against predicting no change. The per-state MSEs beside it are
+  dominated by the baseline expression level; this is the only quantity the
+  six official metrics score. Read it against
+  `map_delta_noise_floor_ratio`, which is what a *perfect* predictor could
+  reach at these cell counts — at the floor means everything the cells can
+  show has been learned, at 1.0 means nothing about the change has been.
+* `phase1_contribution`, a per-metric `scratch − warm` difference between the
+  `core_scratch` arm (no Phase 1 at all) and the warm-started one. Positive
+  means Phase 1 helped. The two arms do not spend equal effort on Phase 2's
+  own objective — `n_phase2_steps` is reported with it, and the difference
+  favours `core_scratch`, so a small positive number is a stronger result
+  than it looks.
+
 **`reports/summary.md`** — everything above as tables and figures, for the
 proposal defense. `reports/figures/*.png` are drawn to be legible on a
 projector.

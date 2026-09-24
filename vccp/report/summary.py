@@ -389,6 +389,12 @@ def _prior_check_section(prior_checks: dict[str, Any]) -> str:
 PHASE2_COLUMNS = (
     ("map_control_mse", "mapping: control cells"),
     ("map_perturbed_mse", "mapping: perturbed cells"),
+    # The two columns above are dominated by the baseline expression level.
+    # This one is the *change* between them, which is the only quantity the
+    # six official metrics score, reported beside the floor a perfect
+    # predictor could reach at these cell counts (PLAN_PERCELL.md §5).
+    ("map_delta_ratio_to_no_change", "mapping change ÷ no change"),
+    ("map_delta_noise_floor_ratio", "…its noise floor"),
     ("pert_mse_ratio_to_no_change", "perturbation ÷ no change"),
     ("pert_pearson", "perturbation pearson"),
 )
@@ -429,8 +435,43 @@ def _phase_section(phase1: dict[str, Any], phase2: dict[str, Any]) -> str:
                 [[name, *[_fmt(values.get(key)) for key, _ in PHASE2_COLUMNS]]
                  for name, values in sorted(per_context.items())],
             )
-        text += "\n"
+        text += "\n" + _phase1_contribution_text(phase2.get("phase1_contribution") or {})
     return text or "_no phase metrics available_\n"
+
+
+def _phase1_contribution_text(contribution: dict[str, Any]) -> str:
+    """What warm-starting from Phase 1 bought, as a table.
+
+    Until this was measured the three-phase design rested on an assumption:
+    both Phase 2 arms were warm-started, so nothing in the pipeline said
+    whether the first phase contributed anything at all.
+    """
+    if not contribution.get("measured"):
+        return (
+            "\n**Phase 1's contribution:** not measured — "
+            f"{contribution.get('reason', 'the core_scratch arm did not run')}.\n\n"
+        )
+
+    steps = contribution.get("n_phase2_steps", {})
+    text = (
+        "\n#### What Phase 1 contributed\n\n"
+        f"`core_scratch` trains with no Phase 1 at all — no warm start and no "
+        f"replayed objective — against `{contribution.get('warm_arm')}`, which has both. "
+        "Every metric is a ratio against predicting no change, so a **positive** "
+        "difference means Phase 1 helped by that much.\n\n"
+    )
+    text += _table(
+        ["metric", "scratch − warm"],
+        [[key, _fmt(value, 4)] for key, value in sorted(contribution["improvement"].items())],
+    )
+    text += (
+        f"\nThe two arms did not spend equal effort on Phase 2's own objective: "
+        f"the warm arm gave some of its steps to replaying Phase 1 "
+        f"({steps.get('warm')} against {steps.get('scratch')}). That difference "
+        "favours `core_scratch`, so a small positive number here is a stronger "
+        "result than it looks, and a small negative one is weaker.\n\n"
+    )
+    return text
 
 
 def _rehearsal_section(rehearsal: dict[str, Any], common) -> str:

@@ -109,6 +109,7 @@ def predicted_log2fc(
     target_idx: torch.Tensor | None,
     n_genes: int,
     cpm_floor: float,
+    pert_type: str | None = None,
 ) -> tuple[np.ndarray, bool]:
     """Steps 1 and 2: the whole gene axis, as a log2 fold change vs control.
 
@@ -122,7 +123,7 @@ def predicted_log2fc(
     model.eval()
     with torch.no_grad():
         panel = phase2.predict_perturbed_panel(
-            model, context, context.control_panel.unsqueeze(0), target_idx
+            model, context, context.control_panel.unsqueeze(0), target_idx, pert_type
         )
         rest = adapt.map_panel_to_rest(model, context, panel)
 
@@ -253,7 +254,12 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                 as_index([target_position], device) if target_position is not None else None
             )
             log2fc, used_token = predicted_log2fc(
-                model, context, target_idx, n_genes, cfg.predict.cpm_floor
+                model,
+                context,
+                target_idx,
+                n_genes,
+                cfg.predict.cpm_floor,
+                cfg.phase3.pert_type,
             )
 
             # The target's own gene, once the prior has spoken, is a measured

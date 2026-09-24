@@ -918,3 +918,81 @@ the premise fails and the approach should be abandoned rather than tuned.
 **Alternative.** Discover it from the training curves instead. Much more
 expensive: a degenerate coupling looks exactly like a correctly configured
 pooled run, so it would cost a server cycle to distinguish.
+
+## P2 — the delta term, the type vocabulary, the Phase 1 ablation
+
+### D55. The delta consistency term is normalized per batch, and its floor is reported
+
+**Decision.** `phase2.loss_delta` (default 0.5) adds a squared error on the
+*change* between the mapping's two arms, divided by the batch's own observed
+change. Evaluation reports `map_delta_ratio_to_no_change` beside
+`map_delta_noise_floor_ratio` — what a perfect predictor would score at
+`phase2.delta_eval_cells` cells, estimated from two independent control
+draws.
+
+**Reason.** The two Siamese arms share weights but nothing constrained their
+difference, and that difference is the only quantity the six official metrics
+score; each arm's own MSE is dominated by the baseline expression level. An
+observed change is a difference of two sampled means, so it carries noise
+that inflates the ratio without moving its minimum — which makes the loss
+sound and the *reading* misleading unless the floor is reported with it. At
+16 cells a perfect predictor would score around 0.76; at 128 it is nearer
+0.28.
+
+**Alternative.** Measure a per-context normalizer once at load time, as
+`mapping_no_change` and `perturbation_no_change` are. Steadier, but it needs
+a calibration pass over cells at startup, and the per-batch value is
+detached, so the varying denominator reweights steps rather than biasing
+them. Revisit if the training curves are noisy.
+
+### D56. The perturbation type is a vocabulary, `base + delta[assay]`
+
+**Decision.** `knockdown_type`, one constant shared by every phase, becomes
+`pert_type_base` plus a per-assay `pert_type_delta` row, penalized toward
+zero by `train.type_delta_l2`. The assay is named by `phase1.pert_type`
+(`crispr_ko`), `phase2.pert_type` and `phase3.pert_type` (both `crispri`),
+and every call site that builds a perturbation token must pass one or the
+model raises.
+
+**Reason.** LINCS is CRISPR knockout and the challenge is CRISPR
+interference. CLAUDE.md §3.3 says directions and affected genes transfer
+between them but magnitudes and the target's own level do not — and the
+model had nowhere to put that distinction, so Phase 1's knockout evidence
+entered Phase 2 as though it were knockdown evidence. `base` is trained by
+every phase and is what LINCS contributes to Replogle, as a named quantity
+rather than an assumption inside a warm start; `delta` absorbs what is
+specific to one assay. Phase 2 and Phase 3 share a row on purpose: they are
+the same modality, and that sharing is the transfer. A new assay is one new
+row from config, never a code change.
+
+**Alternative.** Leave the single constant and let the adapters carry the
+difference. They cannot: adapters are per phase, so nothing would remain
+shared, and a new assay would need a new adapter trained on perturbed data
+it does not have.
+
+**Why raising is better than defaulting.** A default would let a caller
+silently treat a knockout as a knockdown, which is precisely the failure the
+vocabulary exists to prevent, and it would be invisible.
+
+### D57. A third Phase 2 arm measures what Phase 1 contributes
+
+**Decision.** `train.phase1_contribution_ablation` (default true) trains
+`core_scratch`: no warm start from the Phase 1 checkpoint, no replay of its
+objective, no L2-SP toward its weights. `phase2/metrics.json` gains
+`phase1_contribution`, a per-metric `scratch − warm` difference, and the
+summary prints it.
+
+**Reason.** Both existing arms are warm-started, so nothing in the pipeline
+had ever said whether Phase 1 contributes anything. With the perturbation
+module at 1.036 on its own training targets it is entirely possible that it
+contributes nothing, and the three-phase design would then rest on an
+assumption at the proposal defense.
+
+**The comparison is not symmetric, and the report says so.** A warm arm
+spends `replay_fraction` of its steps on Phase 1's objective and the scratch
+arm spends none, so the scratch arm gets more training on Phase 2's own
+objective. `n_phase2_steps` is recorded per arm: the bias favours scratch, so
+a small positive contribution is a stronger result than it looks.
+
+**Alternative.** Give the scratch arm replay too, to equalize the budgets.
+That would put back through the side door exactly what the ablation removes.

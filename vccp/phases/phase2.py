@@ -44,6 +44,8 @@ from ..train.loop import masked_mse, pearson, sample_output_genes
 
 PHASE = "phase2"
 ADAPTER = "phase2"
+#: The arm trained with no Phase 1 input at all (PLAN_PERCELL.md §7.6).
+SCRATCH_ARM = "core_scratch"
 CONTROL, PERTURBED = "control", "perturbed"
 
 
@@ -202,16 +204,30 @@ def load_contexts(cfg: Config, device: str, gene_index: dict | None = None) -> d
 
 
 def draw_cells(
-    tensors: ContextTensors, target: str | None, n: int, rng: np.random.Generator, device: str
+    tensors: ContextTensors,
+    target: str | None,
+    n: int,
+    rng: np.random.Generator,
+    device: str,
+    rows: np.ndarray | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """`(panel, rest)` for `n` cells, in control-SD units.
 
     Cells are read through `ReplogleCells`, which fetches the rows asked for
     and nothing else — the K562 genome-wide file is ~2 million cells on the
     server (§3.3).
+
+    `rows` names exactly which control cells to read instead of sampling
+    them. `_score_delta` needs it: two control draws sampled independently
+    overlap, and two overlapping means differ by less than sampling noise, so
+    a floor estimated from them would be too low and the mapping would look
+    better than it is.
     """
     if target is None:
-        rows = rng.choice(tensors.control_rows, min(n, tensors.control_rows.size), replace=False)
+        if rows is None:
+            rows = rng.choice(
+                tensors.control_rows, min(n, tensors.control_rows.size), replace=False
+            )
         panel, rest = tensors.context.reader.get(rows)
     else:
         panel, rest = tensors.context.cells_for_target(target, n, rng)
@@ -251,11 +267,17 @@ def predict_perturbed_panel(
     tensors: ContextTensors,
     control_panel: torch.Tensor,
     target_idx: torch.Tensor,
+    pert_type: str | None = None,
 ) -> torch.Tensor:
     """Control profile + perturbation token -> perturbed panel, in SD units.
 
     The head predicts the **change**; a perturbed profile is mostly its own
     control, and the latent bottleneck exists for the response (§4.2).
+
+    `pert_type` names the assay's perturbation modality. Every caller passes
+    it from its own phase's config key rather than defaulting, so that the
+    model is never asked to treat a knockout and a knockdown as the same
+    thing by accident (PLAN_PERCELL.md §7.4).
     """
     context = tensors.context_profile.unsqueeze(0).expand(control_panel.shape[0], -1, -1)
     latents = model.encode(
@@ -263,8 +285,28 @@ def predict_perturbed_panel(
         tensors.panel_idx,
         target_idx=target_idx,
         context_profile=context,
+        pert_type=pert_type,
     )
     return control_panel + model.decode(latents, tensors.panel_idx)
+
+
+def _delta_loss(predicted_change: torch.Tensor, observed_change: torch.Tensor) -> torch.Tensor:
+    """Squared error on the *change*, as a fraction of the change there was.
+
+    Normalized by the batch's own observed change so it reads as "against
+    predicting no change" and so `phase2.loss_delta` means what it says
+    against the other two terms, which are normalized the same way.
+
+    The observed change is a difference of two sampled means, so it carries
+    sampling noise of its own — at these cell counts a good deal of it. That
+    inflates the value this returns but does not move its minimum: the
+    expected squared error against `true + noise` is minimized at `true`.
+    What the noise does spoil is the *reading*, which is why
+    `evaluate_per_context` measures the floor a perfect predictor would hit
+    and reports it beside the ratio.
+    """
+    scale = float((observed_change**2).mean())
+    return ((predicted_change - observed_change) ** 2).mean() / max(scale, 1e-6)
 
 
 def make_step(model, contexts: dict[str, ContextTensors], cfg: Config, device: str, gene_index):
@@ -284,30 +326,48 @@ def make_step(model, contexts: dict[str, ContextTensors], cfg: Config, device: s
         output_idx, positions = sample_output_genes(
             tensors.rest_idx, cfg.train.output_genes_per_step, rng
         )
-        control_loss = masked_mse(
-            map_panel_to_rest(model, tensors, control_panel, output_idx),
-            control_rest[:, positions],
-        )
-        perturbed_loss = masked_mse(
-            map_panel_to_rest(model, tensors, pert_panel, output_idx),
-            pert_rest[:, positions],
-        )
+        control_predicted = map_panel_to_rest(model, tensors, control_panel, output_idx)
+        perturbed_predicted = map_panel_to_rest(model, tensors, pert_panel, output_idx)
+        control_loss = masked_mse(control_predicted, control_rest[:, positions])
+        perturbed_loss = masked_mse(perturbed_predicted, pert_rest[:, positions])
         mapping_loss = 0.5 * (control_loss + perturbed_loss) / tensors.mapping_no_change
+
+        # The delta consistency term (PLAN_PERCELL.md §5). The two arms above
+        # share weights, but nothing has so far constrained the *difference*
+        # between them — and that difference is the only quantity the six
+        # official metrics ever score. Each arm's MSE is dominated by the
+        # baseline expression level, so a mapping can look healthy on both
+        # and still get the rest-gene change badly wrong.
+        #
+        # In pooled mode the two cell draws are independent, so the pairing
+        # is by group mean rather than per cell; under OT the coupling will
+        # pair the cells and this becomes a per-pair term (§5).
+        delta_loss = _delta_loss(
+            perturbed_predicted.mean(dim=0) - control_predicted.mean(dim=0),
+            pert_rest[:, positions].mean(dim=0) - control_rest[:, positions].mean(dim=0),
+        )
 
         # --- the perturbation module ---
         pool = tensors.pert_train_targets
         if not pool:
             # This screen has no target that is a challenge gene; the mapping
             # still trains on it, the perturbation module cannot.
-            loss = cfg.phase2.loss_mapping * mapping_loss + model.vocabulary.delta_penalty()
+            loss = (
+                cfg.phase2.loss_mapping * mapping_loss
+                + cfg.phase2.loss_delta * delta_loss
+                + model.regularization()
+            )
             return loss, {
                 "map_control": float(control_loss.detach()),
                 "map_perturbed": float(perturbed_loss.detach()),
+                "map_delta": float(delta_loss.detach()),
             }
         chosen = rng.choice(pool, min(cfg.phase2.batch_size, len(pool)), replace=False)
         target_idx = as_index([gene_index[t] for t in chosen], device)
         baseline = tensors.control_panel.unsqueeze(0).expand(len(chosen), -1)
-        predicted = predict_perturbed_panel(model, tensors, baseline, target_idx)
+        predicted = predict_perturbed_panel(
+            model, tensors, baseline, target_idx, cfg.phase2.pert_type
+        )
 
         bulk_truth = torch.stack([tensors.pseudobulk[t] for t in chosen])
         bulk_loss = masked_mse(predicted, bulk_truth)
@@ -327,12 +387,14 @@ def make_step(model, contexts: dict[str, ContextTensors], cfg: Config, device: s
 
         loss = (
             cfg.phase2.loss_mapping * mapping_loss
+            + cfg.phase2.loss_delta * delta_loss
             + cfg.phase2.loss_perturbation * perturbation_loss
-            + model.vocabulary.delta_penalty()
+            + model.regularization()
         )
         return loss, {
             "map_control": float(control_loss.detach()),
             "map_perturbed": float(perturbed_loss.detach()),
+            "map_delta": float(delta_loss.detach()),
             "pert_bulk": float(bulk_loss.detach()),
             "pert_cells": float(cell_loss.detach()),
         }
@@ -401,6 +463,8 @@ def evaluate_per_context(
                 predicted.cpu().numpy(), pert_rest.cpu().numpy()
             )
 
+            scores.update(_score_delta(model, tensors, cfg, device, rng, held_out))
+
             # The perturbation module, on unseen targets — and on seen ones,
             # because the gap between the two is what says whether a poor
             # held-out score is a model that cannot learn or one that has
@@ -415,7 +479,9 @@ def evaluate_per_context(
                 usable = usable[: cfg.phase2.batch_size]
                 target_idx = as_index([gene_index[t] for t in usable], device)
                 baseline = tensors.control_panel.unsqueeze(0).expand(len(usable), -1)
-                predicted = predict_perturbed_panel(model, tensors, baseline, target_idx)
+                predicted = predict_perturbed_panel(
+                    model, tensors, baseline, target_idx, cfg.phase2.pert_type
+                )
                 truth = torch.stack([tensors.pseudobulk[t] for t in usable])
 
                 mse = float(((predicted - truth) ** 2).mean())
@@ -433,6 +499,89 @@ def evaluate_per_context(
                 scores[f"n_{split}_targets_scored"] = float(len(usable))
             out[name] = scores
     return out
+
+
+def _score_delta(
+    model,
+    tensors: ContextTensors,
+    cfg: Config,
+    device: str,
+    rng: np.random.Generator,
+    held_out: list[str],
+) -> dict[str, float]:
+    """How well the mapping predicts the *change*, and the floor it can reach.
+
+    The two per-state MSEs above are dominated by the baseline expression
+    level; this is the quantity the official metrics actually score
+    (PLAN_PERCELL.md §5).
+
+    Two of the four numbers exist because a difference of sampled means is
+    noisy. `map_delta_ratio_to_no_change` is the ratio as measured, and
+    `map_delta_noise_floor_ratio` is what a *perfect* predictor would score
+    at these cell counts — estimated from two **disjoint** control draws,
+    whose mean difference is pure sampling noise of the same size. A ratio at
+    the floor means the mapping has learned everything the data can show it;
+    a ratio at 1.0 means it has learned nothing about the change, whatever
+    the per-state MSEs say.
+    """
+    targets = held_out[: cfg.phase2.delta_eval_targets]
+    if not targets:
+        return {}
+
+    # Two **disjoint** halves of one draw: the first is the baseline every
+    # target's change is measured against, the second exists only to estimate
+    # the floor. Sampling them independently would let them share cells and
+    # understate the noise.
+    available = int(tensors.control_rows.size)
+    n_cells = min(cfg.phase2.delta_eval_cells, available // 2)
+    if n_cells < 2:
+        return {}
+    drawn = rng.choice(tensors.control_rows, 2 * n_cells, replace=False)
+
+    control_panel, control_rest = draw_cells(
+        tensors, None, n_cells, rng, device, rows=drawn[:n_cells]
+    )
+    control_predicted = map_panel_to_rest(model, tensors, control_panel)
+    control_true_mean = control_rest.mean(dim=0)
+    control_predicted_mean = control_predicted.mean(dim=0)
+
+    errors, observed, scored = [], [], 0
+    for target in targets:
+        pert_panel, pert_rest = draw_cells(tensors, target, n_cells, rng, device)
+        if pert_panel.shape[0] < 2:
+            continue
+        predicted_change = (
+            map_panel_to_rest(model, tensors, pert_panel).mean(dim=0)
+            - control_predicted_mean
+        )
+        observed_change = pert_rest.mean(dim=0) - control_true_mean
+        errors.append(float(((predicted_change - observed_change) ** 2).mean()))
+        observed.append(float((observed_change**2).mean()))
+        scored += 1
+
+    if not scored:
+        return {}
+
+    # The floor: two disjoint control draws differ by sampling noise alone,
+    # and noise of that same size sits inside every observed change above.
+    _, other_rest = draw_cells(
+        tensors, None, n_cells, rng, device, rows=drawn[n_cells:]
+    )
+    floor = float(((other_rest.mean(dim=0) - control_true_mean) ** 2).mean())
+
+    mse = float(np.mean(errors))
+    no_change = float(np.mean(observed))
+    return {
+        "map_delta_mse": mse,
+        "map_delta_no_change": no_change,
+        "map_delta_ratio_to_no_change": mse / max(no_change, 1e-9),
+        "map_delta_noise_floor_ratio": floor / max(no_change, 1e-9),
+        "n_delta_targets_scored": float(scored),
+        # The draw the two numbers above were measured at — the floor is a
+        # function of it, so a run that had to shrink it (a screen with few
+        # control cells) reports a higher floor for that reason alone.
+        "n_delta_cells_per_draw": float(n_cells),
+    }
 
 
 def run_phase2(cfg: Config) -> dict[str, Any]:
@@ -475,16 +624,27 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     frozen_check = FrozenCheck()
     arms: dict[str, Any] = {}
 
-    def train_arm(arm: str, unfreeze_core: bool, steps: int) -> tuple[Any, Any, dict]:
+    def train_arm(
+        arm: str, unfreeze_core: bool, steps: int, warm_start: bool = True
+    ) -> tuple[Any, Any, dict]:
+        """One Phase 2 arm.
+
+        `warm_start` is what the Phase 1 contribution ablation turns off: the
+        arm then starts from the priors alone, with neither Phase 1's
+        checkpoint nor its replayed objective, so the gap between it and the
+        warm arms is what the first phase is worth (PLAN_PERCELL.md §7.6).
+        The priors stay in either case — this ablates Phase 1, not §4.1.
+        """
         model = build_model(cfg, features).to(device)
         for name in (phase1.ADAPTER, ADAPTER):
             model.add_adapter(name)
-        load_core(
-            run_paths.core_checkpoint(phase1.PHASE),
-            model,
-            layout_hash=features.layout_hash(),
-            strict=False,
-        )
+        if warm_start:
+            load_core(
+                run_paths.core_checkpoint(phase1.PHASE),
+                model,
+                layout_hash=features.layout_hash(),
+                strict=False,
+            )
         model.use_adapters([ADAPTER])
 
         plan = set_trainable(
@@ -500,17 +660,24 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
 
         # The guard against forgetting: replay Phase 1's objective on a
         # fraction of the steps, and pull the weights toward where Phase 1
-        # left them (§4.3).
-        phase1_tensors = phase1.load_phase1_tensors(cfg, device)
-        replay = ReplayMixer(
-            tasks=[
-                ReplayTask(
-                    phase1.PHASE, _phase1_replay_step(model, phase1_tensors, cfg)
-                )
-            ],
-            fraction=cfg.train.replay_fraction,
-        )
-        l2sp = L2SP(model, cfg.train.l2sp_weight)
+        # left them (§4.3). An arm with no warm start has no Phase 1 weights
+        # to be pulled toward and no Phase 1 knowledge to forget, so it gets
+        # neither — replaying Phase 1 there would put back through the side
+        # door exactly what the ablation removes.
+        if warm_start:
+            phase1_tensors = phase1.load_phase1_tensors(cfg, device)
+            replay = ReplayMixer(
+                tasks=[
+                    ReplayTask(
+                        phase1.PHASE, _phase1_replay_step(model, phase1_tensors, cfg)
+                    )
+                ],
+                fraction=cfg.train.replay_fraction,
+            )
+            l2sp = L2SP(model, cfg.train.l2sp_weight)
+        else:
+            replay = ReplayMixer(tasks=[], fraction=0.0)
+            l2sp = None
 
         result = run_training(
             model,
@@ -527,14 +694,28 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         frozen = frozen_check.end(model, plan, before)
         return model, result, frozen
 
+    def arm_record(arm: str, unfreeze_core: bool, result, frozen, steps: int, warm: bool):
+        replayed = sum((result.replay or {}).get("steps_replayed", {}).values())
+        return {
+            "unfreeze_core": unfreeze_core,
+            "warm_started_from_phase1": warm,
+            "steps": steps,
+            # What the arm actually spent on Phase 2's own objective. A warm
+            # arm gives `replay_fraction` of its steps to Phase 1 and a
+            # scratch arm gives none, so the two budgets are not equal and
+            # the comparison has to be read knowing which way that cuts.
+            "n_phase2_steps": steps - replayed,
+            "n_phase1_replay_steps": replayed,
+            "training": result.as_dict(),
+            "validation": result.final_metrics,
+            "trainable": frozen,
+        }
+
     main_arm = "core_unfrozen" if cfg.phase2.unfreeze_core else "core_frozen"
     model, result, frozen = train_arm(main_arm, cfg.phase2.unfreeze_core, cfg.phase2.steps)
-    arms[main_arm] = {
-        "unfreeze_core": cfg.phase2.unfreeze_core,
-        "training": result.as_dict(),
-        "validation": result.final_metrics,
-        "trainable": frozen,
-    }
+    arms[main_arm] = arm_record(
+        main_arm, cfg.phase2.unfreeze_core, result, frozen, cfg.phase2.steps, True
+    )
 
     save_core(
         run_paths.core_checkpoint(PHASE),
@@ -553,12 +734,9 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         ablation_model, ablation_result, ablation_frozen = train_arm(
             other, not cfg.phase2.unfreeze_core, steps
         )
-        arms[other] = {
-            "unfreeze_core": not cfg.phase2.unfreeze_core,
-            "training": ablation_result.as_dict(),
-            "validation": ablation_result.final_metrics,
-            "trainable": ablation_frozen,
-        }
+        arms[other] = arm_record(
+            other, not cfg.phase2.unfreeze_core, ablation_result, ablation_frozen, steps, True
+        )
         save_core(
             run_paths.core_checkpoint(f"{PHASE}_{other}"),
             ablation_model,
@@ -567,6 +745,34 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             extra={"arm": other, "validation": ablation_result.final_metrics},
         )
         del ablation_model
+        release_gpu_memory()
+
+    # The Phase 1 contribution ablation: the same phase with no Phase 1 at
+    # all. The gap between this arm and the warm ones is what the first phase
+    # is worth, and until it was measured the three-phase design rested on an
+    # assumption (PLAN_PERCELL.md §7.6).
+    if cfg.train.phase1_contribution_ablation:
+        steps = max(1, int(round(cfg.phase2.steps * cfg.train.ablation_steps_fraction)))
+        log.info("phase 2 ablation: core_scratch (no Phase 1) for %d steps", steps)
+        scratch_model, scratch_result, scratch_frozen = train_arm(
+            SCRATCH_ARM, cfg.phase2.unfreeze_core, steps, warm_start=False
+        )
+        arms[SCRATCH_ARM] = arm_record(
+            SCRATCH_ARM,
+            cfg.phase2.unfreeze_core,
+            scratch_result,
+            scratch_frozen,
+            steps,
+            False,
+        )
+        save_core(
+            run_paths.core_checkpoint(f"{PHASE}_{SCRATCH_ARM}"),
+            scratch_model,
+            phase=f"{PHASE}:{SCRATCH_ARM}",
+            layout_hash=features.layout_hash(),
+            extra={"arm": SCRATCH_ARM, "validation": scratch_result.final_metrics},
+        )
+        del scratch_model
         release_gpu_memory()
 
     metrics = {
@@ -587,6 +793,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             for name, t in contexts.items()
         },
         "arms": arms,
+        "phase1_contribution": _phase1_contribution(arms),
         "validation_per_context": evaluate_per_context(
             model, contexts, cfg, device, gene_index
         ),
@@ -614,6 +821,51 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         run_paths.phase_metrics(PHASE),
     )
     return metrics
+
+
+#: The validation keys the Phase 1 contribution is read off. Each is a ratio
+#: against predicting no change, so lower is better on all of them and they
+#: are comparable between arms.
+CONTRIBUTION_KEYS = (
+    "pert_mse_ratio_to_no_change",
+    "pert_train_mse_ratio_to_no_change",
+    "map_delta_ratio_to_no_change",
+)
+
+
+def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
+    """What warm-starting from Phase 1 bought, per metric.
+
+    `scratch - warm` on a ratio where lower is better, so a **positive**
+    number means Phase 1 helped by that much. Reported rather than judged:
+    the arms differ in how many steps went to Phase 2's own objective
+    (`n_phase2_steps`), and that difference favours the scratch arm, so a
+    small positive value is a stronger result than it looks and a small
+    negative one is weaker.
+    """
+    scratch = arms.get(SCRATCH_ARM)
+    warm = next(
+        (record for name, record in arms.items() if name != SCRATCH_ARM), None
+    )
+    if scratch is None or warm is None:
+        return {"measured": False, "reason": "both a warm arm and core_scratch are needed"}
+
+    deltas = {}
+    for key in CONTRIBUTION_KEYS:
+        a, b = scratch["validation"].get(key), warm["validation"].get(key)
+        if a is not None and b is not None:
+            deltas[key] = float(a) - float(b)
+    return {
+        "measured": bool(deltas),
+        "warm_arm": next(name for name in arms if name != SCRATCH_ARM),
+        "lower_is_better": True,
+        "positive_means_phase1_helped": True,
+        "improvement": deltas,
+        "n_phase2_steps": {
+            "warm": warm.get("n_phase2_steps"),
+            "scratch": scratch.get("n_phase2_steps"),
+        },
+    }
 
 
 def _phase1_replay_step(model, tensors, cfg: Config):

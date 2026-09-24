@@ -184,6 +184,7 @@ def predict(
         tensors.gene_idx,
         target_idx=target_idx,
         context_profile=context,
+        pert_type=cfg.phase1.pert_type,
     )
     # The signature is decoded over the **whole** input set even when the
     # loss only scores a subsample, because step 2 consumes it as a per-gene
@@ -200,6 +201,7 @@ def predict(
         tensors.gene_idx,
         target_idx=target_idx,
         context_profile=context,
+        pert_type=cfg.phase1.pert_type,
     )
     # The head predicts the **change** from the control, not the perturbed
     # level. A perturbed profile is mostly its own control, and pushing that
@@ -237,7 +239,7 @@ def make_step(model, tensors: Phase1Tensors, cfg: Config):
             + cfg.phase1.loss_gmt * gmt_loss
             + cfg.phase1.loss_pert * pert_loss
         )
-        loss = loss + model.vocabulary.delta_penalty()
+        loss = loss + model.regularization()
         return loss, {
             "sig": float(sig_loss.detach()),
             "gmt": float(gmt_loss.detach()),
