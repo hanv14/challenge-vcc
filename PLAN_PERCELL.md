@@ -178,6 +178,36 @@ above:
 Half a day, decisive either way, and it stops us building on a broken
 foundation. I would not skip it.
 
+`scripts/capacity_check.py` implements it. It reports three numbers per
+checkpoint — the error ratio, the correlation, and **the size of the
+predicted change against the size of the true one**, which is the number
+that catches a module that looks like it is training while converging to
+predicting nothing.
+
+**Result on `mini_data`** (8 targets from K562_gwps, 600 steps, every
+parameter trainable, warm-started from the Phase 1 core):
+
+| step | ratio ÷ no-change | pearson | \|pred\| ÷ \|true\| |
+|---|---|---|---|
+| 1 | 2.530 | −0.07 | 1.18 |
+| 200 | 0.745 | +0.51 | 0.51 |
+| 400 | 0.154 | +0.93 | 0.86 |
+| 600 | **0.040** | **+0.98** | **1.00** |
+
+**Verdict: can-fit.** The module drove training error to 4% of no-change and
+predicted changes of the right magnitude and direction. So the architecture,
+the perturbation token and the optimiser are all capable of representing a
+response — the failure at 1.003 / 1.036 on the real training targets is
+about signal or supervision, not about the module.
+
+That is what makes the per-cell OT redesign worth building rather than a
+bug hunt. **It still needs confirming on the server data**, where the
+targets are 4,968 rather than 51 and the panel is the real one:
+
+```bash
+python scripts/capacity_check.py --config configs/server.yaml --targets 8 --steps 2000
+```
+
 ---
 
 ## 7. What could go wrong
