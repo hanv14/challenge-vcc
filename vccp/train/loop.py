@@ -50,11 +50,34 @@ class TrainResult:
     final_metrics: dict[str, float] = field(default_factory=dict)
     replay: dict[str, Any] = field(default_factory=dict)
     l2sp_drift: float | None = None
+    #: Validation at the step where `select_on` was best, and that step. A
+    #: run that diverges late leaves `final_metrics` describing the wreck
+    #: rather than the model: the first server Phase 2 ended 2.9x worse than
+    #: its own best, and every ablation read off the final number measured
+    #: that divergence instead of what it meant to measure.
+    best_metrics: dict[str, float] = field(default_factory=dict)
+    best_step: int | None = None
+    selected_on: str | None = None
+
+    @property
+    def divergence(self) -> float | None:
+        """`final / best` on the selected metric. Above 1 means it got worse."""
+        if not self.selected_on or not self.best_metrics:
+            return None
+        best = self.best_metrics.get(self.selected_on)
+        final = self.final_metrics.get(self.selected_on)
+        if best is None or final is None or abs(best) < 1e-12:
+            return None
+        return float(final) / float(best)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "steps": self.steps,
             "final_metrics": self.final_metrics,
+            "best_metrics": self.best_metrics,
+            "best_step": self.best_step,
+            "selected_on": self.selected_on,
+            "divergence_final_over_best": self.divergence,
             "replay": self.replay,
             "l2sp_drift": self.l2sp_drift,
             "curve": self.curve,
@@ -73,6 +96,8 @@ def run_training(
     parameters: list[nn.Parameter] | None = None,
     replay: ReplayMixer | None = None,
     l2sp: L2SP | None = None,
+    select_on: str | None = None,
+    select_lower_is_better: bool = True,
     evaluate: EvalFn | None = None,
     eval_every: int | None = None,
 ) -> TrainResult:
@@ -137,6 +162,17 @@ def run_training(
                 scores = evaluate()
             model.train()
             result.final_metrics = scores
+            if select_on is not None and select_on in scores:
+                result.selected_on = select_on
+                current = float(scores[select_on])
+                previous = result.best_metrics.get(select_on)
+                better = (
+                    previous is None
+                    or (current < previous if select_lower_is_better else current > previous)
+                )
+                if better:
+                    result.best_metrics = dict(scores)
+                    result.best_step = step
             if result.curve:
                 result.curve[-1].update({f"val_{k}": v for k, v in scores.items()})
             log.info(

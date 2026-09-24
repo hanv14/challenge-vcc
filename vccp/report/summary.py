@@ -486,6 +486,17 @@ def _phase1_contribution_text(contribution: dict[str, Any]) -> str:
         ["metric", "scratch − warm"],
         [[key, _fmt(value, 4)] for key, value in sorted(contribution["improvement"].items())],
     )
+    if contribution.get("read_at"):
+        text += f"\nRead at {contribution['read_at']}.\n"
+    if contribution.get("arms_that_diverged"):
+        text += (
+            "\n**"
+            + ", ".join(contribution["arms_that_diverged"])
+            + "** diverged before the end of training. The comparison above uses "
+            "each arm's best validation, but the *checkpoint saved* is the final "
+            "one — so the number here and the model on disk are not the same "
+            "thing. Lower `train.lr` or shorten that arm.\n"
+        )
     favours = contribution.get("budget_favours")
     text += (
         f"\nThe two arms spent {steps.get('warm')} and {steps.get('scratch')} steps "

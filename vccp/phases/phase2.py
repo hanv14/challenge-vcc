@@ -909,24 +909,46 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             replay=replay,
             l2sp=l2sp,
             evaluate=lambda: evaluate(model, contexts, cfg, device, gene_index),
+            # The ablations are read off validation, so they have to be read
+            # off the *best* validation rather than whatever the last step
+            # left behind. A run that diverges late otherwise reports the
+            # wreck (DECISIONS.md D74).
+            select_on=SELECTION_METRIC,
         )
         frozen = frozen_check.end(model, plan, before)
         return model, result, frozen
 
     def arm_record(arm: str, unfreeze_core: bool, result, frozen, steps: int, warm: bool):
         replayed = sum((result.replay or {}).get("steps_replayed", {}).values())
+        divergence = result.divergence
+        diverged = divergence is not None and divergence > DIVERGENCE_RATIO
+        if diverged:
+            log.warning(
+                "  %s diverged: %s ended at %.4f, %.2fx its own best of %.4f at step %s. "
+                "The ablations read the best, and the saved checkpoint is the final "
+                "one — lower train.lr or shorten this arm.",
+                arm, SELECTION_METRIC, result.final_metrics.get(SELECTION_METRIC, float("nan")),
+                divergence, result.best_metrics.get(SELECTION_METRIC, float("nan")),
+                result.best_step,
+            )
         return {
             "unfreeze_core": unfreeze_core,
             "warm_started_from_phase1": warm,
             "steps": steps,
             # What the arm actually spent on Phase 2's own objective. A warm
             # arm gives `replay_fraction` of its steps to Phase 1 and a
-            # scratch arm gives none, so the two budgets are not equal and
-            # the comparison has to be read knowing which way that cuts.
+            # scratch arm gives none, so `train.match_phase2_steps` sets the
+            # scratch arm's budget to compensate (D73).
             "n_phase2_steps": steps - replayed,
             "n_phase1_replay_steps": replayed,
             "training": result.as_dict(),
-            "validation": result.final_metrics,
+            # What the ablations compare: the best validation this arm
+            # reached, not what the last step happened to leave (D74).
+            "validation": result.best_metrics or result.final_metrics,
+            "validation_final": result.final_metrics,
+            "best_step": result.best_step,
+            "divergence_final_over_best": divergence,
+            "diverged": diverged,
             "trainable": frozen,
         }
 
@@ -1050,6 +1072,15 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     return metrics
 
 
+#: What "better" means for a Phase 2 arm, and so which step each arm is
+#: judged at. The perturbation module is the thing the ablations are about,
+#: and this is its headline ratio: below 1 beats predicting no change.
+SELECTION_METRIC = "pert_mse_ratio_to_no_change"
+
+#: A final validation this much worse than the run's own best is a
+#: divergence, not a result. The first server Phase 2 ended at 2.86x.
+DIVERGENCE_RATIO = 1.25
+
 #: The validation keys the Phase 1 contribution is read off. Each is a ratio
 #: against predicting no change, so lower is better on all of them and they
 #: are comparable between arms.
@@ -1116,9 +1147,15 @@ def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
         larger = max(warm_steps, scratch_steps, 1)
         if abs(warm_steps - scratch_steps) / larger >= BUDGET_TOLERANCE:
             favours = SCRATCH_ARM if scratch_steps > warm_steps else "warm"
+    diverged = sorted(name for name, r in arms.items() if r.get("diverged"))
     return {
         "measured": bool(deltas),
         "warm_arm": next(name for name in arms if name != SCRATCH_ARM),
+        "read_at": "each arm's best validation, not its last step",
+        # An arm that diverged is still comparable *at its best*, but the
+        # checkpoint saved is the final one, so the number here and the model
+        # on disk are no longer the same thing.
+        "arms_that_diverged": diverged,
         "lower_is_better": True,
         "positive_means_phase1_helped": True,
         "improvement": deltas,

@@ -1376,3 +1376,33 @@ rather than a transfer one.
 **The tolerance exists because replay is sampled per step** rather than
 scheduled, so two arms meant to train equally land a few steps apart.
 Reporting that as a bias would be reporting noise.
+
+### D74. An arm is judged at its best validation, not at its last step
+
+**Decision.** `run_training` takes `select_on` and records `best_metrics`,
+`best_step` and `divergence_final_over_best`. Phase 2 selects on
+`pert_mse_ratio_to_no_change`, the ablations compare arms at their best, and
+an arm whose final is more than `DIVERGENCE_RATIO` (1.25) worse than its own
+best is logged and flagged as `diverged`.
+
+**Reason.** The matched-budget server run made this unavoidable. The warm
+`core_unfrozen` arm went 1.239 → **0.999** → 1.243 → **2.853** over 600
+steps: it diverged in the last quarter. Every ablation read off
+`final_metrics`, so `phase1_contribution` reported **−1.78** — a number that
+describes a training blow-up, not what Phase 1 contributes. At each arm's
+best the same comparison is **−0.019**, which is nearly nothing.
+
+Two bad readings in a row from the same measurement, for two different
+reasons (D73 was the budgets), and both times the number looked like
+evidence.
+
+**What it deliberately does not do.** The checkpoint saved is still the
+final one, not the best. Selecting a checkpoint by validation is model
+selection, which would change what Phase 3 inherits and is a bigger decision
+than a reporting fix. So the report says plainly that for a diverged arm the
+number and the model on disk are no longer the same thing, and names the arm.
+
+**The divergence is the more useful finding.** A frozen core was stable
+(final/best 1.03) and a from-scratch core was stable (1.09); only the
+warm-started, unfrozen core blew up (2.86). That points at `train.lr`
+against a warm start rather than at anything about transfer.

@@ -246,6 +246,59 @@ def test_the_contribution_is_reported_with_the_step_budgets_that_qualify_it():
     assert report["budget_favours"] == phase2_mod.SCRATCH_ARM
 
 
+def test_a_run_that_diverges_is_judged_at_its_best_not_its_last_step():
+    """The first server Phase 2 ended 2.86x worse than its own best.
+
+    Reading an ablation off the final step then measures the divergence
+    rather than the thing the ablation is about.
+    """
+    from vccp.train.loop import TrainResult
+
+    result = TrainResult(steps=600)
+    result.selected_on = phase2_mod.SELECTION_METRIC
+    result.best_metrics = {phase2_mod.SELECTION_METRIC: 0.9991}
+    result.best_step = 300
+    result.final_metrics = {phase2_mod.SELECTION_METRIC: 2.8528}
+
+    assert result.divergence == pytest.approx(2.8528 / 0.9991, rel=1e-4)
+    assert result.divergence > phase2_mod.DIVERGENCE_RATIO
+    assert result.as_dict()["best_step"] == 300
+
+    # A steady run is not flagged.
+    steady = TrainResult(steps=450)
+    steady.selected_on = phase2_mod.SELECTION_METRIC
+    steady.best_metrics = {phase2_mod.SELECTION_METRIC: 0.9797}
+    steady.final_metrics = {phase2_mod.SELECTION_METRIC: 1.0727}
+    assert steady.divergence < phase2_mod.DIVERGENCE_RATIO
+
+    # And a run with nothing selected reports nothing rather than guessing.
+    assert TrainResult(steps=10).divergence is None
+
+
+def test_the_contribution_names_the_arms_that_diverged():
+    """The comparison uses the best, but the checkpoint on disk is the final
+    one — so the number and the model are not the same thing."""
+    report = phase2_mod._phase1_contribution({
+        "core_unfrozen": {
+            "validation": {"pert_mse_ratio_to_no_change": 0.9991},
+            "n_phase2_steps": 450,
+            "diverged": True,
+        },
+        phase2_mod.SCRATCH_ARM: {
+            "validation": {"pert_mse_ratio_to_no_change": 0.9797},
+            "n_phase2_steps": 450,
+            "diverged": False,
+        },
+    })
+    assert report["arms_that_diverged"] == ["core_unfrozen"]
+    assert "best validation" in report["read_at"]
+    assert report["budgets_matched"] is True
+    # Best against best, the warm arm is only 0.0194 behind — not 0.202.
+    assert report["improvement"]["pert_mse_ratio_to_no_change"] == pytest.approx(
+        -0.0194, abs=1e-4
+    )
+
+
 def test_the_scratch_arm_is_given_the_warm_arms_phase2_steps():
     """Equal totals are unequal training: the warm arm spends some of its
     steps on Phase 1 and the scratch arm spends none.
