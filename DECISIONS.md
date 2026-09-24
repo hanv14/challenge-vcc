@@ -1406,3 +1406,31 @@ number and the model on disk are no longer the same thing, and names the arm.
 (final/best 1.03) and a from-scratch core was stable (1.09); only the
 warm-started, unfrozen core blew up (2.86). That points at `train.lr`
 against a warm start rather than at anything about transfer.
+
+### D75. The config loader coerces numeric strings, because YAML will not
+
+**Decision.** `_build_section` coerces each value to the type its field
+declares. A numeric string becomes a number; a value that is not a number
+raises `ConfigError` naming the section and key.
+
+**Reason.** YAML 1.1 requires a decimal point **and** a signed exponent for
+scientific notation, so `3.0e-4` is a float while `3e-4`, `1e-3` and `1E-3`
+are all *strings*. The string then travels to the field's own `validate`,
+where it fails as
+
+    TypeError: '<=' not supported between instances of 'str' and 'int'
+
+several frames from the config line that caused it. Almost every knob worth
+tuning by hand is a small float — `train.lr`, `train.l2sp_weight`,
+`model.delta_l2`, `phase2.ot_epsilon`, `predict.cpm_floor` — so this is a
+trap the config is designed to walk into, and it cost a server run.
+
+**Four things it must not break, each covered by a test.** `bool` subclasses
+`int`, so a careless coercion turns `true` into `1`; tuple fields coerce
+element by element; a `str` tuple like `priors.check_families` is left alone;
+and the `None` in `rehearsal.mode_sweep_epsilons` — which *is* the pooled arm
+— survives.
+
+**A gap closed while here:** `steps: 1.5` used to pass validation and travel
+into `range()`, which truncates silently. A fractional count is now rejected,
+while `steps: 200.0` is accepted as 200.

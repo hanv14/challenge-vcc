@@ -766,14 +766,89 @@ def _resolve(value: str, base: Path) -> Path:
     return path if path.is_absolute() else (base / path)
 
 
-def _build_section(cls: type, given: dict[str, Any]):
+def _coerce_number(section: str, key: str, value: Any, target: type) -> Any:
+    """A YAML scalar to the type the field declares.
+
+    Exists for one reason: **YAML 1.1 does not read `3e-4` as a number.**
+    Scientific notation needs a decimal point and a signed exponent, so
+    `3.0e-4` is a float while `3e-4`, `1e-3` and `1E-3` are all *strings* —
+    and a string reaches the field's own `validate`, where it fails as
+    `'<=' not supported between instances of 'str' and 'int'` several frames
+    from the config that caused it.
+
+    Almost every knob worth tuning by hand is a small float (`train.lr`,
+    `l2sp_weight`, `model.delta_l2`, `phase2.ot_epsilon`,
+    `predict.cpm_floor`), so this is a trap the config is *designed* to walk
+    into. Accepting the string is the kinder answer, and a value that is not
+    a number at all still fails here, naming the section and the key.
+    """
+    if target not in (float, int) or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            raise ConfigError(
+                f"{section}.{key} must be a number, got {value!r}"
+            ) from None
+        if target is int:
+            if not number.is_integer():
+                raise ConfigError(
+                    f"{section}.{key} must be a whole number, got {value!r}"
+                )
+            return int(number)
+        return number
+    if target is float and isinstance(value, int):
+        return float(value)
+    if target is int and isinstance(value, float):
+        # A count written as a float. `steps: 1.5` would otherwise stay 1.5
+        # and travel silently into `range()`, which truncates it.
+        if not value.is_integer():
+            raise ConfigError(
+                f"{section}.{key} must be a whole number, got {value!r}"
+            )
+        return int(value)
+    return value
+
+
+def _build_section(cls: type, given: dict[str, Any], section: str = ""):
     """Build a config section, keeping tuple fields tuples so the whole
     config stays hashable and comparable."""
     coerced = dict(given)
     for f in dataclasses.fields(cls):
-        if f.name in coerced and isinstance(coerced[f.name], list):
-            coerced[f.name] = tuple(coerced[f.name])
+        if f.name not in coerced:
+            continue
+        value = coerced[f.name]
+        if isinstance(value, list):
+            value = tuple(value)
+        if isinstance(value, tuple):
+            inner = float if "float" in str(f.type) else (int if "int" in str(f.type) else None)
+            if inner is not None:
+                value = tuple(
+                    _coerce_number(section or cls.__name__, f.name, v, inner) for v in value
+                )
+        else:
+            value = _coerce_number(section or cls.__name__, f.name, value, _field_type(f))
+        coerced[f.name] = value
     return cls(**coerced)
+
+
+def _field_type(f) -> type:
+    """`float` or `int` when the field declares one, else `object`.
+
+    The annotations are strings under `from __future__ import annotations`,
+    so this reads them as text rather than resolving them. `bool` is checked
+    first because `bool` is a subclass of `int` and a coerced `True` would
+    become `1`.
+    """
+    text = str(f.type)
+    if "bool" in text:
+        return object
+    if "float" in text:
+        return float
+    if "int" in text:
+        return int
+    return object
 
 
 def _reject_unknown(section: str, given: dict[str, Any], cls: type) -> None:
@@ -819,7 +894,7 @@ def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config
         if not isinstance(section_raw, dict):
             raise ConfigError(f"{path}: {name!r} must be a mapping")
         _reject_unknown(name, section_raw, cls)
-        sections[name] = _build_section(cls, section_raw)
+        sections[name] = _build_section(cls, section_raw, name)
 
     # `source` and `repo_root` are set by the loader, never by the file.
     for reserved in ("source", "repo_root"):
