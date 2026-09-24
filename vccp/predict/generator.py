@@ -87,12 +87,17 @@ def apply_settings(
     """
     values = np.asarray(log2_fold_change, dtype=np.float32).copy()
     values[~np.isfinite(values)] = 0.0
-    keep = None if exempt is None else values[np.asarray(exempt, dtype=bool)].copy()
+    # `...` rather than a plain index, so one profile `(n_genes,)` and a block
+    # of per-cell fold changes `(n_cells, n_genes)` take the same path: the
+    # exemption is a *column* mask either way, because the knockdown prior is
+    # a statement about a gene, not about a cell.
+    mask = None if exempt is None else np.asarray(exempt, dtype=bool)
+    keep = None if mask is None else values[..., mask].copy()
 
     values[np.abs(values) < settings.confidence_threshold] = 0.0
     values = values * np.float32(settings.effect_scale)
     if keep is not None:
-        values[np.asarray(exempt, dtype=bool)] = keep
+        values[..., mask] = keep
     return values
 
 
@@ -117,10 +122,12 @@ def generate_counts(
     log2_fold_change: np.ndarray,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Apply per-gene fold changes to control cells, in count space.
+    """Apply fold changes to control cells, in count space.
 
-    `control_counts` is `(n_cells, n_genes)` of raw integer counts;
-    `log2_fold_change` is `(n_genes,)` and is applied to every cell.
+    `control_counts` is `(n_cells, n_genes)` of raw integer counts.
+    `log2_fold_change` is either `(n_genes,)`, applied to every cell, or
+    `(n_cells, n_genes)`, one row per cell — which is what per-cell
+    prediction produces, each cell moved by its own predicted change.
 
     A gene whose fold change is exactly 1 comes back bit-for-bit unchanged —
     that is what makes its cells exchangeable with the controls.
@@ -128,32 +135,42 @@ def generate_counts(
     counts = np.asarray(control_counts)
     if counts.ndim != 2:
         raise ValueError(f"expected (cells, genes), got shape {counts.shape}")
-    if log2_fold_change.shape[0] != counts.shape[1]:
+    changes = np.asarray(log2_fold_change, dtype=np.float64)
+    if changes.ndim not in (1, 2) or changes.shape[-1] != counts.shape[1]:
         raise ValueError(
-            f"{log2_fold_change.shape[0]} fold changes for {counts.shape[1]} genes"
+            f"fold changes of shape {tuple(changes.shape)} for "
+            f"{counts.shape[1]} genes"
+        )
+    if changes.ndim == 2 and changes.shape[0] != counts.shape[0]:
+        raise ValueError(
+            f"{changes.shape[0]} rows of fold changes for {counts.shape[0]} cells"
         )
 
-    fold = np.clip(np.exp2(np.asarray(log2_fold_change, dtype=np.float64)), 0.0, MAX_FOLD_CHANGE)
+    fold = np.clip(np.exp2(changes), 0.0, MAX_FOLD_CHANGE)
     out = counts.astype(np.int64, copy=True)
 
-    unchanged = fold == 1.0
-    decreasing = (fold < 1.0) & ~unchanged
-    increasing = (fold > 1.0) & ~unchanged
+    # Only the genes something happens to are touched. With a per-cell matrix
+    # the mask is still per *column*: a gene no cell moves needs no work, and
+    # restricting to the moved columns is what keeps this from drawing
+    # cells x all-genes random numbers on the server's gene axis.
+    moving = np.asarray((fold != 1.0).any(axis=0) if fold.ndim == 2 else fold != 1.0)
+    if not moving.any():
+        return out
 
-    if decreasing.any():
-        # Binomial thinning: keep each count with probability `fold`. This is
-        # what down-regulation looks like to a counting process, and it keeps
-        # the mean-variance relationship a real cell has.
-        block = out[:, decreasing]
-        out[:, decreasing] = rng.binomial(block, fold[decreasing][None, :])
+    block = out[:, moving]
+    factors = np.broadcast_to(
+        fold[..., moving] if fold.ndim == 1 else fold[:, moving], block.shape
+    )
 
-    if increasing.any():
-        # Scaling up has no exact integer analogue, so the fractional part is
-        # resolved by a coin flip per cell and gene: unbiased in the mean, and
-        # it adds the scatter that rounding would remove.
-        scaled = out[:, increasing] * fold[increasing][None, :]
-        out[:, increasing] = stochastic_round(scaled, rng)
-
+    # Binomial thinning for a decrease: keep each count with probability
+    # `fold`. That is what down-regulation looks like to a counting process,
+    # and it keeps the mean-variance relationship a real cell has. Scaling up
+    # has no exact integer analogue, so the fractional part is resolved by a
+    # coin flip per cell and gene: unbiased in the mean, and it adds the
+    # scatter that rounding would remove.
+    thinned = rng.binomial(block, np.clip(factors, 0.0, 1.0))
+    scaled = stochastic_round(block * factors, rng)
+    out[:, moving] = np.where(factors < 1.0, thinned, np.where(factors > 1.0, scaled, block))
     return out
 
 
@@ -170,11 +187,20 @@ def generate_cells(
     rng: np.random.Generator,
     settings: GeneratorSettings,
     exempt: np.ndarray | None = None,
+    rows: np.ndarray | None = None,
 ) -> np.ndarray:
-    """One target's predicted cells: draw controls, then apply the changes."""
-    rows = sample_control_cells(
-        control_counts.shape[0], n_cells, rng, allow_replacement=settings.allow_replacement
-    )
+    """One target's predicted cells: draw controls, then apply the changes.
+
+    `rows` names the control cells to use instead of drawing them. Per-cell
+    prediction needs it: the model has to be shown *these* cells to produce a
+    fold change per cell, so the draw happens before the prediction and the
+    same rows come back here. Passing them keeps row `i` of the fold changes
+    matched to row `i` of the cells, which is the whole point.
+    """
+    if rows is None:
+        rows = sample_control_cells(
+            control_counts.shape[0], n_cells, rng, allow_replacement=settings.allow_replacement
+        )
     drawn = control_counts[rows]
     return generate_counts(drawn, apply_settings(log2_fold_change, settings, exempt), rng)
 
@@ -187,11 +213,16 @@ def describe(
     raw = np.asarray(log2_fold_change, dtype=np.float32)
     applied = apply_settings(raw, settings, exempt)
     moved = applied != 0.0
+    # A per-cell matrix is summarized by gene, so these read the same whether
+    # the prediction was one profile or one row per cell: a gene counts as
+    # moved if it moved in any cell.
+    moved_genes = moved.any(axis=0) if moved.ndim == 2 else moved
     return {
         **settings.as_dict(),
-        "n_genes": int(raw.size),
-        "n_genes_moved": int(moved.sum()),
-        "fraction_moved": float(moved.mean()) if raw.size else 0.0,
+        "per_cell": bool(raw.ndim == 2),
+        "n_genes": int(moved_genes.size),
+        "n_genes_moved": int(moved_genes.sum()),
+        "fraction_moved": float(moved_genes.mean()) if moved_genes.size else 0.0,
         "max_abs_log2fc": float(np.abs(applied).max()) if raw.size else 0.0,
         "mean_abs_log2fc_moved": float(np.abs(applied[moved]).mean()) if moved.any() else 0.0,
     }

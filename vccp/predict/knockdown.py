@@ -120,6 +120,11 @@ def apply_to_log2fc(
     Returns the modified fold changes and a record of what was decided —
     which is what `phase3/knockdown_<context>.csv` and the knockdown figure
     are built from.
+
+    `log2_fold_change` is one profile `(n_genes,)` or a per-cell block
+    `(n_cells, n_genes)`. The prior overwrites a **column** either way: it is
+    a measured property of the perturbation, the same for every cell of the
+    target, and `fold_expr` is a population quantity to begin with.
     """
     values = np.asarray(log2_fold_change, dtype=np.float32).copy()
 
@@ -138,12 +143,16 @@ def apply_to_log2fc(
         }
 
     fold = max(float(fold_expr), 1e-6)
-    before = float(values[target_position])
-    values[target_position] = np.log2(fold)
+    before = float(np.mean(values[..., target_position]))
+    values[..., target_position] = np.log2(fold)
     return values, {
         "applied": True,
         "fold_expr": fold,
-        "log2_fold_change": float(values[target_position]),
+        "log2_fold_change": float(np.log2(fold)),
+        # The model's own answer for this gene, averaged over the cells when
+        # the prediction was per cell. Kept because the gap between it and
+        # the measured value is the only reading we have on whether the
+        # perturbation module has learned what a knockdown does.
         "model_log2_fold_change": before,
         "control_mean_cpm": float(control_mean_cpm),
     }

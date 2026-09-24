@@ -53,6 +53,7 @@ def sd_units_to_log2fc(
     ctrl_mean: np.ndarray,
     ctrl_std: np.ndarray,
     floor: float = CPM_FLOOR,
+    baseline_sd: np.ndarray | None = None,
 ) -> np.ndarray:
     """Control-SD units to a log2 fold change the generator can apply.
 
@@ -71,10 +72,22 @@ def sd_units_to_log2fc(
     off reads as a fold change set by the guard epsilon and by how faint the
     control was — 15 log2 units for a gene at 0.05 CP10K — which is a
     statement about the arithmetic rather than about the prediction.
+
+    `baseline_sd` is what the ratio is taken against. Left out, it is the
+    context's pooled control level (SD units of zero), which is what a pooled
+    prediction means. Per-cell prediction passes **the drawn cell's own
+    values**, because the generator multiplies that cell's own counts: taking
+    the ratio against the population mean instead would apply the cell's
+    deviation from the mean a second time. It broadcasts, so `predicted_sd`
+    may be one profile or a block of cells.
     """
     predicted_lognorm = np.asarray(predicted_sd, dtype=np.float64) * ctrl_std + ctrl_mean
     predicted_cpm = np.expm1(np.maximum(predicted_lognorm, 0.0))
-    control_cpm = np.expm1(np.maximum(np.asarray(ctrl_mean, dtype=np.float64), 0.0))
+    if baseline_sd is None:
+        control_lognorm = np.asarray(ctrl_mean, dtype=np.float64)
+    else:
+        control_lognorm = np.asarray(baseline_sd, dtype=np.float64) * ctrl_std + ctrl_mean
+    control_cpm = np.expm1(np.maximum(control_lognorm, 0.0))
     return np.log2(
         np.maximum(predicted_cpm, floor) / np.maximum(control_cpm, floor)
     ).astype(np.float32)

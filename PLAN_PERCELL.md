@@ -551,24 +551,42 @@ submission, so it is built behind a config flag
 
 ## 9. Prediction and the generator
 
-Today, per (context, target): one forward pass, one fold-change vector,
-applied to 400 resampled control cells.
+In `pooled` mode, per (context, target): one forward pass, one fold-change
+vector, applied to every resampled control cell.
 
-Proposed: draw the 400 control cells first, push all 400 through the
-perturbation module **as one batch**, map each to the rest genes, and form
-400 fold-change vectors — each cell against **its own** control values. The
-generator then applies row *i* to cell *i*.
-
-Cost: the same number of forward passes as today in batch terms (batch 400
-instead of batch 1), so wall clock should rise by a small factor, not by
-400×. Memory is governed by the existing `model.gene_chunk`. I will measure
-it on `mini_data` before the server run rather than assert it.
+In `percell` mode: draw the control cells **first**, push them through the
+perturbation module in chunks of `predict.cells_per_forward`, map each to the
+rest genes, and form one fold-change vector per cell — each against **its
+own** control values. The generator applies row *i* to cell *i*, which is why
+the same drawn rows are handed to it rather than letting it draw again.
 
 A consequence worth stating plainly: the submitted cells stop being
-"resampled control cells with a shared multiplier" and become 400 distinct
-model outputs. That is the point, and it is also what makes the expression
-and discrimination metrics able to reward the model rather than the
-resampling.
+"resampled control cells with a shared multiplier" and become distinct model
+outputs. That is the point, and it is what lets the expression and
+discrimination metrics reward the model rather than the resampling.
+
+### Three details P4 had to get right
+
+**The ratio is taken against the cell, not the population.** The generator
+multiplies that cell's own counts, so a fold change measured against the
+pooled control mean would apply the cell's deviation from the mean a second
+time. `sd_units_to_log2fc` takes a `baseline_sd` for this, and per-cell
+prediction passes the drawn cells themselves.
+
+**Cell-to-cell variation survives.** The head predicts a *change added to its
+input*, so a row comes back as its own baseline plus a predicted delta. A
+constant delta is then a constant shift in log space, which preserves the
+spread the drawn cells brought with them instead of collapsing every cell
+onto one profile — the failure sanity check 5 exists to catch.
+
+**A gene with no counts in a drawn cell is left alone.** A multiplicative
+generator cannot move a zero, so the fold change there is a statement about
+`predict.cpm_floor` rather than about the prediction — and a per-cell
+baseline puts most genes at zero, where the pooled mean put almost none.
+Those entries are set to a fold change of exactly 1. It changes no output and
+keeps the reported effect sizes from being dominated by arithmetic. (The
+pooled path has the same limitation, so this is not a regression: neither
+mode can turn a gene on in a cell that has no counts for it.)
 
 ---
 
@@ -771,7 +789,7 @@ means one server run answers both transfer questions.
 | **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; marginals uniform) | ✅ 16 tests green; ε made relative and the grid revised (§4) |
 | **P2** | the delta term, group-mean form, pooled mode; `core_scratch` arm; type vocabulary | ✅ Phase 2 reports `map_delta_ratio_to_no_change` with its noise floor, and `phase1_contribution` per metric |
 | **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | ✅ premise checked on real cells first — `informative` (§11); both modes scored on both questions |
-| **P4** | per-cell prediction and generator | `all` green on mini, runtime and memory measured |
+| **P4** | per-cell prediction and generator | `all` green on mini in both modes, runtime measured |
 | **P5** | rehearsal A/B, ε swept, per-assay scale | a table of leaderboard-scale numbers, both modes |
 | **P6** | server run, submission | a leaderboard number to compare against −0.131 |
 

@@ -1106,3 +1106,60 @@ measurement, and the plan now says so.
 **Alternative.** Keep 0.01 and let the sweep find it. Cheap in code, but it
 would have spent a server cycle at a setting already measured to be adding
 noise.
+
+## P4 — per-cell prediction
+
+### D62. The per-cell fold change is taken against the cell, not the population
+
+**Decision.** `sd_units_to_log2fc` gains a `baseline_sd`. The pooled path
+leaves it out, so the ratio is against the context's control mean as before;
+the per-cell path passes the drawn cells themselves.
+
+**Reason.** The generator multiplies *that cell's own counts*. A fold change
+measured against the population mean would apply the cell's deviation from
+that mean a second time, so a cell already above average for a gene would be
+pushed further above it for no reason the model asked for.
+
+**What it also buys.** The model's head predicts a change *added to its
+input*, so a per-cell prediction is the cell's own baseline plus a delta.
+Taking the ratio against that same baseline means a constant delta is a
+constant shift in log space, which preserves the cell-to-cell spread the
+drawn cells brought with them. Against the pooled mean it would not: the
+folds would compensate for each cell's deviation and pull every cell toward
+one profile, which is exactly what sanity check 5 exists to catch.
+
+### D63. A gene with no counts in a drawn cell keeps a fold change of exactly 1
+
+**Decision.** In per-cell mode, `log2fc[control_counts[rows] == 0] = 0`
+before the generator sees it.
+
+**Reason.** A multiplicative generator cannot move a zero — `0 x fold` is 0
+whatever the fold — so the value there is set by `predict.cpm_floor` and by
+how faint the control was, not by the prediction. With a *pooled* baseline
+almost no gene sits at zero and this never mattered; with a per-cell baseline
+most genes in a given cell do, so without it the reported effect sizes and
+`max_abs_log2fc` would be dominated by arithmetic about cells nothing can
+happen to.
+
+**It changes no output**, only what is reported and what the generator's two
+calibration settings are fitted against.
+
+**The limitation it makes visible.** Neither mode can turn a gene on in a
+cell with no counts for it; the count-space generator is multiplicative by
+construction (§4.7). An additive or zero-inflated generator would be a
+different component, and the generator is deliberately swappable.
+
+### D64. The draw happens before the prediction, and the rows are passed on
+
+**Decision.** `generate_cells` takes an optional `rows`; in per-cell mode
+`run_predict` samples them, predicts on those cells, and hands the same rows
+to the generator.
+
+**Reason.** The model has to be shown *these* cells to answer for them, so the
+draw cannot stay inside the generator. Passing the rows is what keeps row `i`
+of the fold-change matrix matched to cell `i`; letting the generator draw
+again would silently pair each cell with another cell's prediction, and
+nothing downstream would notice.
+
+§4.7's requirement is untouched: the draw is still fresh and independent per
+target, it has just moved one call earlier.

@@ -113,6 +113,9 @@ def predicted_log2fc(
 ) -> tuple[np.ndarray, bool]:
     """Steps 1 and 2: the whole gene axis, as a log2 fold change vs control.
 
+    The pooled path: one control profile in, one fold change out, applied to
+    every generated cell.
+
     Returns `(log2_fold_change, used_perturbation_token)`. A target with no
     embedding — one that is not a challenge gene, so the vocabulary has no
     token for it — gets no change rather than a guess (DECISIONS.md D31).
@@ -132,6 +135,68 @@ def predicted_log2fc(
     full[context.rest_positions] = rest.squeeze(0).cpu().numpy()
     return (
         common.sd_units_to_log2fc(full, context.ctrl_mean, context.ctrl_std, cpm_floor),
+        True,
+    )
+
+
+def predicted_log2fc_percell(
+    model,
+    context: phase3.ChallengeContext,
+    target_idx: torch.Tensor | None,
+    baseline_sd: np.ndarray,
+    n_genes: int,
+    cpm_floor: float,
+    pert_type: str | None = None,
+    cells_per_forward: int = 64,
+) -> tuple[np.ndarray, bool]:
+    """The per-cell path: these cells in, these cells perturbed out.
+
+    `baseline_sd` is the drawn control cells over the **whole** gene axis in
+    control-SD units, `(n_cells, n_genes)`. Each row goes through the
+    perturbation module and the adapted mapping on its own, and the fold
+    change is taken against that same row — the generator multiplies that
+    cell's own counts, so taking the ratio against the population mean
+    instead would apply the cell's deviation from the mean twice.
+
+    The model's head predicts a *change* added to its input, so a row comes
+    back as its own baseline plus a predicted delta. A constant delta is
+    therefore a constant shift in log space, which preserves the
+    cell-to-cell variation the drawn cells brought with them rather than
+    collapsing it.
+
+    Cells go through in chunks of `cells_per_forward`: the encoder's cost is
+    linear in the number of rows, and 400 rows over the whole panel at once
+    is the shape most likely to exhaust a GPU.
+    """
+    n_cells = int(baseline_sd.shape[0])
+    if target_idx is None:
+        return np.zeros((n_cells, n_genes), dtype=np.float32), False
+
+    panel_baseline = baseline_sd[:, context.panel_positions]
+    predicted = np.zeros((n_cells, n_genes), dtype=np.float32)
+
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, n_cells, max(1, cells_per_forward)):
+            block = panel_baseline[start : start + max(1, cells_per_forward)]
+            values = torch.as_tensor(block, dtype=torch.float32, device=context.device)
+            targets = target_idx.reshape(1).expand(values.shape[0])
+            panel = phase2.predict_perturbed_panel(
+                model, context, values, targets, pert_type
+            )
+            rest = adapt.map_panel_to_rest(model, context, panel)
+            stop = start + values.shape[0]
+            predicted[start:stop, context.panel_positions] = panel.cpu().numpy()
+            predicted[start:stop, context.rest_positions] = rest.cpu().numpy()
+
+    return (
+        common.sd_units_to_log2fc(
+            predicted,
+            context.ctrl_mean,
+            context.ctrl_std,
+            cpm_floor,
+            baseline_sd=baseline_sd,
+        ),
         True,
     )
 
@@ -173,6 +238,10 @@ def run_predict(cfg: Config) -> dict[str, Any]:
     policy = load_policy(run_paths.phase3_policy)
     settings = policy_settings(policy)
     generate = generator_mod.get_generator(policy["generator"]["name"])
+    # Which question the model is asked of each cell, resolved once: it is
+    # read after the context loop too, and a round with no contexts would
+    # otherwise leave it unbound.
+    per_cell = cfg.phase2.perturbation_mode == phase2.PERCELL
     prior = knockdown_mod.load_knockdown_prior(cfg, paths)
 
     wanted = _required_pairs(manifest, pert_counts)
@@ -239,6 +308,11 @@ def run_predict(cfg: Config) -> dict[str, Any]:
         )
         control_counts = context.controls.counts(pool_rows).astype(np.int64)
         control_cpm = mean_cp10k(control_counts)
+        # The same cells in the units the model reads, kept aligned with
+        # `control_counts` row for row. Only per-cell mode needs them, and
+        # only then are they built: on the server this is a few thousand
+        # cells over the whole gene axis.
+        control_sd = context.standardized()[pool_rows] if per_cell else None
         log.info(
             "  %s: %d control cells held (of %d), median library %.0f counts",
             name, control_counts.shape[0], context.n_cells,
@@ -253,14 +327,44 @@ def run_predict(cfg: Config) -> dict[str, Any]:
             target_idx = (
                 as_index([target_position], device) if target_position is not None else None
             )
-            log2fc, used_token = predicted_log2fc(
-                model,
-                context,
-                target_idx,
-                n_genes,
-                cfg.predict.cpm_floor,
-                cfg.phase3.pert_type,
+            rng = np.random.default_rng(
+                common.arm_seed(f"predict:{name}", target, cfg.seed)
             )
+            # The draw comes first in per-cell mode, because the model has to
+            # be shown *these* cells to answer for them. The same rows go to
+            # the generator, so row i of the fold changes stays matched to
+            # cell i (§4.7: a fresh, independent draw per target either way).
+            rows = generator_mod.sample_control_cells(
+                control_counts.shape[0],
+                n_cells,
+                rng,
+                allow_replacement=settings.allow_replacement,
+            )
+            if per_cell:
+                log2fc, used_token = predicted_log2fc_percell(
+                    model,
+                    context,
+                    target_idx,
+                    control_sd[rows],
+                    n_genes,
+                    cfg.predict.cpm_floor,
+                    cfg.phase3.pert_type,
+                    cfg.predict.cells_per_forward,
+                )
+                # A gene with no counts in a drawn cell cannot be moved by a
+                # multiplicative generator, so its fold change is a statement
+                # about the floor rather than about the prediction. Zeroing it
+                # keeps the reported effect sizes honest and changes no output.
+                log2fc[control_counts[rows] == 0] = 0.0
+            else:
+                log2fc, used_token = predicted_log2fc(
+                    model,
+                    context,
+                    target_idx,
+                    n_genes,
+                    cfg.predict.cpm_floor,
+                    cfg.phase3.pert_type,
+                )
 
             # The target's own gene, once the prior has spoken, is a measured
             # quantity and is exempt from the generator's two settings.
@@ -294,14 +398,18 @@ def run_predict(cfg: Config) -> dict[str, Any]:
             }
             knockdown_records.append(record)
 
-            rng = np.random.default_rng(
-                common.arm_seed(f"predict:{name}", target, cfg.seed)
+            counts = generate(
+                control_counts, log2fc, n_cells, rng, settings, exempt, rows=rows
             )
-            counts = generate(control_counts, log2fc, n_cells, rng, settings, exempt)
             path = run_paths.prediction_block(name, target)
             stored = save_block(path, counts)
+            applied = generator_mod.apply_settings(log2fc, settings, exempt)
+            # One change per gene for the reports and for sanity check 4,
+            # which compares targets to each other: a per-cell block is
+            # summarized by its mean over cells, which is the quantity the
+            # group pseudobulk would show.
             applied_changes.append(
-                generator_mod.apply_settings(log2fc, settings, exempt).astype(np.float32)
+                (applied.mean(axis=0) if applied.ndim == 2 else applied).astype(np.float32)
             )
 
             blocks.append(
@@ -353,6 +461,12 @@ def run_predict(cfg: Config) -> dict[str, Any]:
     summary = {
         "stage": "predict",
         "device": device,
+        # Which question the model was asked of each cell. Recorded here as
+        # well as in phase2/metrics.json because this is the file that sits
+        # beside the submission, and two runs that differ only in this
+        # produce blocks that are otherwise indistinguishable.
+        "perturbation_mode": cfg.phase2.perturbation_mode,
+        "cells_per_forward": cfg.predict.cells_per_forward if per_cell else None,
         "generator": {**policy["generator"], **settings.as_dict()},
         "gene_axis": {"n_genes": len(axis), "source": str(paths.gene_names)},
         "cells_per_pert": manifest.cells_per_pert,

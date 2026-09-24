@@ -402,6 +402,11 @@ class Predict:
     target_chunk: int = 1
     #: Control cells held in memory per context while generating.
     max_control_cells: int = 0
+    #: Cells pushed through the model at once in `percell` mode. The
+    #: encoder's cost is linear in the number of rows, so `cells_per_pert`
+    #: rows over the whole panel at once is the shape most likely to exhaust
+    #: a GPU; lower this first if it does.
+    cells_per_forward: int = 64
     #: The expression level, in CP10K, below which a gene is not
     #: distinguishable from absent. It is the floor of every log fold change
     #: the pipeline forms, so that "this gene goes off" is a finite statement
@@ -413,6 +418,8 @@ class Predict:
     cpm_floor: float = 0.01
 
     def validate(self) -> None:
+        if self.cells_per_forward < 1:
+            raise ConfigError("predict.cells_per_forward must be at least 1")
         if self.target_chunk < 1:
             raise ConfigError("predict.target_chunk must be at least 1")
         if self.cpm_floor <= 0:

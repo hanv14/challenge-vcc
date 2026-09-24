@@ -109,9 +109,61 @@ def test_cells_vary_rather_than_being_copies_of_one_average(controls):
 
 
 def test_a_mismatched_gene_axis_is_refused(controls):
-    with pytest.raises(ValueError, match="fold changes for"):
-        generate_counts(controls, np.zeros(controls.shape[1] + 1, dtype=np.float32),
-                        np.random.default_rng(6))
+    rng = np.random.default_rng(6)
+    with pytest.raises(ValueError, match="for 32 genes"):
+        generate_counts(controls, np.zeros(controls.shape[1] + 1, dtype=np.float32), rng)
+    # And a per-cell matrix whose rows do not line up with the cells: row i
+    # of the fold changes belongs to cell i, so a mismatch is silent nonsense
+    # rather than a broadcast.
+    with pytest.raises(ValueError, match="rows of fold changes"):
+        generate_counts(
+            controls,
+            np.zeros((controls.shape[0] + 1, controls.shape[1]), dtype=np.float32),
+            rng,
+        )
+
+
+def test_a_per_cell_matrix_moves_each_cell_by_its_own_change(controls):
+    """What per-cell prediction produces: one row of fold changes per cell."""
+    rng = np.random.default_rng(11)
+    changes = np.zeros((controls.shape[0], controls.shape[1]), dtype=np.float32)
+    # Halve gene 0 in the first half of the cells, leave it alone in the rest.
+    half = controls.shape[0] // 2
+    changes[:half, 0] = -1.0
+
+    out = generate_counts(controls, changes, rng)
+    assert out.shape == controls.shape
+    # The untouched half is bit-for-bit what it was, which is what makes those
+    # cells exchangeable with the controls for the DE test.
+    assert np.array_equal(out[half:, 0], controls[half:, 0])
+    assert out[:half, 0].sum() < controls[:half, 0].sum()
+    # Every other gene is untouched in every cell.
+    assert np.array_equal(out[:, 1:], controls[:, 1:])
+
+
+def test_a_per_cell_matrix_of_ones_changes_nothing(controls):
+    """The exchangeability rule has to survive the per-cell path too."""
+    rng = np.random.default_rng(12)
+    changes = np.zeros((controls.shape[0], controls.shape[1]), dtype=np.float32)
+    assert np.array_equal(generate_counts(controls, changes, rng), controls)
+
+
+def test_the_settings_apply_elementwise_to_a_per_cell_matrix():
+    settings = GeneratorSettings(confidence_threshold=0.25, effect_scale=0.5)
+    changes = np.array([[0.1, -0.4, 0.3], [0.8, 0.2, -1.0]], dtype=np.float32)
+
+    applied = apply_settings(changes, settings)
+    # Below the threshold in that cell, gone in that cell only.
+    assert applied[0, 0] == 0.0
+    assert applied[1, 0] == pytest.approx(0.4)
+    assert applied[0, 1] == pytest.approx(-0.2)
+    assert applied[1, 1] == 0.0
+
+    # The exemption is a column mask, because the knockdown prior is a
+    # statement about a gene rather than about a cell.
+    exempt = np.array([False, False, True])
+    kept = apply_settings(changes, settings, exempt)
+    assert np.array_equal(kept[:, 2], changes[:, 2])
 
 
 # --------------------------------------------------------------------------- #
@@ -242,3 +294,57 @@ def test_a_measured_knockdown_is_exempt_from_the_two_settings():
 
     without = apply_settings(values, settings)
     assert without[0] == 0.0, "without the exemption the threshold would silence it"
+
+
+# --------------------------------------------------------------------------- #
+# per-cell prediction (PLAN_PERCELL.md §8)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_caller_can_name_the_control_rows():
+    """Per-cell prediction draws first, so the same rows must come back here.
+
+    The model has to be shown *these* cells to answer for them, so the draw
+    happens before the prediction; passing the rows is what keeps row i of
+    the fold changes matched to cell i.
+    """
+    controls = np.arange(60, dtype=np.int64).reshape(10, 6) + 1
+    rows = np.array([3, 1, 7])
+    out = generate_cells(
+        controls,
+        np.zeros(6, dtype=np.float32),
+        3,
+        np.random.default_rng(0),
+        GeneratorSettings(),
+        rows=rows,
+    )
+    # No change asked for, so the output is those exact cells in that order.
+    assert np.array_equal(out, controls[rows])
+
+
+def test_the_fold_change_is_taken_against_the_cell_that_carries_it():
+    """The generator multiplies a cell's own counts (PLAN_PERCELL.md §8).
+
+    Taking the ratio against the population mean instead would apply the
+    cell's own deviation from that mean a second time.
+    """
+    from vccp.rehearsal.common import sd_units_to_log2fc
+
+    ctrl_mean = np.array([1.0, 2.0, 0.5])
+    ctrl_std = np.array([0.5, 0.5, 0.5])
+    cells = np.array([[1.0, -1.0, 0.0], [-2.0, 0.5, 1.0]])
+
+    # A prediction equal to the cell itself is no change *for that cell*...
+    same = sd_units_to_log2fc(cells, ctrl_mean, ctrl_std, 0.01, baseline_sd=cells)
+    assert np.allclose(same, 0.0, atol=1e-5)
+
+    # ...whereas against the pooled control it is not, and the difference is
+    # exactly the cell's own deviation.
+    pooled = sd_units_to_log2fc(cells, ctrl_mean, ctrl_std, 0.01)
+    assert not np.allclose(pooled, 0.0, atol=1e-3)
+
+    # A constant shift in SD units moves every cell by its own fold, and the
+    # result is the same additive shift in log space — which is what keeps
+    # the cell-to-cell variation the drawn cells brought with them.
+    shifted = sd_units_to_log2fc(cells + 0.4, ctrl_mean, ctrl_std, 0.01, baseline_sd=cells)
+    assert (shifted > 0).all()
