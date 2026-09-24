@@ -451,6 +451,15 @@ def _phase_section(phase1: dict[str, Any], phase2: dict[str, Any]) -> str:
             text += _table(["arm", *[label for _, label in PHASE2_COLUMNS]], rows)
 
         per_context = phase2.get("validation_per_context") or {}
+        describes = phase2.get("validation_per_context_describes") or {}
+        if per_context and describes and not describes.get("is_the_best_step", True):
+            text += (
+                f"\n_The per-screen table below is `{describes.get('arm')}` at step "
+                f"{describes.get('step')} — the checkpoint that was saved — while the "
+                f"arm table above reads each arm at its best "
+                f"(step {describes.get('best_step')}). They are the same arm at two "
+                "different moments._\n"
+            )
         if per_context:
             text += "\nPer screen, held-out targets:\n\n" + _table(
                 ["screen", *[label for _, label in PHASE2_COLUMNS]],

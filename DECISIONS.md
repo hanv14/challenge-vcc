@@ -1586,3 +1586,42 @@ output is about to initialize another one.
 trains for 400 steps at batch 32 — **12,800 row draws against 42,889 training
 rows, under a third of one epoch.** Whatever it contributes, it contributes
 without having seen its own data once.
+
+### D82. `validation_per_context` is the saved model; the arm table is the best
+
+**Decision.** `phase2/metrics.json` gains
+`validation_per_context_describes` — which arm, which step, the arm's best
+step, and whether they are the same — and the summary prints a line when they
+are not.
+
+**Reason.** D74 made `arms[...]["validation"]` each arm's *best*, but
+`validation_per_context` still evaluates the main arm's *final* model,
+because that is the checkpoint saved and the one Phase 3 inherits. On the
+isolation run `core_unfrozen` peaked at step 4500 and was evaluated per
+screen at 6000, so the file reported `pert_pearson` **0.124** in one table
+and **0.007** in another, for what a reader would reasonably take to be the
+same thing. Both numbers are correct and they describe the same arm at two
+different moments.
+
+Keeping the final model here is deliberate: it is what actually ships. The
+fix is to say so, not to quietly switch which model is reported.
+
+### D83. Per-screen noise floors differ enough that the aggregate hides them
+
+**Observed**, isolation run: `map_delta_noise_floor_ratio` is **0.746** on
+K562_essential against **0.484** aggregated over the three screens. On that
+screen a *perfect* delta predictor could only reach 0.746, so the entire
+measurable band is 0.746–1.0 — a quarter of the range the aggregate implies.
+
+Nothing is wrong: the floor is measured per screen and reported per screen,
+and averaging ratios across screens is sound. But a reader who compares an
+aggregate ratio against the aggregate floor is averaging over screens whose
+headroom differs by a factor of two, and will read a screen-specific
+limitation as a model failure.
+
+**Left as it is, deliberately.** The per-screen numbers are already in
+`validation_per_context`, which is where this was found. Raising
+`phase2.delta_eval_cells` above 128 would lower the floors — the noise in a
+difference of sampled means falls as 1/n — at a cost paid only at evaluation
+time, and it is worth doing if K562_essential has at least 512 control cells.
+That is a fact about the server's data which this environment cannot check.

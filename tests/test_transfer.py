@@ -758,3 +758,33 @@ def test_resetting_delta_touches_delta_and_nothing_else(typed_model):
     # And it is what §4.1 says delta starts at, so the reset is a return to
     # the specified initial condition rather than an invention.
     assert all(v == 0.0 for v in deltas().values())
+
+
+def test_the_per_screen_block_says_which_model_it_describes():
+    """`validation_per_context` is the saved (final) model; the arm table is
+    each arm's best. When they differ, the summary has to say so, or a reader
+    compares one model with itself at another moment."""
+    from vccp.report import summary as summary_mod
+
+    def render(best_step, steps):
+        return summary_mod._phase_section(
+            {},
+            {
+                "arms": {"core_unfrozen": {"validation": {"pert_pearson": 0.12}}},
+                "main_arm": "core_unfrozen",
+                "validation_per_context": {"rpe1": {"pert_pearson": -0.04}},
+                "validation_per_context_describes": {
+                    "arm": "core_unfrozen",
+                    "step": steps,
+                    "best_step": best_step,
+                    "is_the_best_step": best_step == steps,
+                },
+            },
+        )
+
+    differing = render(best_step=4500, steps=6000)
+    assert "step 6000" in differing and "step 4500" in differing
+    assert "two different moments" in differing
+
+    # When the best *is* the last step there is nothing to warn about.
+    assert "two different moments" not in render(best_step=6000, steps=6000)

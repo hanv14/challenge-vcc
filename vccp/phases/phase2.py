@@ -1113,6 +1113,20 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         "validation_per_context": evaluate_per_context(
             model, contexts, cfg, device, gene_index
         ),
+        # Which model the block above describes. It is the main arm's
+        # **final** state, because that is the checkpoint saved and the one
+        # Phase 3 inherits — while `arms[...]["validation"]` is each arm's
+        # *best* (D74). When `best_step` is not the last step those are two
+        # different models, and a reader comparing them without knowing that
+        # is comparing a model with itself at another moment.
+        "validation_per_context_describes": {
+            "arm": main_arm,
+            "step": cfg.phase2.steps,
+            "best_step": result.best_step,
+            "is_the_best_step": result.best_step == cfg.phase2.steps,
+            "note": "the final model, which is the saved checkpoint; the arms' "
+            "`validation` is each arm's best",
+        },
     }
 
     run_paths.phase_dir(PHASE).mkdir(parents=True, exist_ok=True)
