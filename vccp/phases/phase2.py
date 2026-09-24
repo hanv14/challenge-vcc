@@ -50,6 +50,33 @@ ADAPTER = "phase2"
 POOLED, PERCELL = "pooled", "percell"
 #: The arm trained with no Phase 1 input at all (PLAN_PERCELL.md §7.6).
 SCRATCH_ARM = "core_scratch"
+#: What Phase 2 may inherit from Phase 1 (DECISIONS.md D80).
+FULL, WITHOUT_DELTA, NONE = "full", "without_delta", "none"
+
+
+def reset_delta(model) -> int:
+    """Zero the gene vocabulary's free per-gene vectors, keeping everything else.
+
+    `delta` is 4.74M of the model's 5.65M trainable parameters, and Phase 1
+    only ever tokenizes the 955 panel genes — so a full warm start hands
+    Phase 2 an embedding table where the panel has been moved by a bulk
+    knockout objective and the other ~17,578 genes sit at `W . prior` alone.
+    Phase 2's whole job is mapping the panel onto those rest genes, and it
+    starts that job with the two halves on different footings.
+
+    Zeroing `delta` is what §4.1 says it starts at, so this hands over the
+    network Phase 1 learned without the per-gene memorization it learned it
+    on. Returns how many tensors were reset, for the record.
+    """
+    import torch
+
+    reset = 0
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            if name.startswith("vocabulary.") and "delta" in name:
+                parameter.zero_()
+                reset += 1
+    return reset
 CONTROL, PERTURBED = "control", "perturbed"
 
 
@@ -844,26 +871,29 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     arms: dict[str, Any] = {}
 
     def train_arm(
-        arm: str, unfreeze_core: bool, steps: int, warm_start: bool = True
+        arm: str, unfreeze_core: bool, steps: int, warm_start: str = FULL
     ) -> tuple[Any, Any, dict]:
         """One Phase 2 arm.
 
-        `warm_start` is what the Phase 1 contribution ablation turns off: the
-        arm then starts from the priors alone, with neither Phase 1's
-        checkpoint nor its replayed objective, so the gap between it and the
-        warm arms is what the first phase is worth (PLAN_PERCELL.md §7.6).
-        The priors stay in either case — this ablates Phase 1, not §4.1.
+        `warm_start` is what the Phase 1 contribution ablation varies:
+        `none` starts from the priors alone, with neither Phase 1's
+        checkpoint nor its replayed objective, so the gap between it and a
+        warm arm is what the first phase is worth (PLAN_PERCELL.md §7.6).
+        `without_delta` takes the network but not the per-gene memorization.
+        The priors stay in every case — this ablates Phase 1, not §4.1.
         """
         model = build_model(cfg, features).to(device)
         for name in (phase1.ADAPTER, ADAPTER):
             model.add_adapter(name)
-        if warm_start:
+        if warm_start != NONE:
             load_core(
                 run_paths.core_checkpoint(phase1.PHASE),
                 model,
                 layout_hash=features.layout_hash(),
                 strict=False,
             )
+            if warm_start == WITHOUT_DELTA:
+                reset_delta(model)
         model.use_adapters([ADAPTER])
 
         plan = set_trainable(
@@ -883,7 +913,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         # to be pulled toward and no Phase 1 knowledge to forget, so it gets
         # neither — replaying Phase 1 there would put back through the side
         # door exactly what the ablation removes.
-        if warm_start:
+        if warm_start != NONE:
             phase1_tensors = phase1.load_phase1_tensors(cfg, device)
             replay = ReplayMixer(
                 tasks=[
@@ -918,7 +948,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         frozen = frozen_check.end(model, plan, before)
         return model, result, frozen
 
-    def arm_record(arm: str, unfreeze_core: bool, result, frozen, steps: int, warm: bool):
+    def arm_record(arm: str, unfreeze_core: bool, result, frozen, steps: int, warm: str):
         replayed = sum((result.replay or {}).get("steps_replayed", {}).values())
         divergence, instability = result.divergence, result.instability
         # Two ways a run can be untrustworthy, and `final / best` only sees
@@ -943,7 +973,11 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             )
         return {
             "unfreeze_core": unfreeze_core,
-            "warm_started_from_phase1": warm,
+            # What this arm took from Phase 1: "full", "without_delta" or
+            # "none". `full` includes the gene vocabulary's delta, which is
+            # 84% of the trainable parameters and which Phase 1 trained on
+            # the 955 panel genes alone (D80).
+            "warm_start": warm,
             "steps": steps,
             # What the arm actually spent on Phase 2's own objective. A warm
             # arm gives `replay_fraction` of its steps to Phase 1 and a
@@ -964,11 +998,17 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         }
 
     main_arm = "core_unfrozen" if cfg.phase2.unfreeze_core else "core_frozen"
-    if not cfg.phase2.warm_start:
+    if cfg.phase2.warm_start == NONE:
         log.warning(
-            "phase2.warm_start is off: the shipped model starts from the priors, not "
-            "from Phase 1. That is a deviation from CLAUDE.md §4's three-phase design "
-            "and is recorded as one."
+            "phase2.warm_start is 'none': the shipped model starts from the priors, "
+            "not from Phase 1. That is a deviation from CLAUDE.md §4's three-phase "
+            "design and is recorded as one."
+        )
+    elif cfg.phase2.warm_start == WITHOUT_DELTA:
+        log.info(
+            "phase2.warm_start is 'without_delta': taking Phase 1's network but "
+            "resetting the gene vocabulary's per-gene vectors, which Phase 1 trained "
+            "on the 955 panel genes alone"
         )
     model, result, frozen = train_arm(
         main_arm, cfg.phase2.unfreeze_core, cfg.phase2.steps,
@@ -1013,7 +1053,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     # all. The gap between this arm and the warm ones is what the first phase
     # is worth, and until it was measured the three-phase design rested on an
     # assumption (PLAN_PERCELL.md §7.6).
-    if cfg.train.phase1_contribution_ablation and not cfg.phase2.warm_start:
+    if cfg.train.phase1_contribution_ablation and cfg.phase2.warm_start == NONE:
         log.info(
             "phase 2: skipping the core_scratch ablation — the main arm already "
             "trains without Phase 1, so the arm would be a duplicate"
@@ -1022,7 +1062,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         steps = scratch_arm_steps(cfg)
         log.info("phase 2 ablation: core_scratch (no Phase 1) for %d steps", steps)
         scratch_model, scratch_result, scratch_frozen = train_arm(
-            SCRATCH_ARM, cfg.phase2.unfreeze_core, steps, warm_start=False
+            SCRATCH_ARM, cfg.phase2.unfreeze_core, steps, warm_start=NONE
         )
         arms[SCRATCH_ARM] = arm_record(
             SCRATCH_ARM,
@@ -1030,7 +1070,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             scratch_result,
             scratch_frozen,
             steps,
-            False,
+            NONE,
         )
         save_core(
             run_paths.core_checkpoint(f"{PHASE}_{SCRATCH_ARM}"),
@@ -1047,7 +1087,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         "device": device,
         "main_arm": main_arm,
         "perturbation_mode": cfg.phase2.perturbation_mode,
-        "warm_started_from_phase1": cfg.phase2.warm_start,
+        "warm_start": cfg.phase2.warm_start,
         "ot": {
             "epsilon": cfg.phase2.ot_epsilon,
             "batch_cells": cfg.phase2.ot_batch_cells,

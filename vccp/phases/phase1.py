@@ -267,16 +267,38 @@ def evaluate(model, tensors: Phase1Tensors, cfg: Config, rows: np.ndarray | None
         predicted = {"sig": sig_hat, "gmt": gmt_hat, "pert": pert_hat}
         gmt_rows = tensors.has_gmt.index_select(0, index).cpu().numpy()
 
+    # What predicting nothing would score on each head. Phase 2 has reported
+    # this since the start and Phase 1 never did, so its numbers could only
+    # be read against each other: `sig_mse 0.45` says nothing on its own, and
+    # `sig_pearson 0.12` does not say whether the head beats silence.
+    #
+    # "Nothing" differs per head. `sig` and `gmt` are changes, so it is zero.
+    # `pert` is a *level* and the head predicts a change added to the control,
+    # so it is the control profile itself — the same convention as Phase 2's
+    # `pert_mse_no_change`.
+    with torch.no_grad():
+        control = tensors.ctrl.index_select(0, index)
+        baseline = {
+            "sig": torch.zeros_like(truth["sig"]),
+            "gmt": torch.zeros_like(truth["gmt"]),
+            "pert": control,
+        }
+
     scores: dict[str, float] = {}
     for name in ("sig", "gmt", "pert"):
         a = predicted[name].cpu().numpy()
         b = truth[name].cpu().numpy()
+        none = baseline[name].cpu().numpy()
         if name == "gmt":
-            a, b = a[gmt_rows], b[gmt_rows]
+            a, b, none = a[gmt_rows], b[gmt_rows], none[gmt_rows]
             if a.size == 0:
                 continue
-        scores[f"{name}_mse"] = float(np.mean((a - b) ** 2))
+        mse = float(np.mean((a - b) ** 2))
+        no_change = float(np.mean((none - b) ** 2))
+        scores[f"{name}_mse"] = mse
         scores[f"{name}_pearson"] = pearson(a, b)
+        scores[f"{name}_mse_no_change"] = no_change
+        scores[f"{name}_mse_ratio_to_no_change"] = mse / max(no_change, 1e-9)
     return scores
 
 

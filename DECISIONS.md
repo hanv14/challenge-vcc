@@ -1543,3 +1543,46 @@ trains and is still scored, it simply stops feeding Phase 2.
 anything on LINCS at all. If its own held-out validation sits at no-change,
 then its core is a badly conditioned random initialization and every result
 above follows immediately. `runs/server/phase1/metrics.json` answers it.
+
+### D80. Phase 2 can inherit Phase 1's network without its per-gene table
+
+**The mechanism, from `runs/server/phase1/metrics.json`.** Phase 1 has
+5,652,139 trainable parameters, and **4,744,448 of them — 84% — are the gene
+vocabulary's `delta`**. Phase 1 only ever tokenizes the 955 panel genes, so
+`delta[feature]` moves for those 955 and stays at zero for the other ~17,578;
+`delta[target]` moves for the 4,968 targets it sees. `save_core` stores the
+whole state dict, so a full warm start hands Phase 2 an embedding table whose
+two halves sit on different footings — and Phase 2's entire job is mapping
+the panel onto the rest genes. The from-scratch arm has no such asymmetry:
+there every `delta` is zero, which is what §4.1 specifies it starts at.
+
+**Decision.** `phase2.warm_start` becomes `full | without_delta | none`
+rather than a bool. `without_delta` loads the checkpoint and then zeroes the
+vocabulary's deltas, transferring the network Phase 1 learned without the
+per-gene memorization it learned it on. `configs/server_nodelta.yaml`
+differs from `server_isolate.yaml` in exactly that one setting.
+
+**Why this is worth a run before abandoning Phase 1.** D79 established that
+the warm start is the damage, but not which part of it. If `without_delta`
+lands near the scratch arm's 0.80, the three-phase design survives and this
+becomes the shipped setting; if it stays near 0.99, the core weights
+themselves are the problem and `none` is the answer.
+
+### D81. Phase 1 reports its no-change baselines, like Phase 2 always has
+
+**Decision.** `phase1.evaluate` reports `*_mse_no_change` and
+`*_mse_ratio_to_no_change` for the `sig`, `gmt` and `pert` heads. "Nothing"
+is zero for `sig` and `gmt`, which are changes, and the control profile for
+`pert`, which is a level the head predicts a change on top of — the same
+convention as Phase 2's `pert_mse_no_change`.
+
+**Reason.** Phase 1's numbers could only be read against each other. On the
+server it reported `sig_mse 0.450`, `sig_pearson 0.120`, `gmt_pearson 0.006`
+and `pert_pearson 0.353` — and nothing in that says whether any head beats
+predicting nothing, which is the first question to ask of a phase whose
+output is about to initialize another one.
+
+**What the same file already shows without any new instrumentation.** Phase 1
+trains for 400 steps at batch 32 — **12,800 row draws against 42,889 training
+rows, under a third of one epoch.** Whatever it contributes, it contributes
+without having seen its own data once.

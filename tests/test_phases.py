@@ -408,14 +408,14 @@ def test_the_phase1_contribution_is_measured_not_assumed(trained_run):
 
     assert phase2.SCRATCH_ARM in metrics["arms"]
     scratch = metrics["arms"][phase2.SCRATCH_ARM]
-    assert scratch["warm_started_from_phase1"] is False
+    assert scratch["warm_start"] == phase2.NONE
     # No warm start means no Phase 1 to replay: replaying it would put back
     # through the side door exactly what the ablation removes.
     assert scratch["n_phase1_replay_steps"] == 0
     assert scratch["n_phase2_steps"] == scratch["steps"]
 
     warm = metrics["arms"]["core_unfrozen"]
-    assert warm["warm_started_from_phase1"] is True
+    assert warm["warm_start"] == phase2.FULL
 
     contribution = metrics["phase1_contribution"]
     assert contribution["measured"] is True

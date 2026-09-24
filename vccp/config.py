@@ -326,18 +326,26 @@ class Phase2:
     #: Replogle is CRISPR interference, as the challenge is — the two share
     #: a type row, which is the transfer this vocabulary exists to allow.
     pert_type: str = "crispri"
-    #: Start Phase 2 from the Phase 1 core. On by default because that is the
-    #: three-phase design of CLAUDE.md §4, and off is a deliberate answer to a
-    #: measurement: the `core_scratch` ablation exists to say whether the warm
-    #: start earns its place, and on the server's 6,000-step run it did not —
-    #: the warm arms sat at ~1.0 against no-change while the scratch arm
-    #: reached 0.807 and was still improving (DECISIONS.md D76).
+    #: What Phase 2 inherits from Phase 1 (DECISIONS.md D76, D79, D80).
     #:
-    #: Turning this off makes the shipped model a two-phase one, which is a
-    #: deviation from §4 and has to be recorded as one. It also makes the
-    #: ablation redundant, and Phase 2 says so rather than training an
-    #: identical third arm.
-    warm_start: bool = True
+    #: * `full` — the whole checkpoint, which is what the pipeline has always
+    #:   done. That includes the gene vocabulary's `delta`: **4.74M of the
+    #:   5.65M trainable parameters**, and Phase 1 only ever sees 955 panel
+    #:   genes, so it hands Phase 2 an embedding table where the panel has
+    #:   moved and the other ~17,578 genes sit at the prior alone.
+    #: * `without_delta` — the core, the projection `W` and the heads, with
+    #:   `delta` reset to zero. Transfers the network Phase 1 learned without
+    #:   the per-gene memorization it learned it on, and removes the
+    #:   panel/rest asymmetry above.
+    #: * `none` — from the priors alone. A two-phase model, which is a
+    #:   deviation from §4's design and is recorded as one. It also makes the
+    #:   `core_scratch` ablation redundant, and Phase 2 says so rather than
+    #:   training an identical third arm.
+    #:
+    #: `full` stays the default because three phases is what §4 asks for, but
+    #: on the server it measured worse than `none` by 0.19 with the
+    #: forgetting guard removed, so the default is on notice.
+    warm_start: str = "full"
     #: Phase 2 has the data to support training the core, and is where the
     #: forgetting guard is worth having (DECISIONS.md D3).
     unfreeze_core: bool = True
@@ -352,6 +360,11 @@ class Phase2:
             raise ConfigError("phase2.delta_eval_cells must be at least 2")
         if self.delta_eval_targets < 1:
             raise ConfigError("phase2.delta_eval_targets must be at least 1")
+        if self.warm_start not in ("full", "without_delta", "none"):
+            raise ConfigError(
+                "phase2.warm_start must be 'full', 'without_delta' or 'none', got "
+                f"{self.warm_start!r}"
+            )
         if self.perturbation_mode not in ("pooled", "percell"):
             raise ConfigError(
                 "phase2.perturbation_mode must be 'pooled' or 'percell', got "

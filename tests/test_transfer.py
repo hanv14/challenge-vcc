@@ -310,8 +310,8 @@ def test_a_cold_main_arm_makes_the_scratch_ablation_redundant():
     """Turning the warm start off would otherwise train the same arm twice."""
     from vccp.config import Phase2
 
-    assert Phase2().warm_start is True, "the three-phase design is the default"
-    Phase2(warm_start=False).validate()
+    assert Phase2().warm_start == phase2_mod.FULL, "three phases is the default"
+    Phase2(warm_start=phase2_mod.NONE).validate()
 
 
 def test_the_contribution_names_the_arms_that_diverged():
@@ -704,3 +704,57 @@ def test_the_summary_prints_every_arm_a_variant_produced():
     assert "0.5500" in text
     # And the reading that makes the two method arms worth comparing.
     assert "knockout-specific type offset" in text
+
+
+# --------------------------------------------------------------------------- #
+# what Phase 2 inherits from Phase 1 (DECISIONS.md D80)
+# --------------------------------------------------------------------------- #
+def test_warm_start_has_three_modes_and_rejects_anything_else():
+    from vccp.config import Phase2
+
+    assert Phase2().warm_start == phase2_mod.FULL, "three phases is what §4 asks for"
+    for mode in (phase2_mod.FULL, phase2_mod.WITHOUT_DELTA, phase2_mod.NONE):
+        Phase2(warm_start=mode).validate()
+    # The key was a bool for one day; a stale config must fail loudly.
+    with pytest.raises(ConfigError, match="warm_start must be"):
+        Phase2(warm_start=True).validate()
+    with pytest.raises(ConfigError, match="warm_start must be"):
+        Phase2(warm_start="partial").validate()
+
+
+def test_resetting_delta_touches_delta_and_nothing_else(typed_model):
+    """`delta` is 4.74M of 5.65M trainable parameters, and Phase 1 trains it
+    on the 955 panel genes alone — so a full warm start hands Phase 2 an
+    embedding table whose two halves sit on different footings."""
+    model = typed_model
+    generator = torch.Generator().manual_seed(9)
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            parameter.copy_(torch.randn(parameter.shape, generator=generator) * 0.1)
+
+    def deltas():
+        return {
+            name: float(p.detach().abs().sum())
+            for name, p in model.named_parameters()
+            if name.startswith("vocabulary.") and "delta" in name
+        }
+
+    def others():
+        return {
+            name: float(p.detach().abs().sum())
+            for name, p in model.named_parameters()
+            if not (name.startswith("vocabulary.") and "delta" in name)
+        }
+
+    before_delta, before_other = deltas(), others()
+    assert before_delta and all(v > 0 for v in before_delta.values())
+
+    n_reset = phase2_mod.reset_delta(model)
+
+    assert n_reset == len(before_delta)
+    assert all(v == 0.0 for v in deltas().values())
+    assert others() == before_other, "only the per-gene vectors are reset"
+
+    # And it is what §4.1 says delta starts at, so the reset is a return to
+    # the specified initial condition rather than an invention.
+    assert all(v == 0.0 for v in deltas().values())

@@ -82,7 +82,7 @@ phase2:
   cells_per_draw: 16
   # Left on: the question here is about Phase 1, and changing two things at
   # once would put us back where the last two readings were.
-  warm_start: true
+  warm_start: full
 
 rehearsal:
   max_targets: 100
