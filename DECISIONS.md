@@ -1507,3 +1507,39 @@ setting disappeared between one run and the next.
 resolved config the run actually used, which is what settled what the
 6,000-step run had been given after the file itself had changed underneath
 it. Grepping the config *file* answers a different question.
+
+### D79. The warm start itself is the damage, not the forgetting guard
+
+**Measured**, `configs/server_isolate.yaml`: L2-SP and replay off for every
+arm, 6,000 steps each, budgets equal by construction.
+
+| arm | best `pert ÷ no-change` | pert pearson | map pearson | `delta ÷ no-change` |
+|---|---|---|---|---|
+| `core_unfrozen` (warm) | 0.9893 | 0.124 | 0.007 | 0.998 |
+| `core_frozen` (warm) | 0.9878 | 0.139 | 0.029 | 0.994 |
+| **`core_scratch`** (cold) | **0.7955** | **0.452** | **0.122** | **0.830** |
+
+`phase1_contribution` = **−0.194**, against −0.274 with the guards on. So
+removing L2-SP and replay recovered about **0.09** of a **0.27** gap. The
+remaining **0.19 is the initialization**, and it is the larger part by far.
+
+Whether the core is frozen barely matters once it is warm-started (0.9878
+against 0.9893): the LINCS initialization dominates both.
+
+**A prediction I made and got wrong.** I said that if L2-SP had been
+*stabilising* `core_unfrozen`, removing the anchor would make its swing
+worse. It made it much better — `worst / best` went from **2.28x to 1.03x**.
+L2-SP and replay were *causing* the instability, not restraining it: an
+anchor pulling toward Phase 1's weights while the data pulls away is a
+tug-of-war, and replay alternating objectives every fourth step is the other
+half of it.
+
+**What follows.** `phase2.warm_start: false` is now justified by measurement
+rather than by argument. It makes the shipped model two-phase, which is a
+deviation from CLAUDE.md §4's design and is recorded as one — Phase 1 still
+trains and is still scored, it simply stops feeding Phase 2.
+
+**What is still unknown, and cheap to find out.** Whether Phase 1 learns
+anything on LINCS at all. If its own held-out validation sits at no-change,
+then its core is a badly conditioned random initialization and every result
+above follows immediately. `runs/server/phase1/metrics.json` answers it.
