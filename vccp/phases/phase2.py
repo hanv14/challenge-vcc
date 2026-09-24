@@ -44,6 +44,10 @@ from ..train.loop import masked_mse, pearson, sample_output_genes
 
 PHASE = "phase2"
 ADAPTER = "phase2"
+#: The two ways the perturbation module can be supervised (§4.5 and
+#: PLAN_PERCELL.md §3). `POOLED` is a setting, not a code fork: it stays in
+#: the codebase as the control arm the per-cell mode is measured against.
+POOLED, PERCELL = "pooled", "percell"
 #: The arm trained with no Phase 1 input at all (PLAN_PERCELL.md §7.6).
 SCRATCH_ARM = "core_scratch"
 CONTROL, PERTURBED = "control", "perturbed"
@@ -217,17 +221,20 @@ def draw_cells(
     and nothing else — the K562 genome-wide file is ~2 million cells on the
     server (§3.3).
 
-    `rows` names exactly which control cells to read instead of sampling
-    them. `_score_delta` needs it: two control draws sampled independently
-    overlap, and two overlapping means differ by less than sampling noise, so
-    a floor estimated from them would be too low and the mapping would look
-    better than it is.
+    `rows` names exactly which cells to read instead of sampling them, for
+    either state. Two callers need it. `_score_delta` estimates its noise
+    floor from two control draws, and two draws sampled independently overlap
+    — two overlapping means differ by less than sampling noise, so the floor
+    would come out too low and the mapping would look better than it is. The
+    coupling diagnostic needs it because it has to know *which* cells it drew
+    in order to look up their library sizes.
     """
-    if target is None:
-        if rows is None:
-            rows = rng.choice(
-                tensors.control_rows, min(n, tensors.control_rows.size), replace=False
-            )
+    if rows is not None:
+        panel, rest = tensors.context.reader.get(rows)
+    elif target is None:
+        rows = rng.choice(
+            tensors.control_rows, min(n, tensors.control_rows.size), replace=False
+        )
         panel, rest = tensors.context.reader.get(rows)
     else:
         panel, rest = tensors.context.cells_for_target(target, n, rng)
@@ -309,6 +316,121 @@ def _delta_loss(predicted_change: torch.Tensor, observed_change: torch.Tensor) -
     return ((predicted_change - observed_change) ** 2).mean() / max(scale, 1e-6)
 
 
+def _no_change_ratio(
+    predicted: torch.Tensor, truth: torch.Tensor, baseline: torch.Tensor
+) -> torch.Tensor:
+    """Squared error against what predicting `baseline` would have cost.
+
+    In per-cell mode "no change" means handing back the control cell
+    untouched, so the baseline is the control cell rather than a pseudobulk
+    of zeros. Below 1.0 means the module is doing something.
+    """
+    scale = float(((baseline - truth) ** 2).mean())
+    return ((predicted - truth) ** 2).mean() / max(scale, 1e-6)
+
+
+def percell_losses(
+    model,
+    tensors: ContextTensors,
+    cfg: Config,
+    rng: np.random.Generator,
+    device: str,
+    gene_index,
+    output_idx: torch.Tensor,
+    positions: np.ndarray,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, dict[str, float]]:
+    """The per-cell perturbation loss and the per-pair delta, from one coupling.
+
+    A cell in, that cell perturbed out (PLAN_PERCELL.md §3). Replogle cannot
+    supply "that cell perturbed" — it is a destructive assay, so the control
+    and perturbed cells are different cells — and the OT coupling is what
+    constructs the missing target: for each control cell, the
+    coupling-weighted average of the perturbed cells it was matched to.
+
+    The same coupling pairs the cells, so it applies to their *rest* values
+    too. That is what makes the delta term per-pair here rather than by group
+    mean: recomputing a second coupling would both cost another Sinkhorn and
+    risk pairing the two halves of one cell differently.
+
+    Returns `(perturbation_loss, delta_loss, metrics)`, with `None` for the
+    losses when the screen has no target the vocabulary can condition on.
+    """
+    from ..train import ot
+
+    pool = tensors.pert_train_targets
+    if not pool:
+        return None, None, {}
+
+    chosen = rng.choice(
+        pool, min(cfg.phase2.ot_targets_per_step, len(pool)), replace=False
+    )
+    n_cells = cfg.phase2.ot_batch_cells
+
+    perturbation_losses, delta_losses, partners, drifts = [], [], [], []
+    for target in chosen:
+        control_panel, control_rest = draw_cells(tensors, None, n_cells, rng, device)
+        pert_panel, pert_rest = draw_cells(tensors, target, n_cells, rng, device)
+        if control_panel.shape[0] < 2 or pert_panel.shape[0] < 2:
+            continue
+
+        paired_panel, log_coupling = ot.paired_target(
+            control_panel,
+            pert_panel,
+            cfg.phase2.ot_epsilon,
+            iterations=cfg.phase2.ot_iterations,
+        )
+
+        target_idx = as_index(
+            [gene_index[target]] * int(control_panel.shape[0]), device
+        )
+        predicted_panel = predict_perturbed_panel(
+            model, tensors, control_panel, target_idx, cfg.phase2.pert_type
+        )
+        perturbation_losses.append(
+            _no_change_ratio(predicted_panel, paired_panel, control_panel)
+        )
+
+        # The delta term, per pair (§5). By default the decoder is fed the
+        # OT-paired *true* panel, so the term trains the mapping on changes
+        # without letting a bad perturbation prediction corrupt it;
+        # `delta_through_prediction` trains the composition end to end
+        # instead, which is what Phase 3 runs at inference.
+        source_panel = (
+            predicted_panel if cfg.phase2.delta_through_prediction else paired_panel
+        )
+        predicted_change = map_panel_to_rest(
+            model, tensors, source_panel, output_idx
+        ) - map_panel_to_rest(model, tensors, control_panel, output_idx)
+        paired_rest = ot.barycentric_target(log_coupling, pert_rest[:, positions])
+        delta_losses.append(
+            _delta_loss(predicted_change, paired_rest - control_rest[:, positions])
+        )
+
+        diagnostics = ot.coupling_diagnostics(log_coupling)
+        partners.append(diagnostics["effective_partners"])
+        drifts.append(diagnostics["marginal_drift"])
+
+    if not perturbation_losses:
+        return None, None, {}
+
+    perturbation_loss = torch.stack(perturbation_losses).mean()
+    delta_loss = torch.stack(delta_losses).mean()
+    return (
+        perturbation_loss,
+        delta_loss,
+        {
+            "pert_percell": float(perturbation_loss.detach()),
+            "map_delta": float(delta_loss.detach()),
+            # Where on the epsilon sweep the coupling actually landed, as
+            # opposed to where the config asked for it to land. If this sits
+            # at the batch size the coupling is uniform and the per-cell loss
+            # is the pooled loss under another name (PLAN_PERCELL.md §11).
+            "ot_effective_partners": float(np.mean(partners)),
+            "ot_marginal_drift": float(np.mean(drifts)),
+        },
+    )
+
+
 def make_step(model, contexts: dict[str, ContextTensors], cfg: Config, device: str, gene_index):
     """One training step: the mapping on both cell states, plus the
     perturbation module."""
@@ -332,74 +454,96 @@ def make_step(model, contexts: dict[str, ContextTensors], cfg: Config, device: s
         perturbed_loss = masked_mse(perturbed_predicted, pert_rest[:, positions])
         mapping_loss = 0.5 * (control_loss + perturbed_loss) / tensors.mapping_no_change
 
-        # The delta consistency term (PLAN_PERCELL.md §5). The two arms above
-        # share weights, but nothing has so far constrained the *difference*
-        # between them — and that difference is the only quantity the six
-        # official metrics ever score. Each arm's MSE is dominated by the
-        # baseline expression level, so a mapping can look healthy on both
-        # and still get the rest-gene change badly wrong.
+        # --- the perturbation module, and the delta term that rides with it ---
         #
-        # In pooled mode the two cell draws are independent, so the pairing
-        # is by group mean rather than per cell; under OT the coupling will
-        # pair the cells and this becomes a per-pair term (§5).
-        delta_loss = _delta_loss(
-            perturbed_predicted.mean(dim=0) - control_predicted.mean(dim=0),
-            pert_rest[:, positions].mean(dim=0) - control_rest[:, positions].mean(dim=0),
-        )
-
-        # --- the perturbation module ---
-        pool = tensors.pert_train_targets
-        if not pool:
-            # This screen has no target that is a challenge gene; the mapping
-            # still trains on it, the perturbation module cannot.
-            loss = (
-                cfg.phase2.loss_mapping * mapping_loss
-                + cfg.phase2.loss_delta * delta_loss
-                + model.regularization()
+        # The delta consistency term (PLAN_PERCELL.md §5): the two arms above
+        # share weights, but nothing else constrains the *difference* between
+        # them — and that difference is the only quantity the six official
+        # metrics ever score. Each arm's MSE is dominated by the baseline
+        # expression level, so a mapping can look healthy on both and still
+        # get the rest-gene change badly wrong.
+        #
+        # Which pairing supplies it depends on the mode. `pooled` has two
+        # independent cell draws and so can only pair by group mean;
+        # `percell` has the OT coupling, which pairs the cells themselves and
+        # therefore their rest values too.
+        if cfg.phase2.perturbation_mode == PERCELL:
+            perturbation_loss, delta_loss, extra = percell_losses(
+                model, tensors, cfg, rng, device, gene_index, output_idx, positions
             )
-            return loss, {
-                "map_control": float(control_loss.detach()),
-                "map_perturbed": float(perturbed_loss.detach()),
-                "map_delta": float(delta_loss.detach()),
-            }
-        chosen = rng.choice(pool, min(cfg.phase2.batch_size, len(pool)), replace=False)
-        target_idx = as_index([gene_index[t] for t in chosen], device)
-        baseline = tensors.control_panel.unsqueeze(0).expand(len(chosen), -1)
-        predicted = predict_perturbed_panel(
-            model, tensors, baseline, target_idx, cfg.phase2.pert_type
-        )
+            if delta_loss is None:
+                delta_loss = _delta_loss(
+                    perturbed_predicted.mean(dim=0) - control_predicted.mean(dim=0),
+                    pert_rest[:, positions].mean(dim=0)
+                    - control_rest[:, positions].mean(dim=0),
+                )
+        else:
+            delta_loss = _delta_loss(
+                perturbed_predicted.mean(dim=0) - control_predicted.mean(dim=0),
+                pert_rest[:, positions].mean(dim=0)
+                - control_rest[:, positions].mean(dim=0),
+            )
+            perturbation_loss, extra = _pooled_perturbation_loss(
+                model, tensors, cfg, rng, device, gene_index
+            )
 
-        bulk_truth = torch.stack([tensors.pseudobulk[t] for t in chosen])
-        bulk_loss = masked_mse(predicted, bulk_truth)
-
-        # The same quantity as the cells actually deliver it, which is what
-        # Phase 3 will be scored on.
-        cell_means = torch.stack(
-            [
-                draw_cells(tensors, t, cfg.phase2.cells_per_draw, rng, device)[0].mean(dim=0)
-                for t in chosen
-            ]
-        )
-        cell_loss = masked_mse(predicted, cell_means)
-        perturbation_loss = (
-            0.5 * (bulk_loss + cell_loss) / tensors.perturbation_no_change
-        )
-
-        loss = (
-            cfg.phase2.loss_mapping * mapping_loss
-            + cfg.phase2.loss_delta * delta_loss
-            + cfg.phase2.loss_perturbation * perturbation_loss
-            + model.regularization()
-        )
-        return loss, {
+        metrics = {
             "map_control": float(control_loss.detach()),
             "map_perturbed": float(perturbed_loss.detach()),
             "map_delta": float(delta_loss.detach()),
-            "pert_bulk": float(bulk_loss.detach()),
-            "pert_cells": float(cell_loss.detach()),
+            **extra,
         }
+        loss = (
+            cfg.phase2.loss_mapping * mapping_loss
+            + cfg.phase2.loss_delta * delta_loss
+            + model.regularization()
+        )
+        if perturbation_loss is not None:
+            loss = loss + cfg.phase2.loss_perturbation * perturbation_loss
+        return loss, metrics
 
     return step
+
+
+def _pooled_perturbation_loss(
+    model,
+    tensors: ContextTensors,
+    cfg: Config,
+    rng: np.random.Generator,
+    device: str,
+    gene_index,
+) -> tuple[torch.Tensor | None, dict[str, float]]:
+    """One mean effect per target: control pseudobulk in, pseudobulk out."""
+    pool = tensors.pert_train_targets
+    if not pool:
+        # This screen has no target that is a challenge gene; the mapping
+        # still trains on it, the perturbation module cannot.
+        return None, {}
+
+    chosen = rng.choice(pool, min(cfg.phase2.batch_size, len(pool)), replace=False)
+    target_idx = as_index([gene_index[t] for t in chosen], device)
+    baseline = tensors.control_panel.unsqueeze(0).expand(len(chosen), -1)
+    predicted = predict_perturbed_panel(
+        model, tensors, baseline, target_idx, cfg.phase2.pert_type
+    )
+
+    bulk_truth = torch.stack([tensors.pseudobulk[t] for t in chosen])
+    bulk_loss = masked_mse(predicted, bulk_truth)
+
+    # The same quantity as the cells actually deliver it, which is what
+    # Phase 3 will be scored on.
+    cell_means = torch.stack(
+        [
+            draw_cells(tensors, t, cfg.phase2.cells_per_draw, rng, device)[0].mean(dim=0)
+            for t in chosen
+        ]
+    )
+    cell_loss = masked_mse(predicted, cell_means)
+    loss = 0.5 * (bulk_loss + cell_loss) / tensors.perturbation_no_change
+    return loss, {
+        "pert_bulk": float(bulk_loss.detach()),
+        "pert_cells": float(cell_loss.detach()),
+    }
 
 
 def evaluate(
@@ -464,6 +608,9 @@ def evaluate_per_context(
             )
 
             scores.update(_score_delta(model, tensors, cfg, device, rng, held_out))
+            scores.update(
+                _score_percell(model, tensors, cfg, device, rng, gene_index, held_out)
+            )
 
             # The perturbation module, on unseen targets — and on seen ones,
             # because the gap between the two is what says whether a poor
@@ -581,6 +728,78 @@ def _score_delta(
         # function of it, so a run that had to shrink it (a screen with few
         # control cells) reports a higher floor for that reason alone.
         "n_delta_cells_per_draw": float(n_cells),
+    }
+
+
+def _score_percell(
+    model,
+    tensors: ContextTensors,
+    cfg: Config,
+    device: str,
+    rng: np.random.Generator,
+    gene_index,
+    held_out: list[str],
+) -> dict[str, float]:
+    """The per-cell question, scored for **both** modes.
+
+    A cell in, that cell perturbed out, against the OT-paired truth. It is
+    measured whichever mode trained the model, because the A/B needs a number
+    both arms can be read on: `pert_mse_ratio_to_no_change` beside it asks
+    the pooled question of both arms, and this asks the per-cell question of
+    both. An arm that wins one and loses the other is saying something; two
+    arms each scored only on their own objective would say nothing.
+
+    `ot_effective_partners` comes back with it because a coupling that turned
+    out uniform makes this metric identical to the pooled one, and that has
+    to be visible rather than inferred (PLAN_PERCELL.md §11).
+    """
+    from ..train import ot
+
+    targets = [
+        t for t in held_out if t in tensors.pseudobulk and t in gene_index
+    ][: cfg.phase2.delta_eval_targets]
+    if not targets:
+        return {}
+
+    n_cells = cfg.phase2.ot_batch_cells
+    errors, baselines, partners, scored = [], [], [], 0
+
+    with torch.no_grad():
+        for target in targets:
+            control_panel, _ = draw_cells(tensors, None, n_cells, rng, device)
+            pert_panel, _ = draw_cells(tensors, target, n_cells, rng, device)
+            if control_panel.shape[0] < 2 or pert_panel.shape[0] < 2:
+                continue
+
+            paired, log_coupling = ot.paired_target(
+                control_panel,
+                pert_panel,
+                cfg.phase2.ot_epsilon,
+                iterations=cfg.phase2.ot_iterations,
+            )
+            target_idx = as_index(
+                [gene_index[target]] * int(control_panel.shape[0]), device
+            )
+            predicted = predict_perturbed_panel(
+                model, tensors, control_panel, target_idx, cfg.phase2.pert_type
+            )
+            errors.append(float(((predicted - paired) ** 2).mean()))
+            baselines.append(float(((control_panel - paired) ** 2).mean()))
+            partners.append(ot.coupling_diagnostics(log_coupling)["effective_partners"])
+            scored += 1
+
+    if not scored:
+        return {}
+
+    mse = float(np.mean(errors))
+    no_change = float(np.mean(baselines))
+    return {
+        "pert_percell_mse": mse,
+        "pert_percell_no_change": no_change,
+        "pert_percell_ratio_to_no_change": mse / max(no_change, 1e-9),
+        "n_percell_targets_scored": float(scored),
+        "ot_effective_partners": float(np.mean(partners)),
+        "ot_batch_cells": float(n_cells),
     }
 
 
@@ -779,6 +998,14 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         "phase": PHASE,
         "device": device,
         "main_arm": main_arm,
+        "perturbation_mode": cfg.phase2.perturbation_mode,
+        "ot": {
+            "epsilon": cfg.phase2.ot_epsilon,
+            "batch_cells": cfg.phase2.ot_batch_cells,
+            "targets_per_step": cfg.phase2.ot_targets_per_step,
+            "iterations": cfg.phase2.ot_iterations,
+            "delta_through_prediction": cfg.phase2.delta_through_prediction,
+        },
         "data": {
             name: {
                 "n_panel": t.n_panel,

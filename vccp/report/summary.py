@@ -395,8 +395,17 @@ PHASE2_COLUMNS = (
     # predictor could reach at these cell counts (PLAN_PERCELL.md §5).
     ("map_delta_ratio_to_no_change", "mapping change ÷ no change"),
     ("map_delta_noise_floor_ratio", "…its noise floor"),
+    # Both modes are scored on both questions, so an arm that wins one and
+    # loses the other is saying something (DECISIONS.md D60). The pooled
+    # question: control pseudobulk in, the target's pseudobulk out.
     ("pert_mse_ratio_to_no_change", "perturbation ÷ no change"),
     ("pert_pearson", "perturbation pearson"),
+    # The per-cell question: a cell in, its OT-paired truth out. Reported
+    # whichever mode trained the arm.
+    ("pert_percell_ratio_to_no_change", "per-cell ÷ no change"),
+    # Where the coupling actually landed. At the batch size it is uniform,
+    # and the two questions above are then the same measurement.
+    ("ot_effective_partners", "coupling partners"),
 )
 
 
@@ -420,6 +429,19 @@ def _phase_section(phase1: dict[str, Any], phase2: dict[str, Any]) -> str:
 
     if phase2:
         text += "### Phase 2 — Replogle, control and perturbed cells reported separately\n\n"
+        mode = phase2.get("perturbation_mode")
+        if mode:
+            settings = phase2.get("ot") or {}
+            text += (
+                f"Perturbation module trained in **`{mode}`** mode"
+                + (
+                    f" (ε {settings.get('epsilon')} of the mean cost, "
+                    f"{settings.get('batch_cells')} cells a side, "
+                    f"{settings.get('targets_per_step')} targets per step).\n\n"
+                    if mode == "percell"
+                    else ".\n\n"
+                )
+            )
         rows = []
         for arm, entry in sorted((phase2.get("arms") or {}).items()):
             validation = entry.get("validation", {})

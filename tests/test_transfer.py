@@ -20,6 +20,7 @@ import torch
 
 from vccp.config import ConfigError, Phase2, Train
 from vccp.models.core import as_index, build_model, perturbation_types
+from vccp.train import ot
 from vccp.phases import phase2 as phase2_mod
 
 
@@ -245,3 +246,112 @@ def test_the_contribution_says_so_when_it_cannot_be_measured():
     report = phase2_mod._phase1_contribution({"core_unfrozen": {"validation": {}}})
     assert report["measured"] is False
     assert "core_scratch" in report["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# per-cell mode (§3) and the coupling premise (§11)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_modes_are_a_setting_not_a_fork():
+    """`pooled` stays reachable, because it is the control arm the per-cell
+    mode has to beat before it becomes the default."""
+    from vccp.config import Phase2
+
+    assert Phase2().perturbation_mode == phase2_mod.POOLED
+    assert {phase2_mod.POOLED, phase2_mod.PERCELL} == {"pooled", "percell"}
+    with pytest.raises(ConfigError, match="perturbation_mode"):
+        Phase2(perturbation_mode="per-cell").validate()
+    with pytest.raises(ConfigError, match="ot_epsilon"):
+        Phase2(ot_epsilon=0.0).validate()
+    with pytest.raises(ConfigError, match="ot_batch_cells"):
+        Phase2(ot_batch_cells=1).validate()
+    with pytest.raises(ConfigError, match="ot_targets_per_step"):
+        Phase2(ot_targets_per_step=0).validate()
+    with pytest.raises(ConfigError, match="ot_iterations"):
+        Phase2(ot_iterations=0).validate()
+
+
+def test_the_no_change_baseline_is_the_control_cell_itself():
+    """In per-cell mode "no change" hands back the cell, not a zero vector."""
+    control = torch.randn(8, 5, generator=torch.Generator().manual_seed(2))
+    truth = control + 0.4
+
+    assert float(phase2_mod._no_change_ratio(control, truth, control)) == pytest.approx(1.0)
+    assert float(phase2_mod._no_change_ratio(truth, truth, control)) == pytest.approx(0.0)
+    halfway = control + 0.2
+    assert float(phase2_mod._no_change_ratio(halfway, truth, control)) == pytest.approx(0.25)
+
+
+def test_the_coupling_null_spread_is_the_value_that_means_nothing():
+    """The reference the measured cost spread is read against."""
+    from vccp.diagnostics import coupling
+
+    # Two independent standard-normal cells differ by N(0, 2) per gene, so
+    # the per-gene squared difference has mean 2 and variance 8; averaging
+    # over G genes divides that variance by G.
+    generator = torch.Generator().manual_seed(7)
+    for n_genes in (64, 955):
+        a = torch.randn(96, n_genes, generator=generator)
+        b = torch.randn(96, n_genes, generator=generator)
+        cost = ot.squared_cost(a, b)
+        measured = float(cost.std()) / float(cost.mean())
+        assert measured == pytest.approx(coupling.null_cost_spread(n_genes), rel=0.25)
+
+    # More genes concentrate the distances further, which is the risk.
+    assert coupling.null_cost_spread(955) < coupling.null_cost_spread(64)
+
+
+def test_target_spread_is_zero_when_every_cell_gets_the_same_target():
+    """The decisive number: zero means the per-cell loss is the pooled loss."""
+    from vccp.diagnostics import coupling
+
+    values = torch.randn(10, 6, generator=torch.Generator().manual_seed(3))
+    uniform = ot.sinkhorn_log(torch.zeros(10, 10), 1.0)
+    assert coupling.target_spread(uniform, values) == pytest.approx(0.0, abs=1e-6)
+
+    # A hard one-to-one coupling hands each source cell a distinct real cell,
+    # so the targets vary exactly as much as the cells do.
+    identity = torch.log(torch.eye(10).clamp_min(1e-30))
+    assert coupling.target_spread(identity, values) == pytest.approx(1.0, rel=1e-4)
+
+
+def test_the_verdict_calls_a_degenerate_coupling_what_it_is():
+    from vccp.diagnostics import coupling
+
+    def arms(spread, library, residual=0.9):
+        return {
+            coupling.PERTURBED_ARM: {
+                "per_epsilon": {
+                    "0.005": {
+                        "target_spread": spread,
+                        "library_size_pearson": library,
+                        "residual_reduction": residual,
+                        "effective_partners": 3.2,
+                    },
+                    "inf": {
+                        "target_spread": 0.0,
+                        "library_size_pearson": float("nan"),
+                        "residual_reduction": 1.0,
+                        "effective_partners": 256.0,
+                    },
+                }
+            }
+        }
+
+    assert coupling.verdict(arms(0.001, 0.8))[0] == "degenerate"
+    assert coupling.verdict(arms(0.5, 0.01))[0] == "pairs-on-noise"
+    assert coupling.verdict(arms(0.5, 0.8))[0] == "informative"
+    assert coupling.verdict({})[0] == "not-measured"
+    # A NaN correlation must not read as "informative" by slipping past a
+    # comparison, which is what every NaN comparison does.
+    assert coupling.verdict(arms(0.5, float("nan")))[0] == "pairs-on-noise"
+
+    # Pairing that adds more noise than it removes stays "informative" — the
+    # loss's minimum is unmoved by noise in its target — but the reading has
+    # to say so rather than let the number pass unremarked.
+    _, quiet = coupling.verdict(arms(0.5, 0.8, residual=0.9))
+    verdict, loud = coupling.verdict(arms(0.5, 0.8, residual=1.35))
+    assert verdict == "informative"
+    assert "1.35" in loud and "does not reduce the residual" in loud
+    assert "does not reduce the residual" not in quiet

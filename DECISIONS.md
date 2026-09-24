@@ -996,3 +996,113 @@ a small positive contribution is a stronger result than it looks.
 
 **Alternative.** Give the scratch arm replay too, to equalize the budgets.
 That would put back through the side door exactly what the ablation removes.
+
+## P3 — per-cell supervision
+
+### D58. The coupling premise is checked on real cells before it is built on
+
+**Decision.** `vccp/diagnostics/coupling.py` and `scripts/coupling_check.py`
+measure, on real drawn cells and before any per-cell training,
+whether the OT coupling carries information. Four numbers per `epsilon`,
+with a control-against-control null arm, and a verdict of `informative`,
+`degenerate` or `pairs-on-noise`.
+
+**Reason.** P1 measured the pairwise costs between independent 955-dimensional
+noise vectors at 1.69–2.47 around a mean of 2.04. If real cells concentrated
+like that, every coupling would be uniform whatever `epsilon` said, the
+barycentric target would collapse to the perturbed pseudobulk, and per-cell
+training would *be* pooled training — silently, because the two are
+indistinguishable from the outside. That would cost a server cycle to notice
+and a second one to diagnose.
+
+**The decisive number is `target_spread`**, not `cost_spread`: how much the
+barycentric targets vary between control cells, against how much the
+perturbed cells themselves vary. It is what the training step actually sees.
+`library_size_pearson` is the second: §4 claims the coupling pairs like with
+like on sequencing depth and cell state, so a pairing that does not track
+depth is not the mechanism the method assumes.
+
+**Result on `mini_data`** (K562_gwps, 256 cells a side, 716 panel genes):
+cost spread **0.246** against **0.053** for noise alone, `target_spread`
+**0.57** at `epsilon` 0.005, and `library_size_pearson` 0.54–0.74. Verdict
+`informative`. The concentration risk is real for noise and does not bite on
+real data.
+
+**One caveat the report does not hide.** The control-against-control null arm
+is nearly identical (spread 0.244, `target_spread` 0.52, pearson 0.60–0.81).
+That is expected — the coupling is built before any prediction, so it can only
+match on nuisance — but it means the method's value rests entirely on the
+argument that removing nuisance variance sharpens the residual, not on the
+coupling finding the perturbation itself.
+
+### D59. `perturbation_mode` defaults to `pooled` until the rehearsal says otherwise
+
+**Decision.** `phase2.perturbation_mode` selects `pooled` or `percell`, and
+the default stays `pooled` through P3 and P4. P5's rehearsal A/B decides
+whether it flips.
+
+**Reason.** The specification asks for a per-cell model and the user's intent
+is per-cell, but a default that has not been measured is a guess. `pooled` is
+the arm with a leaderboard number behind it, poor as that number is. The
+modes are a setting rather than a fork, so flipping the default after P5
+costs one line.
+
+### D60. Both modes are scored on both questions
+
+**Decision.** `evaluate_per_context` reports
+`pert_mse_ratio_to_no_change` (the pooled question: control pseudobulk in,
+target pseudobulk out) **and** `pert_percell_ratio_to_no_change` (the
+per-cell question: a cell in, its OT-paired truth out) for every arm,
+whichever mode trained it, with `ot_effective_partners` beside them.
+
+**Reason.** Two arms each scored only on their own objective say nothing
+about each other. An arm that wins one metric and loses the other is telling
+us something specific, and that is the reading P5 needs. `ot_effective_partners`
+is reported with them because a coupling that came out uniform makes the two
+metrics the same measurement, and that has to be visible rather than
+inferred.
+
+**Alternative.** Compare the two modes only on the rehearsal's leaderboard
+metrics. That stays the arbiter, but it arrives a cycle later and cannot say
+*why* an arm lost.
+
+### D61. `ot_epsilon` defaults to 0.02, because pairing below that adds more noise than it removes
+
+**Decision.** The default OT regularization is 0.02 of the batch's mean cost,
+not the 0.01 first proposed, and `coupling_check` reports
+`residual_reduction` so the trade-off is visible rather than assumed.
+
+**Reason.** §4 claims that pairing brings each control cell's target nearer to
+it, so the residual the model must explain is closer to the perturbation.
+Measured on real cells that claim fails at the concentrated end:
+
+| `epsilon` | effective partners | `target_spread` | `residual_reduction` |
+|---|---|---|---|
+| 0.005 | 3.2 | 0.57 | **1.35** |
+| 0.01 | 8.0 | 0.38 | **1.17** |
+| 0.02 | 34.6 | 0.15 | 0.98 |
+| 0.05 | 117.5 | 0.02 | 0.94 |
+
+A target averaged over three cells carries roughly a third of a cell's
+sampling noise, and that is more than the pairing removes — so at 0.005 the
+paired target sits 1.35x as far from its control cell as the pooled mean
+does. The control-against-control null shows the same curve, which confirms
+it is noise geometry rather than anything about perturbation.
+
+**The two wants pull opposite ways**, and that is now stated rather than
+discovered later: `target_spread` wants a small `epsilon`, since a large one
+hands every cell the same target and the per-cell loss becomes the pooled
+loss; `residual_reduction` wants a large one. 0.02 is where pairing measurably
+stops adding noise while the targets still vary. P5's sweep is what settles it.
+
+**This does not invalidate per-cell supervision**, and the report says why:
+the loss's minimizer is unaffected by noise in the target (the expected
+squared error against `true + noise` is still minimized at `true`), and the
+reason for the redesign is that the model should be *asked* a per-cell
+question, which §4.2 specifies and the pooled formulation never asks. But the
+variance-reduction argument in §4, taken alone, is not supported by this
+measurement, and the plan now says so.
+
+**Alternative.** Keep 0.01 and let the sweep find it. Cheap in code, but it
+would have spent a server cycle at a setting already measured to be adding
+noise.

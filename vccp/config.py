@@ -268,6 +268,50 @@ class Phase2:
     delta_eval_cells: int = 128
     #: Held-out targets the delta is scored over.
     delta_eval_targets: int = 8
+    #: How the perturbation module is supervised (PLAN_PERCELL.md §3).
+    #:
+    #: * `pooled` — one control pseudobulk in, the target's pseudobulk as
+    #:   truth. One mean effect per (context, target).
+    #: * `percell` — a **cell** in, that cell perturbed out, with the truth
+    #:   built by optimal transport between a drawn control batch and a drawn
+    #:   perturbed batch.
+    #:
+    #: The default stays `pooled` until the rehearsal measures which wins
+    #: (P5): the specification asks for per-cell, but a default that has not
+    #: been measured is a guess, and `pooled` is the arm with a leaderboard
+    #: number behind it.
+    perturbation_mode: str = "pooled"
+    #: OT regularization, as a **fraction of the batch's mean cost**
+    #: (DECISIONS.md D52). The pooled-to-hard transition sits between 0.005
+    #: and 0.05; `inf` recovers the pooled target exactly.
+    #:
+    #: 0.02 rather than something smaller because two measured quantities
+    #: pull opposite ways (DECISIONS.md D61). A small value gives each cell a
+    #: distinct target, which is the point; but a target averaged over few
+    #: cells carries its own sampling noise, and below about 0.02 that noise
+    #: exceeds what the pairing removed — the paired target ends up *further*
+    #: from its control cell than the pooled mean is. 0.02 is where the
+    #: coupling measurably stops adding noise while still giving the targets
+    #: real per-cell variation. P5 sweeps it.
+    ot_epsilon: float = 0.02
+    #: Cells drawn per side, per target, for the coupling. The main cost and
+    #: memory knob of `percell` mode: the perturbation module sees
+    #: `ot_batch_cells x ot_targets_per_step` rows per step where `pooled`
+    #: sees `batch_size`.
+    ot_batch_cells: int = 64
+    #: Targets per step in `percell` mode. Lower than `pooled`'s
+    #: `batch_size`, because each target now costs a coupling and a batch of
+    #: cells rather than one pseudobulk row.
+    ot_targets_per_step: int = 2
+    #: Sinkhorn iterations. A ceiling: the solver stops once the coupling's
+    #: rows converge, which takes a handful of iterations at `ot_epsilon`
+    #: 0.05 and a few dozen at 0.01.
+    ot_iterations: int = 200
+    #: Feed the delta term's decoder the model's *predicted* perturbed panel
+    #: rather than the OT-paired true one (PLAN_PERCELL.md §5). Off by
+    #: default: the true panel trains the mapping on changes without letting
+    #: a bad perturbation prediction corrupt it.
+    delta_through_prediction: bool = False
     #: Replogle is CRISPR interference, as the challenge is — the two share
     #: a type row, which is the transfer this vocabulary exists to allow.
     pert_type: str = "crispri"
@@ -285,6 +329,22 @@ class Phase2:
             raise ConfigError("phase2.delta_eval_cells must be at least 2")
         if self.delta_eval_targets < 1:
             raise ConfigError("phase2.delta_eval_targets must be at least 1")
+        if self.perturbation_mode not in ("pooled", "percell"):
+            raise ConfigError(
+                "phase2.perturbation_mode must be 'pooled' or 'percell', got "
+                f"{self.perturbation_mode!r}"
+            )
+        if not self.ot_epsilon > 0:
+            raise ConfigError(
+                "phase2.ot_epsilon must be positive; the hard-assignment limit is "
+                "approached with a small positive value, not with zero"
+            )
+        if self.ot_batch_cells < 2:
+            raise ConfigError("phase2.ot_batch_cells must be at least 2")
+        if self.ot_targets_per_step < 1:
+            raise ConfigError("phase2.ot_targets_per_step must be at least 1")
+        if self.ot_iterations < 1:
+            raise ConfigError("phase2.ot_iterations must be at least 1")
 
 
 def _check_phase(name: str, steps: int, batch_size: int, val_fraction: float) -> None:

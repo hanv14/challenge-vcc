@@ -1,8 +1,9 @@
 # Per-cell perturbation module — design
 
-**Status: agreed and scheduled (§14). P0 answered `can-fit` on `mini_data`
-and on the server; P1 landed (`vccp/train/ot.py`); P2 landed (the delta term,
-the type vocabulary, the `core_scratch` arm).**
+**Status: agreed and scheduled (§14). P0 `can-fit` on `mini_data` and on the
+server; P1 landed (`vccp/train/ot.py`); P2 landed (the delta term, the type
+vocabulary, the `core_scratch` arm); P3 landed (`perturbation_mode: percell`,
+the per-pair delta, and the coupling premise check that gated it).**
 
 The current perturbation module predicts one mean effect per (context,
 target). This replaces it with one that maps **a cell** to **that cell
@@ -199,14 +200,45 @@ assignment under that noise is close to arbitrary, and an L2 loss against an
 arbitrarily chosen single cell fits noise. The barycentric average is the
 variance-reduced version of the same idea.
 
-### Why matching on "nuisance" is the point
+### Why matching on "nuisance" is the point — and what P3 measured
 
 The cost is dominated by sequencing depth and cell cycle, not by the
-perturbation. That is the mechanism, not a flaw: pairing like with like on
-those factors means the residual difference between paired cells is closer
-to the perturbation than the difference between a random control and a
-random perturbed cell. This is what CellOT and its relatives exploit, and it
-is precisely what pooling throws away.
+perturbation. That is meant to be the mechanism, not a flaw: pairing like
+with like on those factors should mean the residual difference between
+paired cells is closer to the perturbation than the difference between a
+random control and a random perturbed cell. This is what CellOT and its
+relatives exploit, and it is what pooling throws away.
+
+**P3 measured it, and the claim does not hold at the concentrated end.**
+`residual_reduction` is `E‖T_i − c_i‖² ÷ E‖pooled mean − c_i‖²`, so below 1
+means pairing brought the target nearer:
+
+| ε | effective partners | `target_spread` | `residual_reduction` |
+|---|---|---|---|
+| 0.005 | 3.2 | 0.57 | **1.35** |
+| 0.01 | 8.0 | 0.38 | **1.17** |
+| 0.02 | 34.6 | 0.15 | 0.98 |
+| 0.05 | 117.5 | 0.02 | 0.94 |
+
+A target averaged over three cells carries about a third of a cell's
+sampling noise, and that is more than the pairing removes. The
+control-against-control null traces the same curve, so this is noise
+geometry, not anything about perturbation.
+
+**The two wants pull opposite ways.** `target_spread` wants a small ε — a
+large one hands every cell the same target and the per-cell loss becomes the
+pooled loss. `residual_reduction` wants a large one. `phase2.ot_epsilon`
+therefore defaults to **0.02**, where pairing measurably stops adding noise
+while the targets still vary, and P5's sweep settles it (DECISIONS.md D61).
+
+**Why this does not sink the redesign.** Noise in the target inflates the
+loss without moving its minimum — the expected squared error against
+`true + noise` is still minimized at `true` — and the reason for per-cell
+supervision is that the model should be *asked* a per-cell question, which
+§4.2 specifies and the pooled formulation never asks. But the
+variance-reduction argument above, taken on its own, is not supported by
+this measurement, and it should not be offered at the defense as though it
+were.
 
 ### ε spans the whole design space
 
@@ -610,21 +642,38 @@ reproducible everywhere else.)
   exposed the current failure.
 * **ε is hard to set.** Mitigated by it spanning the pooled formulation at
   one end; the rehearsal sweeps it.
-* **Distances concentrate, and the coupling carries no information.** The
-  most serious risk in this document, and P1 found it. In 955 dimensions the
-  pairwise costs measured above span 1.69 to 2.47 around a mean of 2.04 —
-  on *independent noise*, every control cell is nearly equidistant from every
-  perturbed cell, and a coupling built on such a cost is uniform whatever
-  `epsilon` says. OT would then degenerate into exactly the pooled objective
-  it is meant to replace, and would do so silently.
-  Real cells are not independent noise: they differ in depth and cell state,
-  which is the structure the pairing exists to exploit. But that is an
-  expectation, not a measurement. `coupling_diagnostics` therefore reports
-  **`cost_spread`** (the cost's standard deviation over its mean) alongside
-  `effective_partners`, and P3's first output is those two numbers on real
-  drawn cells. A spread near zero there means the premise fails and OT should
-  be abandoned rather than tuned — that reading is cheap and it comes before
-  any training.
+* **~~Distances concentrate, and the coupling carries no information.~~**
+  **Measured in P3 and the premise holds.** This was the most serious risk in
+  the document. P1 found that in 955 dimensions the pairwise costs between
+  *independent noise* vectors span 1.69 to 2.47 around a mean of 2.04 — every
+  control cell nearly equidistant from every perturbed one, a uniform
+  coupling whatever `epsilon` says, and OT silently degenerating into the
+  pooled objective it exists to replace.
+
+  `scripts/coupling_check.py` asked the question on real cells before any
+  training was built on the answer. On `mini_data` (K562_gwps, 256 cells a
+  side, 716 panel genes):
+
+  | | cost spread | noise alone | `target_spread` @ ε 0.005 | library r |
+  |---|---|---|---|---|
+  | control vs perturbed | **0.246** | 0.053 | **0.57** | 0.54–0.74 |
+  | control vs control (null) | 0.244 | 0.053 | 0.52 | 0.60–0.81 |
+
+  Real cells carry about five times the cost spread that noise would give,
+  the barycentric targets vary 57% as much as the perturbed cells themselves,
+  and the pairing tracks sequencing depth strongly — the mechanism §4 claims.
+  Verdict `informative`.
+
+  **The caveat the check also shows.** The control-against-control null is
+  nearly identical to the perturbed arm. That is expected — the coupling is
+  built before any prediction, so it can only match on nuisance — but it
+  means the method's value rests entirely on the argument that removing
+  nuisance variance sharpens the residual, not on the coupling finding the
+  perturbation. Worth running on the server before P5:
+
+  ```bash
+  python scripts/coupling_check.py --config configs/server.yaml
+  ```
 * **The coupling matches on depth and the residual is depth.** This is the
   intended mechanism, but if library size dominates completely the module
   may learn a depth correction and nothing else. Diagnostic: the correlation
@@ -721,7 +770,7 @@ means one server run answers both transfer questions.
 | **P0** | capacity check on 8 targets | ✅ `can-fit` on mini **and** on the server (§10) |
 | **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; marginals uniform) | ✅ 16 tests green; ε made relative and the grid revised (§4) |
 | **P2** | the delta term, group-mean form, pooled mode; `core_scratch` arm; type vocabulary | ✅ Phase 2 reports `map_delta_ratio_to_no_change` with its noise floor, and `phase1_contribution` per metric |
-| **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | `cost_spread` and `effective_partners` on real drawn cells **first** (§11), then the training ratio for both modes |
+| **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | ✅ premise checked on real cells first — `informative` (§11); both modes scored on both questions |
 | **P4** | per-cell prediction and generator | `all` green on mini, runtime and memory measured |
 | **P5** | rehearsal A/B, ε swept, per-assay scale | a table of leaderboard-scale numbers, both modes |
 | **P6** | server run, submission | a leaderboard number to compare against −0.131 |

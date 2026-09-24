@@ -212,6 +212,14 @@ learning at all, before any of the above is worth looking at:
   favours `core_scratch`, so a small positive number is a stronger result
   than it looks.
 
+**`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
+run — whether the OT pairing carries information on this data at all. Read
+`target_spread` (how much the per-cell targets vary; zero means the per-cell
+loss is the pooled loss under another name) against `residual_reduction`
+(whether pairing brings each target nearer its control cell; above 1 means
+the pairing adds more sampling noise than it removes). The two pull opposite
+ways, which is why `phase2.ot_epsilon` is swept.
+
 **`reports/summary.md`** — everything above as tables and figures, for the
 proposal defense. `reports/figures/*.png` are drawn to be legible on a
 projector.
@@ -274,6 +282,28 @@ reports/summary.md             the results summary
 reports/figures/*.png          its figures
 checklist.json                 CLAUDE.md §4.8, item by item
 ```
+
+---
+
+## Diagnostics you can run on their own
+
+Neither trains anything that the pipeline keeps, and neither writes a
+checkpoint. Both take the same `--config` as everything else.
+
+```bash
+# Can the perturbation module fit a handful of targets it may memorize?
+# Exits non-zero unless the verdict is can-fit.
+python scripts/capacity_check.py --config configs/server.yaml --targets 8 --steps 2000
+
+# Does the OT coupling carry information on real cells, or do distances
+# concentrate until every pairing is uniform? Exits non-zero on a verdict of
+# degenerate or pairs-on-noise.
+python scripts/coupling_check.py --config configs/server.yaml
+```
+
+Run the coupling check before trusting `phase2.perturbation_mode: percell`
+on a new dataset: a degenerate coupling makes per-cell training identical to
+pooled training, and the two are indistinguishable from their curves.
 
 ---
 
