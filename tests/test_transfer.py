@@ -852,3 +852,28 @@ def test_the_contribution_report_says_whether_the_arms_started_together():
     # The improvement is still reported — it is the reading that is qualified,
     # exactly as with the unequal step budgets.
     assert mismatched["improvement"]
+
+
+def test_the_summary_names_an_arm_that_learned_and_lost_it():
+    """The one thing the arm table cannot show, because it reads each arm at
+    its best: that the best was a moment the run passed through (D85)."""
+    from vccp.report import summary as summary_mod
+
+    text = summary_mod._phase_section(
+        {},
+        {
+            "main_arm": "core_unfrozen",
+            "arms": {
+                "core_unfrozen": {
+                    "validation": {"pert_mse_ratio_to_no_change": 0.8171},
+                    "validation_final": {"pert_mse_ratio_to_no_change": 1.0013},
+                    "training": {"selected_on": "pert_mse_ratio_to_no_change"},
+                    "best_step": 3000,
+                    "signal_retained": -0.007,
+                },
+            },
+        },
+    )
+    assert "learned and then lost" in text
+    assert "3000" in text and "-1%" in text
+    assert "train.lr" in text

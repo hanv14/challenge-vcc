@@ -276,7 +276,19 @@ learning at all, before any of the above is worth looking at:
   Each run needs `priors/` and `checkpoints/` in its run directory (copy
   them from a finished run, as for any stage run on its own). Average the
   per-metric `improvement` across the three; the spread between them is the
-  error bar.
+  error bar. Three such runs put the gap at −0.091 ± 0.045 read at each arm's
+  best and +0.023 ± 0.022 read at the last step, i.e. **not measurable** —
+  see DECISIONS.md D86 before spending a cycle on it again.
+* `signal_retained`, per arm: the share of what the arm learned that its last
+  step still held. 1.0 ended at its best, 0.0 ended knowing no more than the
+  no-change baseline, **negative ended worse than that**. Below 0.5 the arm is
+  flagged and the summary tables it out. This is the reading
+  `divergence_final_over_best` cannot give: on a ratio against no change an
+  arm that gave back everything it learned still reads as 1.22x.
+* `weights_kept`, per arm: `best` or `final`. `train.checkpoint_selection`
+  defaults to `best`, so a phase saves the weights it measured as best rather
+  than whatever the last step produced — the checkpoint is what the next phase
+  inherits (D85). Set it to `final` to go back to the old behaviour.
 
 **`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
 run — whether the OT pairing carries information on this data at all. Read

@@ -64,6 +64,18 @@ class TrainResult:
     worst_value: float | None = None
     worst_step: int | None = None
     selected_on: str | None = None
+    #: The value the selected metric takes when the model predicts nothing,
+    #: when the caller knows it. Every Phase 2 selection metric is a ratio
+    #: against predicting no change, so that value is 1.0 — and on such a
+    #: metric `final / best` is the wrong scale. An arm that went 0.817 ->
+    #: 1.001 lost *everything* it had learned and still reads as 1.22x.
+    anchor: float | None = None
+    #: The weights at `best_step`, kept on CPU while training continues, and
+    #: loaded back into the model at the end when `keep_best` is on. Not in
+    #: `as_dict`: it is tens of megabytes of tensors, not a metric.
+    best_state: dict[str, Any] | None = field(default=None, repr=False)
+    #: Which of the two the model was left holding, "best" or "final".
+    restored: str = "final"
 
     def _ratio(self, value: float | None) -> float | None:
         best = self.best_metrics.get(self.selected_on) if self.selected_on else None
@@ -85,6 +97,32 @@ class TrainResult:
             return None
         return self._ratio(self.worst_value)
 
+    def _kept(self, value: float | None) -> float | None:
+        """The share of the distance from the anchor that `value` still holds."""
+        best = self.best_metrics.get(self.selected_on) if self.selected_on else None
+        if self.anchor is None or best is None or value is None:
+            return None
+        headroom = self.anchor - float(best)
+        if abs(headroom) < 1e-12:
+            return None
+        return float(self.anchor - float(value)) / headroom
+
+    @property
+    def signal_retained(self) -> float | None:
+        """How much of what the run learned is still there at the end.
+
+        1.0 means it ended at its best, 0.0 means it ended knowing nothing
+        more than the no-change baseline, and a negative number means it
+        ended *worse* than knowing nothing. This is the honest reading on a
+        metric anchored at a baseline; `final / best` is not.
+        """
+        return self._kept(self.final_metrics.get(self.selected_on) if self.selected_on else None)
+
+    @property
+    def signal_retained_worst(self) -> float | None:
+        """The same, at the run's worst moment rather than its last."""
+        return self._kept(self.worst_value)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "steps": self.steps,
@@ -94,8 +132,12 @@ class TrainResult:
             "worst_value": self.worst_value,
             "worst_step": self.worst_step,
             "selected_on": self.selected_on,
+            "anchor": self.anchor,
+            "restored": self.restored,
             "divergence_final_over_best": self.divergence,
             "instability_worst_over_best": self.instability,
+            "signal_retained": self.signal_retained,
+            "signal_retained_worst": self.signal_retained_worst,
             "replay": self.replay,
             "l2sp_drift": self.l2sp_drift,
             "curve": self.curve,
@@ -116,6 +158,8 @@ def run_training(
     l2sp: L2SP | None = None,
     select_on: str | None = None,
     select_lower_is_better: bool = True,
+    select_anchor: float | None = None,
+    keep_best: bool | None = None,
     evaluate: EvalFn | None = None,
     eval_every: int | None = None,
 ) -> TrainResult:
@@ -131,7 +175,9 @@ def run_training(
     use_amp = bool(cfg.train.amp) and device.startswith("cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-    result = TrainResult(steps=steps)
+    result = TrainResult(steps=steps, anchor=select_anchor)
+    if keep_best is None:
+        keep_best = getattr(cfg.train, "checkpoint_selection", "best") == "best"
     eval_every = eval_every or max(1, steps // 4)
     model.train()
 
@@ -191,6 +237,13 @@ def run_training(
                 if better:
                     result.best_metrics = dict(scores)
                     result.best_step = step
+                    if keep_best:
+                        # On CPU, so the copy does not sit in the GPU memory
+                        # the run is allowed (§1.2).
+                        result.best_state = {
+                            name: tensor.detach().to("cpu", copy=True)
+                            for name, tensor in model.state_dict().items()
+                        }
                 worse = result.worst_value is None or (
                     current > result.worst_value
                     if select_lower_is_better
@@ -211,6 +264,28 @@ def run_training(
             )
 
     model.eval()
+    # What the phase saves is what the next phase inherits, so leaving the
+    # model at whatever the last step happened to produce means shipping a
+    # model we measured and knew to be worse. On the server one arm went
+    # 0.817 at step 3000 to 1.001 at step 6000 — it learned, then forgot all
+    # of it, and the checkpoint kept was the amnesiac one (DECISIONS.md D85).
+    if keep_best and result.best_state is not None and result.best_step != steps:
+        model.load_state_dict({
+            name: tensor.to(device) for name, tensor in result.best_state.items()
+        })
+        result.restored = "best"
+        log.info(
+            "  %s: restored step %d, the best %s (%.4f) — the last step was %.4f",
+            phase,
+            result.best_step,
+            result.selected_on,
+            result.best_metrics.get(result.selected_on, float("nan")),
+            result.final_metrics.get(result.selected_on, float("nan")),
+        )
+    # Tens of megabytes that nothing downstream reads (§1.2: free big arrays
+    # as soon as the stage is done).
+    result.best_state = None
+
     if replay is not None:
         result.replay = replay.report()
     if l2sp is not None and l2sp.enabled:

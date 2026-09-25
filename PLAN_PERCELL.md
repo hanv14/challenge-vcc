@@ -543,6 +543,16 @@ run's `phase1_contribution` is decisive**: the three runs above give a gap of
 is the reading. Anything that would change §4's three-phase design needs at
 least three runs behind it.
 
+**Run, and the answer is "not measurable".** Three seeded repeats
+(`--seed 0/1/2`, all reporting `arms_share_initialization: true`) put the gap
+at −0.091 ± 0.045 read at each arm's best, and **+0.023 ± 0.022 read at the
+last step** — the sign depends on which step you read, and "best of four
+evaluations" favours the noisier arm, which is `core_scratch`. So §4's three
+phases stay (DECISIONS.md D86). What the repeats did surface is larger: every
+arm ends at the no-change line, and the arm that learns most (`pert_pearson`
+0.42 at step 3000) ends at 0.02. That is D85's subject, and the next server
+cycle belongs to it.
+
 ### 7.7 Change 4 — a cross-assay rehearsal variant
 
 Rehearsal variant 2 is cross-**context**, same assay. The cross-**assay**

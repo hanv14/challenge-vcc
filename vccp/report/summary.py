@@ -450,6 +450,31 @@ def _phase_section(phase1: dict[str, Any], phase2: dict[str, Any]) -> str:
         if rows:
             text += _table(["arm", *[label for _, label in PHASE2_COLUMNS]], rows)
 
+        # An arm that learned and then lost it is the single most important
+        # thing this table can hide, and `final / best` does not show it.
+        collapsed = [
+            (arm, entry)
+            for arm, entry in sorted((phase2.get("arms") or {}).items())
+            if entry.get("signal_retained") is not None
+            and entry["signal_retained"] < 0.5
+        ]
+        if collapsed:
+            text += "\n" + _table(
+                ["arm", "best step", "best", "last step", "still there at the end"],
+                [[arm, str(e.get("best_step")), _fmt(e.get("validation", {}).get(
+                    e.get("training", {}).get("selected_on"))),
+                  _fmt((e.get("validation_final") or {}).get(
+                      e.get("training", {}).get("selected_on"))),
+                  f"{100 * e['signal_retained']:.0f}%"]
+                 for arm, e in collapsed],
+            )
+            text += (
+                "\nThese arms learned and then lost most of it again. Their "
+                "checkpoints hold the best step rather than the last, so nothing was "
+                "thrown away — but an arm that swings this far has not converged, and "
+                "`train.lr` is the first thing to lower.\n"
+            )
+
         per_context = phase2.get("validation_per_context") or {}
         describes = phase2.get("validation_per_context_describes") or {}
         if per_context and describes and not describes.get("is_the_best_step", True):

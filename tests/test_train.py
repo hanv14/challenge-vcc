@@ -269,3 +269,101 @@ def test_pearson_is_nan_safe():
     assert np.isnan(pearson(np.zeros(5), np.arange(5)))
     assert pearson(np.arange(5), np.arange(5)) == pytest.approx(1.0)
     assert np.isnan(pearson(np.array([1.0]), np.array([1.0])))
+
+
+# --------------------------------------------------------------------------- #
+# what the phase keeps (DECISIONS.md D85)
+# --------------------------------------------------------------------------- #
+
+
+def scripted_eval(values, metric="ratio"):
+    """An evaluation that reads off a script, one value per call."""
+    remaining = list(values)
+
+    def evaluate():
+        return {metric: remaining.pop(0)}
+
+    return evaluate
+
+
+def test_the_weights_kept_are_the_best_ones_not_the_last(model, session_cfg):
+    """A phase's checkpoint is what the next phase inherits. A server arm
+    reached 0.817 at step 3000 and ended at 1.001 — keeping the last step
+    means shipping a model we measured and knew to be worse."""
+    set_trainable(model, "phase1", core=True, adapters=["phase1"])
+
+    result = run_training(
+        model,
+        toy_step(model),
+        steps=4,
+        cfg=session_cfg,
+        phase="phase1",
+        rng=np.random.default_rng(0),
+        device="cpu",
+        evaluate=scripted_eval([0.9, 0.5, 0.8, 1.0]),
+        eval_every=1,
+        select_on="ratio",
+        select_anchor=1.0,
+    )
+
+    assert result.best_step == 2
+    assert result.restored == "best"
+    assert result.final_metrics["ratio"] == 1.0
+    assert result.best_metrics["ratio"] == 0.5
+    # It learned and then lost all of it, which `final / best` calls 2.0x but
+    # which is really "nothing left": 1.0 is the no-change baseline.
+    assert result.signal_retained == pytest.approx(0.0)
+    assert result.instability == pytest.approx(2.0)
+    # The tensors are not carried around after the restore.
+    assert result.best_state is None
+
+
+def test_keeping_the_final_weights_stays_available(model, session_cfg):
+    """`final` remains selectable, because "what the last step produced" is
+    the honest answer when no validation was selected on."""
+    set_trainable(model, "phase1", core=True, adapters=["phase1"])
+
+    result = run_training(
+        model,
+        toy_step(model),
+        steps=2,
+        cfg=session_cfg,
+        phase="phase1",
+        rng=np.random.default_rng(0),
+        device="cpu",
+        evaluate=scripted_eval([0.5, 1.0]),
+        eval_every=1,
+        select_on="ratio",
+        keep_best=False,
+    )
+
+    assert result.best_step == 1
+    assert result.restored == "final"
+
+
+def test_signal_retained_reads_an_anchored_metric_the_way_it_means(session_cfg):
+    """`final / best` is the wrong scale for a ratio against no change. The
+    three measurements that mattered on the server, by hand."""
+    from vccp.train.loop import TrainResult
+
+    def retained(best, final):
+        return TrainResult(
+            steps=1,
+            selected_on="r",
+            anchor=1.0,
+            best_metrics={"r": best},
+            final_metrics={"r": final},
+        ).signal_retained
+
+    # The server arm that read as "not diverged" at 1.22x, just under the
+    # 1.25 threshold, having kept none of what it learned.
+    assert retained(0.8171, 1.0013) == pytest.approx(-0.007, abs=0.01)
+    assert retained(0.9171, 1.0642) == pytest.approx(-0.77, abs=0.01)
+    # Ending at the best keeps all of it; ending halfway keeps half.
+    assert retained(0.8, 0.8) == pytest.approx(1.0)
+    assert retained(0.8, 0.9) == pytest.approx(0.5)
+    # No anchor, no reading — the caller has to say what "nothing learned"
+    # scores before the share of it can mean anything.
+    assert TrainResult(
+        steps=1, selected_on="r", best_metrics={"r": 0.8}, final_metrics={"r": 0.9}
+    ).signal_retained is None

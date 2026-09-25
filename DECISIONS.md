@@ -1668,3 +1668,81 @@ why the table above is in this entry rather than a single run's number.
 **Consequence.** Numbers from before this change are not directly comparable
 with numbers after it, and `phase1_contribution` from any earlier run should
 be read as one draw from a distribution with sd ≈ 0.05, not as a measurement.
+
+### D85. A phase keeps the weights it measured as best, not the last ones
+
+**Decision.** `train.checkpoint_selection` (default `best`). A phase that
+selects on a validation metric keeps a CPU copy of the weights at its best
+step and loads them back before saving. The arm record says `weights_kept`,
+and the checkpoint's `extra` carries the validation of the weights it
+actually holds. `final` stays available.
+
+**Reason.** Three seeded repeats of Phase 2 on the server (`--seed 0/1/2`,
+6000 steps, guards off) showed arms that learn and then lose it:
+
+| arm | best | at step | last step | `final / best` | still there at the end |
+|---|---|---|---|---|---|
+| seed 2 `core_scratch` | 0.8171 | 3000 | 1.0013 | 1.225 | **−1%** |
+| seed 1 `core_scratch` | 0.9171 | 1500 | 1.0642 | 1.160 | **−77%** |
+| seed 0 `core_scratch` | 0.9627 | 3000 | 0.9816 | 1.020 | 49% |
+
+Seed 2's arm reached `pert_pearson` 0.42 at step 3000 and ended at 0.02.
+The checkpoint saved was the one that had forgotten. Phase 3 inherits
+`core_phase2.pt`, so this is not bookkeeping: it is what gets submitted.
+
+The same runs showed the instability detector missing all of it. On a metric
+that is a **ratio against predicting no change**, 1.0 is the no-change line
+and `final / best` is the wrong scale: an arm that gives back everything it
+learned reads as 1.225, under the 1.25 threshold, and `diverged` said false.
+So `TrainResult` gained an `anchor` and `signal_retained = (anchor − final) /
+(anchor − best)` — 1.0 ended at its best, 0.0 ended knowing nothing more than
+the baseline, negative ended worse than that. Phase 2 passes `anchor=1.0`,
+flags an arm below 50%, and the summary tables those arms out.
+
+**Alternative.** Early stopping — end the run at the best step. Rejected: the
+budget is a config number the user tunes, and stopping early would hide that
+the run does not converge. Keeping the best weights *and* reporting the swing
+shows both.
+
+**Consequence.** Keeping the best is selection on a validation set, so the
+selected number is optimistic by the usual amount; it is held out by gene,
+and the alternative was shipping a model we had measured and knew to be
+worse. It also means `validation_per_context` and the arm table now describe
+the same weights, which they did not before (D82 said so; this removes the
+mismatch rather than annotating it).
+
+### D86. Phase 1's contribution is not measurable at this budget
+
+**Decision.** Keep CLAUDE.md §4's three phases. No deviation.
+
+**Reason.** With the seeding fixed (D84), three repeats that all report
+`arms_share_initialization: true`, gap = scratch − warm on
+`pert_mse_ratio_to_no_change`, negative means Phase 1 hurt:
+
+| read at | seed 0 | seed 1 | seed 2 | mean | se | t |
+|---|---|---|---|---|---|---|
+| each arm's best | −0.0199 | −0.0798 | −0.1734 | −0.0910 | 0.0447 | −2.04 |
+| the last step | −0.0009 | +0.0671 | +0.0036 | +0.0233 | 0.0220 | +1.06 |
+
+The sign depends on which step you read. Worse, "best of four evaluations"
+favours the arm with the larger variance, and `core_scratch` is exactly that
+arm — it swings between 0.82 and 1.06 while the warm arms sit between 0.98
+and 1.00. So the −2.0 SE is an upper bound on the evidence, not a measurement.
+
+The earlier three runs gave −0.183 at 3.8 SE; that was the seeding defect.
+The honest statement is that Phase 1 neither clearly helps nor clearly hurts
+Phase 2 at 6000 steps, and nothing here justifies dropping a phase the
+specification asks for.
+
+**What the repeats did show**, consistently across all three seeds: the warm
+arms barely move. `pert_pearson` for `core_unfrozen` reaches 0.11–0.18 and
+`map_delta_ratio_to_no_change` never leaves 0.99–1.00 against a noise floor
+of 0.46–0.56. The scratch arm reaches 0.25–0.42 before collapsing. The
+question worth the next server cycle is therefore not "is Phase 1 worth it"
+but "why does Phase 2 end at the no-change line in every arm" — which is
+D85's subject, not this one's.
+
+**Alternative.** More repeats. At sd ≈ 0.077, separating a 0.05 effect at 2 SE
+needs about ten runs of 4.5 hours each. That is a cycle and a half of server
+time spent on a question that does not change what is submitted, while the
+convergence problem does.

@@ -971,6 +971,12 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             # left behind. A run that diverges late otherwise reports the
             # wreck (DECISIONS.md D74).
             select_on=SELECTION_METRIC,
+            # Every selection metric here is a ratio against predicting no
+            # change, so 1.0 is what the metric reads when nothing has been
+            # learned. Telling the loop that is what makes `signal_retained`
+            # readable — and `final / best` is not, on a metric anchored this
+            # way (D85).
+            select_anchor=1.0,
         )
         frozen = frozen_check.end(model, plan, before)
         return model, result, frozen, fingerprint
@@ -990,14 +996,21 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         # one: an arm that swings to 2.46 mid-run and lands at 1.25 reads as
         # steady at 1.15x. The swing is the thing that says the optimisation
         # is not under control.
-        diverged = (divergence is not None and divergence > DIVERGENCE_RATIO) or (
-            instability is not None and instability > DIVERGENCE_RATIO
+        retained = result.signal_retained
+        diverged = (
+            (divergence is not None and divergence > DIVERGENCE_RATIO)
+            or (instability is not None and instability > DIVERGENCE_RATIO)
+            # The reading `final / best` cannot give. An arm that went 0.817
+            # to 1.001 kept none of what it learned and still read as 1.22x,
+            # just under the 1.25 threshold (D85).
+            or (retained is not None and retained < SIGNAL_RETAINED_FLOOR)
         )
         if diverged:
             log.warning(
                 "  %s is unstable on %s: best %.4f at step %s, worst %.4f at step %s, "
-                "ended %.4f (%.2fx best; swing %.2fx). The ablations read the best, "
-                "and the checkpoint saved is the final one — lower train.lr.",
+                "ended %.4f (%.2fx best; swing %.2fx; %.0f%% of what it learned was "
+                "still there at the end). The arm keeps its best weights, but an arm "
+                "that swings this far is not converging — lower train.lr.",
                 arm, SELECTION_METRIC,
                 result.best_metrics.get(SELECTION_METRIC, float("nan")), result.best_step,
                 result.worst_value if result.worst_value is not None else float("nan"),
@@ -1005,6 +1018,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
                 result.final_metrics.get(SELECTION_METRIC, float("nan")),
                 divergence if divergence is not None else float("nan"),
                 instability if instability is not None else float("nan"),
+                100 * retained if retained is not None else float("nan"),
             )
         return {
             "unfreeze_core": unfreeze_core,
@@ -1028,6 +1042,13 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             "best_step": result.best_step,
             "divergence_final_over_best": divergence,
             "instability_worst_over_best": instability,
+            # The share of what the arm learned that its last step still
+            # held: 1.0 ended at its best, 0.0 ended knowing no more than
+            # the no-change baseline, negative ended worse than that.
+            "signal_retained": retained,
+            "signal_retained_worst": result.signal_retained_worst,
+            # Which weights this arm's checkpoint holds.
+            "weights_kept": result.restored,
             "diverged": diverged,
             # The weights this arm was built with, before any warm start.
             # Equal across arms is the precondition for comparing them.
@@ -1062,7 +1083,12 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         model,
         phase=PHASE,
         layout_hash=features.layout_hash(),
-        extra={"arm": main_arm, "validation": result.final_metrics},
+        extra={
+            "arm": main_arm,
+            "weights_kept": result.restored,
+            "validation": result.best_metrics if result.restored == "best"
+            else result.final_metrics,
+        },
     )
 
     # The ablation: the same phase with the opposite core policy, so the
@@ -1083,7 +1109,12 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             ablation_model,
             phase=f"{PHASE}:{other}",
             layout_hash=features.layout_hash(),
-            extra={"arm": other, "validation": ablation_result.final_metrics},
+            extra={
+                "arm": other,
+                "weights_kept": ablation_result.restored,
+                "validation": ablation_result.best_metrics if ablation_result.restored == "best"
+                else ablation_result.final_metrics,
+            },
         )
         del ablation_model
         release_gpu_memory()
@@ -1117,7 +1148,12 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             scratch_model,
             phase=f"{PHASE}:{SCRATCH_ARM}",
             layout_hash=features.layout_hash(),
-            extra={"arm": SCRATCH_ARM, "validation": scratch_result.final_metrics},
+            extra={
+                "arm": SCRATCH_ARM,
+                "weights_kept": scratch_result.restored,
+                "validation": scratch_result.best_metrics if scratch_result.restored == "best"
+                else scratch_result.final_metrics,
+            },
         )
         del scratch_model
         release_gpu_memory()
@@ -1161,11 +1197,15 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         # is comparing a model with itself at another moment.
         "validation_per_context_describes": {
             "arm": main_arm,
-            "step": cfg.phase2.steps,
+            # The model this block was measured on is the one in memory,
+            # which is the one saved — the best step when the weights were
+            # restored to it (D85), the last step otherwise.
+            "step": result.best_step if result.restored == "best" else cfg.phase2.steps,
             "best_step": result.best_step,
-            "is_the_best_step": result.best_step == cfg.phase2.steps,
-            "note": "the final model, which is the saved checkpoint; the arms' "
-            "`validation` is each arm's best",
+            "is_the_best_step": result.restored == "best"
+            or result.best_step == cfg.phase2.steps,
+            "weights_kept": result.restored,
+            "note": "the saved checkpoint, which is what Phase 3 inherits",
         },
     }
 
@@ -1210,6 +1250,9 @@ SELECTION_METRIC = "pert_mse_ratio_to_no_change"
 #: A final validation this much worse than the run's own best is a
 #: divergence, not a result. The first server Phase 2 ended at 2.86x.
 DIVERGENCE_RATIO = 1.25
+#: Below this share of what it learned still being there at the last step,
+#: an arm is unstable however small `final / best` looks (D85).
+SIGNAL_RETAINED_FLOOR = 0.5
 
 #: The validation keys the Phase 1 contribution is read off. Each is a ratio
 #: against predicting no change, so lower is better on all of them and they

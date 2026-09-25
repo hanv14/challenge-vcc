@@ -179,3 +179,12 @@ def test_booleans_are_left_alone(tmp_path, repo_root):
     """`bool` is a subclass of `int`, so a careless coercion turns True into 1."""
     cfg = _config_with(tmp_path, "train:\n  deterministic: true\n", repo_root)
     assert cfg.train.deterministic is True
+
+
+def test_checkpoint_selection_is_checked():
+    """A typo here would silently ship the wrong weights (D85)."""
+    from vccp.config import Train
+
+    Train(checkpoint_selection="final").validate()
+    with pytest.raises(ConfigError, match="checkpoint_selection"):
+        Train(checkpoint_selection="lowest").validate()

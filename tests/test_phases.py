@@ -478,3 +478,30 @@ def test_each_phase_leaves_its_checklist_artifacts(trained_run):
     metrics = json.loads(run_paths.phase_metrics("phase1").read_text())
     assert metrics["validation_per_cell_line"]
     assert metrics["data"]["n_rows_usable"] > 0
+
+
+def test_phase2_keeps_the_weights_it_measured_as_best(trained_run):
+    """Phase 3 inherits `core_phase2.pt`, so which step it holds is not a
+    bookkeeping detail (DECISIONS.md D85)."""
+    import torch
+
+    from vccp.paths import RunPaths
+
+    cfg, metrics, _ = trained_run
+    for name, arm in metrics["arms"].items():
+        assert arm["weights_kept"] in ("best", "final"), name
+        # `final` is only honest when the last step *was* the best one.
+        if arm["weights_kept"] == "final":
+            assert arm["best_step"] == arm["steps"], name
+
+    saved = torch.load(
+        RunPaths(cfg).core_checkpoint(phase2.PHASE), map_location="cpu", weights_only=False
+    )
+    main = metrics["arms"][metrics["main_arm"]]
+    assert saved["extra"]["weights_kept"] == main["weights_kept"]
+    assert saved["extra"]["validation"] == main["validation"]
+
+    # And the per-context block describes the weights that were saved.
+    describes = metrics["validation_per_context_describes"]
+    assert describes["weights_kept"] == main["weights_kept"]
+    assert describes["step"] == main["best_step"] or describes["is_the_best_step"]

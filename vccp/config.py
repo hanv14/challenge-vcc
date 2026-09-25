@@ -211,10 +211,22 @@ class Train:
     #: which on the server would be 18,533 of them per step. Evaluation
     #: always uses every gene.
     output_genes_per_step: int = 2048
+    #: Which weights a phase keeps: the step where validation was best, or
+    #: the last step. `best` by default — a phase's checkpoint is what the
+    #: next phase inherits, and three seeded server runs showed an arm
+    #: reaching 0.817 at step 3000 and ending at 1.001, so the final weights
+    #: were a model we had measured and knew to be worse (DECISIONS.md D85).
+    #: Only phases that select on a validation metric are affected.
+    checkpoint_selection: str = "best"
 
     def validate(self) -> None:
         if self.lr <= 0:
             raise ConfigError("train.lr must be positive")
+        if self.checkpoint_selection not in ("best", "final"):
+            raise ConfigError(
+                "train.checkpoint_selection must be 'best' or 'final', not "
+                f"{self.checkpoint_selection!r}"
+            )
         if self.l2sp_weight < 0:
             raise ConfigError("train.l2sp_weight must not be negative")
         if not 0.0 <= self.replay_fraction < 1.0:
