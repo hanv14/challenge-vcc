@@ -553,6 +553,16 @@ arm ends at the no-change line, and the arm that learns most (`pert_pearson`
 0.42 at step 3000) ends at 0.02. That is D85's subject, and the next server
 cycle belongs to it.
 
+**And that cycle answered this one too.** Both of those readings were taken
+on a metric scored over 32 of the 1,907 held-out targets — a number borrowed
+from `batch_size` by accident (D88). Scored over 908 instead, the same
+comparison is unambiguous: `core_scratch` falls monotonically at all eight
+evaluations to 0.7585 with `pert_pearson` 0.472, while `core_unfrozen` sits
+at the no-change line, and the same holds on the *training* targets. The warm
+start prevents Phase 2 from learning; the gap is −0.233 (DECISIONS.md D90,
+which supersedes D86). What remains to decide is whether `without_delta`
+recovers it — that was never tested on a working instrument.
+
 ### 7.7 Change 4 — a cross-assay rehearsal variant
 
 Rehearsal variant 2 is cross-**context**, same assay. The cross-**assay**

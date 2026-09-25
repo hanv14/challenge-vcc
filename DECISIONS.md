@@ -1845,3 +1845,73 @@ immaterial.
 **Alternative.** A schedule (warmup, cosine decay) rather than a flat rate.
 Worth trying, but only after D88: choosing between schedules on a metric
 computed over 32 targets is how the last three cycles were spent.
+
+### D90. The warm start prevents Phase 2 from learning. D86 is superseded
+
+**What the measurement now says.** One run, seed 2, three arms sharing an
+initialization (`arms_share_initialization: true`), no replay, no L2-SP, the
+same 6000 steps, and `pert_mse_ratio_to_no_change` scored over **908**
+held-out targets instead of 32 (D88):
+
+| step | `core_scratch` | its pearson | `core_unfrozen` | its pearson |
+|---|---|---|---|---|
+| 750 | 0.9195 | 0.275 | 1.0545 | 0.125 |
+| 1500 | 0.8976 | 0.278 | 1.0487 | 0.174 |
+| 2250 | 0.8348 | 0.372 | 1.0360 | 0.154 |
+| 3000 | 0.8209 | 0.400 | 1.4475 | −0.021 |
+| 3750 | 0.8068 | 0.432 | 1.0093 | 0.150 |
+| 4500 | 0.7809 | 0.450 | 1.0133 | 0.179 |
+| 5250 | 0.7734 | 0.463 | 1.0575 | 0.165 |
+| 6000 | **0.7585** | **0.472** | **0.9911** | 0.161 |
+
+`core_scratch` falls monotonically at all eight evaluations and is still
+falling at the last one. `core_unfrozen` sits at the no-change line
+throughout. The same holds on the training targets (0.9176 → 0.7192 against
+0.9911), so this is not regularization or overfitting: the warm arm cannot
+fit the targets it is trained on. And on the mapping's delta, which is what
+the official metrics score, `core_scratch` reaches 0.7950 against a noise
+floor of 0.4625 — **38% of the way from predicting nothing to the best a
+predictor could do at these cell counts** — while the warm arm reaches 0.1%.
+
+**This is not the reading D86 refused.** D86 declined to call a gap of
+−0.091 ± 0.045 measurable, and was right to: it was a best-of-N difference
+between two noisy flat lines, scored over 32 targets. What is here is a
+monotone curve against a flat one, on a 28x larger sample, with
+`signal_retained` 1.0 for both arms — neither one passed through its best,
+so no selection rule is doing the work. The gap is −0.2326. D86 is
+superseded; the question it could not answer was a measurement problem
+(D88), not a small effect.
+
+**What is not yet decided: whether this costs a deviation from §4.** Two
+things make it smaller than it sounds.
+
+First, `core_scratch` is not "Phase 2 without LINCS". Three of the gene
+vocabulary's prior blocks are built from `phase1_lincs.h5ad` — signature
+co-variation, GMT co-membership, and the target-role phenotype from
+`layers['sig']` — in the `priors` stage, from the data file rather than from
+Phase 1's trained weights. Every arm carries them. What `warm_start: none`
+removes is the transfer of *weights*, not of LINCS.
+
+Second, `without_delta` has not actually been tested. D80 and the run behind
+D84 measured it, but with unseeded arms and the 32-target metric, so that
+verdict is void — it was taken on the instrument this entry's numbers
+replace. The per-gene table is 84% of the trainable parameters and Phase 1
+trains it on 955 panel genes alone, which is the obvious suspect. One 45
+minute arm settles whether §4's warm start can be kept in a form that helps.
+
+**The default is therefore unchanged** pending that arm. Shipping a
+deviation from the specification when a cheap test might avoid it is the
+wrong order.
+
+**Also visible in the same run, and not yet explained.** The per-cell
+objective is the one thing that does *not* improve:
+`pert_percell_ratio_to_no_change` is 1.0437 for `core_scratch` at step 6000,
+slightly worse than predicting no change, while the pooled question it is
+scored beside goes to 0.7585. The OT pairing is not yet delivering what
+PLAN_PERCELL §3 asks of it, and `scripts/coupling_check.py` has still never
+been run on the server. That is the next question after the warm start.
+
+**And a budget note.** `core_scratch` was still improving at step 6000, so
+`phase2.steps` is now the binding constraint rather than the learning rate
+(D89). At roughly 5.5 minutes per 750 steps, 12,000 steps is about 1.5 hours
+for one arm.

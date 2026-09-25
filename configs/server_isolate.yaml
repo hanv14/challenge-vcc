@@ -60,9 +60,28 @@
 # baseline at all. The step size is not what is wrong. What is left is the
 # measurement itself — `pert_mse_ratio_to_no_change` was scored over 32 of
 # the 1,907 held-out targets, a number borrowed from `batch_size` by
-# accident, and `phase2.eval_targets` now sets it (D88). The run worth
-# doing next is both arms at 0.0003 with that fixed, to see whether
-# `core_scratch`'s advantage survives a metric that can carry it.
+# accident, and `phase2.eval_targets` now sets it (D88).
+#
+# **That run has been done, and it settles the question this config was
+# written to ask** (D90). Scored over 908 targets, `core_scratch` falls
+# monotonically at all eight evaluations — 0.9195 to 0.7585, `pert_pearson`
+# 0.275 to 0.472, still improving at the last step — while `core_unfrozen`
+# sits at the no-change line throughout, on the training targets as well as
+# the held-out ones. The warm start prevents Phase 2 from learning.
+#
+# What is left is one arm: does `warm_start: without_delta` recover it? The
+# per-gene table is 84% of the trainable parameters and Phase 1 trains it on
+# the 955 panel genes alone. It was measured before, but with unseeded arms
+# and the 32-target metric, so that verdict is void:
+#
+#     python -m vccp phase2 --config configs/server_isolate.yaml \
+#       --run-name server_nodelta2 --seed 2 \
+#       --set phase2.warm_start=without_delta
+#
+# Compare its curve against `core_scratch`'s above. Recovering it keeps
+# CLAUDE.md §4's three phases intact; not recovering it means the shipped
+# model takes Phase 1 through the gene vocabulary priors alone, which is a
+# deviation and has to be recorded as one.
 #
 # It writes to runs/server_isolate/, so it leaves the submission run alone.
 # It needs a run directory that already has `priors` and Phase 1 — copy them
