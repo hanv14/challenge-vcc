@@ -1008,7 +1008,19 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         # one: an arm that swings to 2.46 mid-run and lands at 1.25 reads as
         # steady at 1.15x. The swing is the thing that says the optimisation
         # is not under control.
-        retained = result.signal_retained
+        retained, headroom = result.signal_retained, result.signal_headroom
+        # A share of almost nothing is not a share worth printing: an arm
+        # whose best beat the baseline by 0.0016 reported -9922% (D91).
+        barely = headroom is not None and abs(headroom) < NEGLIGIBLE_HEADROOM
+        if retained is not None and not barely:
+            kept = f"{100 * retained:.0f}% of what it learned was still there at the end"
+        elif barely:
+            kept = (
+                f"it beat the no-change baseline by only {headroom:.4f}, so what it "
+                "kept of that is not a meaningful share"
+            )
+        else:
+            kept = "it never beat the no-change baseline, so there was nothing to keep"
         diverged = (
             (divergence is not None and divergence > DIVERGENCE_RATIO)
             or (instability is not None and instability > DIVERGENCE_RATIO)
@@ -1020,9 +1032,9 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         if diverged:
             log.warning(
                 "  %s is unstable on %s: best %.4f at step %s, worst %.4f at step %s, "
-                "ended %.4f (%.2fx best; swing %.2fx; %.0f%% of what it learned was "
-                "still there at the end). The arm keeps its best weights, but an arm "
-                "that swings this far is not converging — lower train.lr.",
+                "ended %.4f (%.2fx best; swing %.2fx; %s). The arm keeps its best "
+                "weights, but an arm that swings this far is not converging — "
+                "lower train.lr.",
                 arm, SELECTION_METRIC,
                 result.best_metrics.get(SELECTION_METRIC, float("nan")), result.best_step,
                 result.worst_value if result.worst_value is not None else float("nan"),
@@ -1030,7 +1042,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
                 result.final_metrics.get(SELECTION_METRIC, float("nan")),
                 divergence if divergence is not None else float("nan"),
                 instability if instability is not None else float("nan"),
-                100 * retained if retained is not None else float("nan"),
+                kept,
             )
         return {
             "unfreeze_core": unfreeze_core,
@@ -1059,6 +1071,10 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             # the no-change baseline, negative ended worse than that.
             "signal_retained": retained,
             "signal_retained_worst": result.signal_retained_worst,
+            # How far past the baseline the best got. `signal_retained`
+            # divides by this, so a small one makes the share meaningless.
+            "signal_headroom": headroom,
+            "barely_beat_the_baseline": barely,
             # Which weights this arm's checkpoint holds.
             "weights_kept": result.restored,
             "diverged": diverged,
@@ -1265,6 +1281,10 @@ DIVERGENCE_RATIO = 1.25
 #: Below this share of what it learned still being there at the last step,
 #: an arm is unstable however small `final / best` looks (D85).
 SIGNAL_RETAINED_FLOOR = 0.5
+#: Below this much distance past the no-change baseline, an arm's best is
+#: close enough to the baseline that the share of it retained is arithmetic
+#: rather than information (D91).
+NEGLIGIBLE_HEADROOM = 0.01
 
 #: The validation keys the Phase 1 contribution is read off. Each is a ratio
 #: against predicting no change, so lower is better on all of them and they

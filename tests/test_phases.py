@@ -349,7 +349,15 @@ def trained_run(tmp_path_factory, session_cfg):
         output_root=tmp_path_factory.mktemp("trained") / "runs",
         phase1=dataclasses.replace(session_cfg.phase1, steps=2, batch_size=4),
         phase2=dataclasses.replace(
-            session_cfg.phase2, steps=2, batch_size=4, cells_per_draw=4
+            session_cfg.phase2,
+            steps=2,
+            batch_size=4,
+            cells_per_draw=4,
+            # Pinned warm, against the package default of `none` (D91): the
+            # tests below are about the ablation machinery, and with a cold
+            # main arm Phase 2 skips the scratch arm as a duplicate — which
+            # is correct behaviour and would leave nothing to assert.
+            warm_start=phase2.FULL,
         ),
         train=dataclasses.replace(
             session_cfg.train,

@@ -255,6 +255,15 @@ learning at all, before any of the above is worth looking at:
   `map_delta_noise_floor_ratio`, which is what a *perfect* predictor could
   reach at these cell counts — at the floor means everything the cells can
   show has been learned, at 1.0 means nothing about the change has been.
+**`phase2.warm_start` defaults to `none`, which is a deviation from CLAUDE.md
+§4.2** and is reported as one by checklist item 5 on every run. All three ways
+of handing Phase 1's weights to Phase 2 were measured on equal terms: `none`
+falls monotonically to 0.7585 while `full` (0.9911) and `without_delta`
+(0.9984) sit at the no-change line, on the training targets as well as the
+held-out ones (DECISIONS.md D90, D91). Phase 1 is still trained, still scored,
+and still reaches Phase 2 through the three gene-vocabulary prior blocks built
+from `phase1_lincs.h5ad`; what is dropped is the transfer of weights.
+
 * `phase1_contribution`, a per-metric `scratch − warm` difference between the
   `core_scratch` arm (no Phase 1 at all) and the warm-started one. Positive
   means Phase 1 helped. The two arms do not spend equal effort on Phase 2's

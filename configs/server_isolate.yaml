@@ -69,19 +69,18 @@
 # sits at the no-change line throughout, on the training targets as well as
 # the held-out ones. The warm start prevents Phase 2 from learning.
 #
-# What is left is one arm: does `warm_start: without_delta` recover it? The
-# per-gene table is 84% of the trainable parameters and Phase 1 trains it on
-# the 955 panel genes alone. It was measured before, but with unseeded arms
-# and the 32-target metric, so that verdict is void:
+# `without_delta` was the remaining hope — the per-gene table is 84% of the
+# trainable parameters and Phase 1 trains it on the 955 panel genes alone.
+# It was run, and it is refuted: 0.9984 at best, 1.1554 at the last step,
+# the same flat line as `full`. The damage is in the core weights (D91).
 #
-#     python -m vccp phase2 --config configs/server_isolate.yaml \
-#       --run-name server_nodelta2 --seed 2 \
-#       --set phase2.warm_start=without_delta
+# So `phase2.warm_start` now defaults to `none`, which is a deviation from
+# CLAUDE.md §4.2 and is reported as one by checklist item 5. Phase 1 still
+# reaches Phase 2 through the gene vocabulary priors built from
+# phase1_lincs.h5ad, which every arm carries.
 #
-# Compare its curve against `core_scratch`'s above. Recovering it keeps
-# CLAUDE.md §4's three phases intact; not recovering it means the shipped
-# model takes Phase 1 through the gene vocabulary priors alone, which is a
-# deviation and has to be recorded as one.
+# What this config is still for: testing a *new* form of transfer against
+# the `core_scratch` curve above, on equal terms.
 #
 # It writes to runs/server_isolate/, so it leaves the submission run alone.
 # It needs a run directory that already has `priors` and Phase 1 — copy them
@@ -147,8 +146,11 @@ phase2:
   steps: 6000
   batch_size: 32
   cells_per_draw: 16
-  # Left on: the question here is about the warm start, and `without_delta`
-  # was measured and did not rescue it (D80, D84).
+  # `full` here, against the package default of `none`, because this config
+  # exists to measure the warm start rather than to ship. Both warm forms
+  # are now measured and neither learns (D91); what this setting is still
+  # good for is testing a *new* form of transfer against `core_scratch`'s
+  # curve, which is recorded above.
   warm_start: full
   # Every held-out target with a pseudobulk row, rather than the default 256
   # — this is a diagnostic run, and the whole difficulty has been reading a

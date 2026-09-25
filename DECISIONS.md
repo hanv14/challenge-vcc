@@ -1915,3 +1915,61 @@ been run on the server. That is the next question after the warm start.
 `phase2.steps` is now the binding constraint rather than the learning rate
 (D89). At roughly 5.5 minutes per 750 steps, 12,000 steps is about 1.5 hours
 for one arm.
+
+### D91. `phase2.warm_start: none` is the default. Deviation from §4, measured
+
+**Decision.** Phase 2 starts from the gene vocabulary priors, not from Phase
+1's checkpoint. This is a **deviation from CLAUDE.md §4.2's "one core used by
+all three phases"**, reported by checklist item 5 on every run that uses it,
+by a warning at the start of Phase 2, and here.
+
+**Reason.** All three ways of handing Phase 1's weights over were measured on
+the same seed, the same split, the same 6000 steps, arms sharing an
+initialization, no replay, no L2-SP, and `pert_mse_ratio_to_no_change` scored
+over 908 held-out targets (D88):
+
+| step | `full` | `without_delta` | `none` |
+|---|---|---|---|
+| 750 | 1.0545 | 1.0942 | 0.9195 |
+| 1500 | 1.0487 | 1.2946 | 0.8976 |
+| 2250 | 1.0360 | **0.9984** | 0.8348 |
+| 3000 | 1.4475 | 1.0066 | 0.8209 |
+| 3750 | 1.0093 | 1.0064 | 0.8068 |
+| 4500 | 1.0133 | 1.0111 | 0.7809 |
+| 5250 | 1.0575 | 1.0187 | 0.7734 |
+| 6000 | **0.9911** | 1.1554 | **0.7585** |
+
+`none` falls monotonically at all eight evaluations and is still falling at
+the last. Neither warm form leaves the no-change line, and the same holds on
+the *training* targets (0.7192 against 0.9911 and 1.1444), so this is not
+regularization: the warm arms cannot fit what they are trained on. On the
+mapping delta, `none` reaches 38% of the way from no-change to the noise
+floor where the warm arms reach 0.1%.
+
+`without_delta` was the hypothesis that could have saved the warm start —
+`delta` is 84% of the trainable parameters and Phase 1 trains it on the 955
+panel genes alone. It is refuted: resetting the per-gene table changes
+nothing. The damage is in the core weights themselves.
+
+**What the deviation does and does not remove.** Phase 1 is still trained,
+still scored on held-out targets, still re-scored after Phases 2 and 3 for
+the forgetting report, and still reaches Phase 2 — three of the gene
+vocabulary's prior blocks are built from `phase1_lincs.h5ad` (signature
+co-variation, GMT co-membership, and the target-role phenotype from
+`layers['sig']`), in the `priors` stage, from the data file rather than from
+Phase 1's trained weights, and every arm carries them. What is removed is the
+transfer of *weights* between phase 1 and phase 2.
+
+**Alternative, not taken yet.** Transfer only the perturbation module —
+Phase 1's type embeddings and target-role parameters — and initialize the
+rest from the priors. That is the form of transfer §4's design is really
+after (LINCS knows what a knockdown does; Replogle knows what cells look
+like), and it is one 45-minute arm to test. It is not built because it is a
+new mode the specification does not ask for, and because the pipeline needed
+a configuration that learns before it needed a better one.
+
+**Also.** The instability warning printed "-9922% of what it learned was
+still there" for the `without_delta` arm, whose best beat the baseline by
+0.0016. The ratio is correct; as a percentage it is arithmetic, not
+information. `signal_headroom` is now recorded beside `signal_retained`, and
+below 0.01 of headroom the message reports the headroom instead of a share.

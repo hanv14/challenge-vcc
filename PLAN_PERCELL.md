@@ -560,8 +560,18 @@ comparison is unambiguous: `core_scratch` falls monotonically at all eight
 evaluations to 0.7585 with `pert_pearson` 0.472, while `core_unfrozen` sits
 at the no-change line, and the same holds on the *training* targets. The warm
 start prevents Phase 2 from learning; the gap is −0.233 (DECISIONS.md D90,
-which supersedes D86). What remains to decide is whether `without_delta`
-recovers it — that was never tested on a working instrument.
+which supersedes D86). `without_delta` was the remaining hope and it is
+refuted on the same instrument: 0.9984 at best, 1.1554 at the last step, the
+same flat line as `full`. So `phase2.warm_start` defaults to `none` — a
+deviation from CLAUDE.md §4.2, reported by checklist item 5 on every run
+(D91). Phase 1 still reaches Phase 2 through the three prior blocks built
+from `phase1_lincs.h5ad`; what is dropped is the transfer of weights.
+
+The transfer §4 is really after — Phase 1's *perturbation module* alone, its
+type embeddings and target-role parameters, with the rest from the priors —
+has not been tried. LINCS knows what a knockdown does; Replogle knows what
+cells look like. That is one 45-minute arm against the `core_scratch` curve,
+and it is the one way back to three phases.
 
 ### 7.7 Change 4 — a cross-assay rehearsal variant
 

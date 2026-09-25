@@ -379,10 +379,22 @@ class Phase2:
     #:   `core_scratch` ablation redundant, and Phase 2 says so rather than
     #:   training an identical third arm.
     #:
-    #: `full` stays the default because three phases is what §4 asks for, but
-    #: on the server it measured worse than `none` by 0.19 with the
-    #: forgetting guard removed, so the default is on notice.
-    warm_start: str = "full"
+    #: **`none` is the default, and that is a measured deviation from §4**
+    #: (DECISIONS.md D91). With the guard removed, the arms sharing an
+    #: initialization and validation scored over 908 held-out targets rather
+    #: than 32, `none` falls monotonically at all eight evaluations from
+    #: 0.9195 to 0.7585 while `full` (0.9911) and `without_delta` (0.9984)
+    #: sit at the no-change line — on the *training* targets too, so the warm
+    #: arms cannot fit what they are trained on. Phase 1's weights are not a
+    #: usable initialization for Phase 2, in either form it can be handed
+    #: over in.
+    #:
+    #: Phase 1 is still trained, still scored, and still reaches Phase 2:
+    #: three of the gene vocabulary's prior blocks are built from
+    #: `phase1_lincs.h5ad` and every arm carries them. What `none` drops is
+    #: the transfer of weights. Checklist item 5 reports it as a deviation on
+    #: every run that uses it.
+    warm_start: str = "none"
     #: Phase 2 has the data to support training the core, and is where the
     #: forgetting guard is worth having (DECISIONS.md D3).
     unfreeze_core: bool = True

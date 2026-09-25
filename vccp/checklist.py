@@ -68,7 +68,7 @@ def build(cfg, run_paths) -> dict[str, Any]:
          [run_paths.prior_checks], None),
         (5, "Shared gene-token model, one core used by all three phases", "4.2",
          [run_paths.core_checkpoint("phase1"), run_paths.core_checkpoint("phase2"),
-          run_paths.core_checkpoint("phase3")], None),
+          run_paths.core_checkpoint("phase3")], _shared_core_status(cfg)),
         (6, "Frozen core + per-phase and per-context adapters, verified frozen", "4.3",
          [run_paths.frozen_check], None),
         (7, "Guard against forgetting — replay, L2-SP, Phase 1 re-scored", "4.3",
@@ -148,6 +148,32 @@ def _vcc_status(run_paths):
             DEVIATION,
             "`vcc prep` did not produce a .vcc — see reports/validate.json for what "
             "the tool said.",
+        )
+
+    return status
+
+
+def _shared_core_status(cfg):
+    """Item 5 is the item `phase2.warm_start: none` breaks, so it says so.
+
+    §4.2 asks for one core carried through all three phases. When Phase 2
+    starts from the priors instead of from Phase 1's checkpoint, the core
+    the two phases train is no longer the same set of weights, and no run
+    using that setting should report item 5 as plainly done.
+    """
+    def status() -> tuple[str, str | None]:
+        if cfg.phase2.warm_start != "none":
+            return DONE, None
+        return (
+            DEVIATION,
+            "`phase2.warm_start: none` — Phase 2 starts from the gene vocabulary "
+            "priors rather than from Phase 1's checkpoint, so the core is not "
+            "carried from Phase 1 into Phase 2. Measured: with validation over 908 "
+            "held-out targets, `none` falls monotonically to 0.7585 while `full` "
+            "(0.9911) and `without_delta` (0.9984) sit at the no-change line, on "
+            "the training targets as well (DECISIONS.md D90, D91). Phase 1 is "
+            "still trained and still reaches Phase 2 through the three gene-"
+            "vocabulary prior blocks built from phase1_lincs.h5ad.",
         )
 
     return status

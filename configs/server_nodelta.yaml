@@ -1,3 +1,17 @@
+# SUPERSEDED — the question below is answered, and the answer is no.
+#
+# Run on seed 2 with the arms sharing an initialization and validation over
+# 908 held-out targets, `without_delta` reaches 0.9984 at best and ends at
+# 1.1554: the same flat line as `full`, against `none` falling monotonically
+# to 0.7585. Resetting the per-gene table changes nothing, so the damage is
+# in the core weights (DECISIONS.md D91), and `phase2.warm_start` now
+# defaults to `none`.
+#
+# This file is kept for the record. Nothing needs it: `--set
+# phase2.warm_start=without_delta` on any config does the same thing, and
+# `configs/server_isolate.yaml` carries the curves all three settings
+# produced.
+#
 # Does Phase 2 only need Phase 1's *network*, not its per-gene memory?
 #
 #     source scripts/server_env.sh

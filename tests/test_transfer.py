@@ -307,11 +307,17 @@ def test_a_run_that_swings_mid_training_is_unstable_even_if_it_lands_well():
 
 
 def test_a_cold_main_arm_makes_the_scratch_ablation_redundant():
-    """Turning the warm start off would otherwise train the same arm twice."""
+    """The scratch arm *is* `warm_start: none`, so with the default cold main
+    arm the ablation would train the same arm twice. Phase 2 skips it and
+    says so, which matters more now that `none` is the default (D91)."""
+    import inspect
+
     from vccp.config import Phase2
 
-    assert Phase2().warm_start == phase2_mod.FULL, "three phases is the default"
     Phase2(warm_start=phase2_mod.NONE).validate()
+    source = inspect.getsource(phase2_mod.run_phase2)
+    guard = source.index("cfg.train.phase1_contribution_ablation and cfg.phase2.warm_start")
+    assert "skipping the core_scratch ablation" in source[guard : guard + 600]
 
 
 def test_the_contribution_names_the_arms_that_diverged():
@@ -712,7 +718,9 @@ def test_the_summary_prints_every_arm_a_variant_produced():
 def test_warm_start_has_three_modes_and_rejects_anything_else():
     from vccp.config import Phase2
 
-    assert Phase2().warm_start == phase2_mod.FULL, "three phases is what §4 asks for"
+    # `none` is the default, and it is a deviation from §4 that the checklist
+    # reports on every run — measured, not assumed (D91).
+    assert Phase2().warm_start == phase2_mod.NONE
     for mode in (phase2_mod.FULL, phase2_mod.WITHOUT_DELTA, phase2_mod.NONE):
         Phase2(warm_start=mode).validate()
     # The key was a bool for one day; a stale config must fail loudly.
@@ -877,3 +885,37 @@ def test_the_summary_names_an_arm_that_learned_and_lost_it():
     assert "learned and then lost" in text
     assert "3000" in text and "-1%" in text
     assert "train.lr" in text
+
+
+def test_starting_phase2_from_the_priors_is_reported_as_a_deviation(tmp_path):
+    """`warm_start: none` breaks §4.2's "one core used by all three phases",
+    and no run that uses it should report item 5 as plainly done (D91)."""
+    import dataclasses
+
+    from vccp import checklist
+    from vccp.config import load_config
+    from vccp.paths import RunPaths
+
+    from tests.conftest import MINI_CONFIG
+
+    base = dataclasses.replace(load_config(MINI_CONFIG), output_root=tmp_path / "runs")
+
+    def item5(warm_start):
+        cfg = dataclasses.replace(
+            base, phase2=dataclasses.replace(base.phase2, warm_start=warm_start)
+        )
+        report = checklist.build(cfg, RunPaths(cfg))
+        return next(i for i in report["items"] if i["item"] == 5)
+
+    # The artifacts do not exist in this tmp run, so both read `missing` on
+    # those grounds — what this asserts is the reason the deviation carries
+    # once they do.
+    assert checklist._shared_core_status(base)()[0] == checklist.DEVIATION
+    with_full = dataclasses.replace(
+        base, phase2=dataclasses.replace(base.phase2, warm_start="full")
+    )
+    assert checklist._shared_core_status(with_full)() == (checklist.DONE, None)
+
+    reason = checklist._shared_core_status(base)()[1]
+    assert "warm_start" in reason and "0.7585" in reason
+    assert item5("none")["item"] == 5

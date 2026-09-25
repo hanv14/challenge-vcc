@@ -391,3 +391,32 @@ def test_an_arm_that_never_beat_the_baseline_has_no_signal_to_have_kept():
         steps=1, selected_on="r", anchor=0.5, lower_is_better=False,
         best_metrics={"r": 0.4}, final_metrics={"r": 0.3},
     ).signal_retained is None
+
+
+def test_a_share_of_almost_nothing_is_not_reported_as_a_share():
+    """An arm whose best beat the baseline by 0.0016 and ended 0.155 above it
+    reported keeping -9922% of what it learned (D91). The ratio is right; as
+    a percentage it is arithmetic, not information."""
+    from vccp.train.loop import TrainResult
+
+    barely = TrainResult(
+        steps=1, selected_on="r", anchor=1.0,
+        best_metrics={"r": 0.9984}, final_metrics={"r": 1.1554},
+    )
+    assert barely.signal_headroom == pytest.approx(0.0016)
+    assert barely.signal_retained == pytest.approx(-97.1, abs=0.5)
+
+    # A run with real headroom keeps a readable share.
+    real = TrainResult(
+        steps=1, selected_on="r", anchor=1.0,
+        best_metrics={"r": 0.7585}, final_metrics={"r": 0.8},
+    )
+    assert real.signal_headroom == pytest.approx(0.2415)
+    assert real.signal_retained == pytest.approx(0.828, abs=0.01)
+
+    # Higher-is-better metrics measure the headroom in their own direction.
+    rising = TrainResult(
+        steps=1, selected_on="r", anchor=0.5, lower_is_better=False,
+        best_metrics={"r": 0.9}, final_metrics={"r": 0.7},
+    )
+    assert rising.signal_headroom == pytest.approx(0.4)

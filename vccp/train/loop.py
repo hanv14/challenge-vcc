@@ -117,6 +117,21 @@ class TrainResult:
         return sign * float(self.anchor - float(value)) / headroom
 
     @property
+    def signal_headroom(self) -> float | None:
+        """How far past the anchor the run's best got, in the metric's units.
+
+        `signal_retained` divides by this, so when it is small the share is
+        arithmetically correct and practically meaningless — a server arm
+        whose best beat the baseline by 0.0016 and ended 0.155 above it
+        reported that it had kept -9922% of what it learned.
+        """
+        best = self.best_metrics.get(self.selected_on) if self.selected_on else None
+        if self.anchor is None or best is None:
+            return None
+        sign = 1.0 if self.lower_is_better else -1.0
+        return sign * (self.anchor - float(best))
+
+    @property
     def signal_retained(self) -> float | None:
         """How much of what the run learned is still there at the end.
 
@@ -148,6 +163,7 @@ class TrainResult:
             "instability_worst_over_best": self.instability,
             "signal_retained": self.signal_retained,
             "signal_retained_worst": self.signal_retained_worst,
+            "signal_headroom": self.signal_headroom,
             "replay": self.replay,
             "l2sp_drift": self.l2sp_drift,
             "curve": self.curve,
