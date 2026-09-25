@@ -1751,3 +1751,34 @@ D85's subject, not this one's.
 needs about ten runs of 4.5 hours each. That is a cycle and a half of server
 time spent on a question that does not change what is submitted, while the
 convergence problem does.
+
+### D87. `train.evals_per_run`, and `--set` for one-knob sweeps
+
+**Decision.** How often a phase evaluates is a config key (default 4, as
+before), and any single config value can be overridden from the command line:
+`--set train.lr=0.0001`, repeatable.
+
+**Reason.** The evaluation count is not a logging detail. It is the resolution
+at which a run's shape exists at all: `checkpoint_selection` can only keep a
+step it evaluated, and `signal_retained` can only be measured across the
+evaluations there are. Four over 6,000 steps showed an arm at 0.8171 and then
+at 1.0013 with nothing between them — enough to know it collapsed, not enough
+to see when it started. It was `steps // 4`, hardcoded in the training loop.
+
+`--set` exists because the alternative was a fourth server config file
+differing from the third by one line. Near-identical configs drift apart, and
+then a comparison is between two things nobody can diff. Values are parsed as
+YAML and coerced like file values, so `--set train.lr=3e-4` does not walk into
+D75's trap, and an unknown section or key fails before any work starts. The
+override is written into the run directory's `config.yaml`, so the run still
+describes itself.
+
+**Alternative.** Environment variables, or a `sweep:` block in the config.
+Both put the setting somewhere other than where the run records what it did.
+
+**Also.** `configs/server_isolate.yaml` now turns both ablation arms off by
+default (D86 settled what they measured; one arm is 45 minutes instead of
+2.2 hours), evaluates eight times, and its header carries the three-run
+result rather than the question it was written to ask. And a test now loads
+every config in `configs/`, which is what would have caught D75's `3e-4`
+before it reached the server.

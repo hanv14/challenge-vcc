@@ -189,8 +189,10 @@ def run_training(
         steps=steps, anchor=select_anchor, lower_is_better=select_lower_is_better
     )
     if keep_best is None:
-        keep_best = getattr(cfg.train, "checkpoint_selection", "best") == "best"
-    eval_every = eval_every or max(1, steps // 4)
+        keep_best = cfg.train.checkpoint_selection == "best"
+    # The resolution at which the run's shape is visible: what `keep_best`
+    # chooses between, and what `signal_retained` is measured across.
+    eval_every = eval_every or max(1, steps // cfg.train.evals_per_run)
     model.train()
 
     for step in range(1, steps + 1):

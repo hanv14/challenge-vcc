@@ -273,6 +273,10 @@ learning at all, before any of the above is worth looking at:
   done
   ```
 
+  Any single config value can be overridden the same way, so a sweep needs no
+  second config file: `--set train.lr=0.0001 --set phase2.steps=3000`,
+  repeatable, written into the run's `config.yaml` like any other setting.
+
   Each run needs `priors/` and `checkpoints/` in its run directory (copy
   them from a finished run, as for any stage run on its own). Average the
   per-metric `improvement` across the three; the spread between them is the
@@ -289,6 +293,14 @@ learning at all, before any of the above is worth looking at:
   defaults to `best`, so a phase saves the weights it measured as best rather
   than whatever the last step produced — the checkpoint is what the next phase
   inherits (D85). Set it to `final` to go back to the old behaviour.
+
+`train.evals_per_run` (default 4) sets how often a phase evaluates, and so the
+resolution at which all three of those readings exist: `checkpoint_selection`
+can only pick an evaluated step, and `signal_retained` can only be measured
+across them. Four over 6,000 steps showed an arm at 0.82 and then at 1.00 with
+nothing in between. Each evaluation costs a full validation pass, so raise it
+when diagnosing (`configs/server_isolate.yaml` uses 8) and leave it at 4 for
+the submission run.
 
 **`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
 run — whether the OT pairing carries information on this data at all. Read

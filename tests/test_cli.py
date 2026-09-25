@@ -268,3 +268,24 @@ def test_seed_can_be_overridden_for_repeats(tmp_path):
     assert code == 0
     # The seed that ran is the seed recorded, not the one in the file.
     assert yaml.safe_load(run_paths.config.read_text())["seed"] == 7
+
+
+def test_set_overrides_one_config_value(tmp_path):
+    """A sweep over one knob should not need a second config file that
+    differs from the first by one line."""
+    code, run_paths = run(
+        "check-data",
+        ["--set", "train.lr=3e-4", "--set", "train.evals_per_run=8"],
+        tmp_path=tmp_path,
+    )
+    assert code == 0
+    written = yaml.safe_load(run_paths.config.read_text())["train"]
+    # Coerced, not left as the string YAML 1.1 reads `3e-4` as (D75).
+    assert written["lr"] == pytest.approx(0.0003)
+    assert written["evals_per_run"] == 8
+
+
+def test_a_bad_override_fails_before_anything_runs(tmp_path):
+    for bad in ("train.lr", "nope.lr=1", "train.nope=1", "train.evals_per_run=0"):
+        code, _ = run("check-data", ["--set", bad], tmp_path=tmp_path)
+        assert code == 2, bad

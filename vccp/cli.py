@@ -22,7 +22,7 @@ from typing import Any
 
 import yaml
 
-from .config import Config, ConfigError, config_to_dict, load_config
+from .config import Config, ConfigError, apply_overrides, config_to_dict, load_config
 from .logging_utils import banner, get_logger, setup_logging
 from .paths import RunPaths
 from . import provenance
@@ -301,6 +301,17 @@ def build_parser() -> argparse.ArgumentParser:
         "what one repeat is a draw from (DECISIONS.md D84).",
     )
     parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="override one config value, e.g. --set train.lr=0.0001 or --set "
+        "phase2.steps=3000. Repeatable. A sweep over one knob then needs no second "
+        "config file that differs from the first by one line. The override is "
+        "written into the run's config.yaml like any other setting.",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="rerun stages that have already finished"
     )
     parser.add_argument(
@@ -336,6 +347,13 @@ def main(argv: list[str] | None = None) -> int:
         cfg = dataclasses.replace(cfg, seed=args.seed)
         cfg.validate()
 
+    if args.overrides:
+        try:
+            cfg = apply_overrides(cfg, args.overrides)
+        except ConfigError as exc:
+            print(f"config error: {exc}", file=sys.stderr)
+            return 2
+
     run_paths = RunPaths(cfg)
     run_paths.ensure()
     log = setup_logging(run_paths.log, verbose=args.verbose)
@@ -346,6 +364,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("vcc_root      : %s", cfg.vcc_root)
     log.info("output        : %s", run_paths.root)
     log.info("seed          : %d", cfg.seed)
+    if args.overrides:
+        # Printed as given, so the log says what was changed and the run
+        # directory's config.yaml says what it was changed to.
+        log.info("overrides     : %s", " ".join(args.overrides))
 
     device = resolve_device(cfg.device)
     apply_resources(device, cfg.resources.cpu_threads, cfg.resources.gpu_memory_fraction)

@@ -188,3 +188,13 @@ def test_checkpoint_selection_is_checked():
     Train(checkpoint_selection="final").validate()
     with pytest.raises(ConfigError, match="checkpoint_selection"):
         Train(checkpoint_selection="lowest").validate()
+
+
+def test_every_config_in_the_repo_loads(repo_root):
+    """The `3e-4` trap (D75) reached the server as a TypeError six frames
+    from the config that caused it, because nothing here ever opened the
+    file. Each of these is a config someone is told to run."""
+    configs = sorted((repo_root / "configs").glob("*.yaml"))
+    assert configs, "no configs found"
+    for path in configs:
+        load_config(path).validate()

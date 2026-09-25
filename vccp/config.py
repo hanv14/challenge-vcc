@@ -12,6 +12,7 @@ fails at load instead of silently leaving a default in place.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -218,10 +219,22 @@ class Train:
     #: were a model we had measured and knew to be worse (DECISIONS.md D85).
     #: Only phases that select on a validation metric are affected.
     checkpoint_selection: str = "best"
+    #: How many times a phase evaluates during training, evenly spaced, with
+    #: the last one always at the final step.
+    #:
+    #: It is what `checkpoint_selection` chooses between and what
+    #: `signal_retained` is measured across, so it is the resolution at which
+    #: a run's shape is visible at all. Four evaluations over 6,000 steps
+    #: showed a server arm at 0.82 and then at 1.00 with nothing in between —
+    #: enough to know it collapsed, not enough to see when. Each one costs a
+    #: full validation pass, so this trades run time for resolution.
+    evals_per_run: int = 4
 
     def validate(self) -> None:
         if self.lr <= 0:
             raise ConfigError("train.lr must be positive")
+        if self.evals_per_run < 1:
+            raise ConfigError("train.evals_per_run must be at least 1")
         if self.checkpoint_selection not in ("best", "final"):
             raise ConfigError(
                 "train.checkpoint_selection must be 'best' or 'final', not "
@@ -898,6 +911,79 @@ def _reject_unknown(section: str, given: dict[str, Any], cls: type) -> None:
         )
 
 
+#: The config's sections, by the name they carry in the YAML.
+SECTIONS: dict[str, type] = {
+    "resources": Resources,
+    "priors": Priors,
+    "model": Model,
+    "train": Train,
+    "phase1": Phase1,
+    "phase2": Phase2,
+    "phase3": Phase3,
+    "predict": Predict,
+    "rehearsal": Rehearsal,
+    "eval": Eval,
+    "checks": Checks,
+    "submission": Submission,
+    "sanity": Sanity,
+    "report": Report,
+}
+
+
+def apply_overrides(cfg: "Config", settings: Iterable[str]) -> "Config":
+    """`train.lr=0.0001` and friends, applied on top of a loaded config.
+
+    A sweep over one knob should not need a second config file that differs
+    from the first by one line: near-identical configs drift apart, and then
+    a comparison is between two things nobody can diff. The override is
+    written into `config.yaml` in the run directory like any other setting,
+    so the run still describes itself.
+
+    Values are read as YAML, so `true`, `3`, `0.0001` and `best` all arrive
+    as the right type, and `train.lr=3e-4` is coerced the same way the file
+    would be (D75).
+    """
+    for setting in settings:
+        key, sep, raw = str(setting).partition("=")
+        if not sep:
+            raise ConfigError(f"--set expects key=value, not {setting!r}")
+        key, raw = key.strip(), raw.strip()
+        section, _, field = key.rpartition(".")
+        try:
+            value = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"--set {key}: {raw!r} is not a value ({exc})") from exc
+
+        target = cfg if not section else getattr(cfg, section, None)
+        if section and section not in SECTIONS:
+            raise ConfigError(
+                f"--set {key}: no config section {section!r}. "
+                f"Sections are: {', '.join(sorted(SECTIONS))}"
+            )
+        cls = SECTIONS[section] if section else Config
+        _reject_unknown(section or "the config", {field: value}, cls)
+
+        if isinstance(value, list):
+            value = tuple(value)
+        spec = next(f for f in dataclasses.fields(cls) if f.name == field)
+        if isinstance(value, tuple):
+            inner = float if "float" in str(spec.type) else (
+                int if "int" in str(spec.type) else None
+            )
+            if inner is not None:
+                value = tuple(_coerce_number(section, field, v, inner) for v in value)
+        else:
+            value = _coerce_number(section or "config", field, value, _field_type(spec))
+
+        if section:
+            cfg = dataclasses.replace(cfg, **{section: dataclasses.replace(target, **{field: value})})
+        else:
+            cfg = dataclasses.replace(cfg, **{field: value})
+
+    cfg.validate()
+    return cfg
+
+
 def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config:
     """Load a YAML config, resolving relative paths against the repo root."""
     path = Path(path)
@@ -911,22 +997,7 @@ def load_config(path: str | Path, repo_root: str | Path | None = None) -> Config
     base = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parent.parent
 
     sections = {}
-    for name, cls in (
-        ("resources", Resources),
-        ("priors", Priors),
-        ("model", Model),
-        ("train", Train),
-        ("phase1", Phase1),
-        ("phase2", Phase2),
-        ("phase3", Phase3),
-        ("predict", Predict),
-        ("rehearsal", Rehearsal),
-        ("eval", Eval),
-        ("checks", Checks),
-        ("submission", Submission),
-        ("sanity", Sanity),
-        ("report", Report),
-    ):
+    for name, cls in SECTIONS.items():
         section_raw = raw.pop(name, {}) or {}
         if not isinstance(section_raw, dict):
             raise ConfigError(f"{path}: {name!r} must be a mapping")
