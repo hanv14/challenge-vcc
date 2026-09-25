@@ -70,6 +70,8 @@ class TrainResult:
     #: metric `final / best` is the wrong scale. An arm that went 0.817 ->
     #: 1.001 lost *everything* it had learned and still reads as 1.22x.
     anchor: float | None = None
+    #: Which direction is better on the selected metric, for the anchor.
+    lower_is_better: bool = True
     #: The weights at `best_step`, kept on CPU while training continues, and
     #: loaded back into the model at the end when `keep_best` is on. Not in
     #: `as_dict`: it is tens of megabytes of tensors, not a metric.
@@ -98,14 +100,21 @@ class TrainResult:
         return self._ratio(self.worst_value)
 
     def _kept(self, value: float | None) -> float | None:
-        """The share of the distance from the anchor that `value` still holds."""
+        """The share of the distance from the anchor that `value` still holds.
+
+        `None` when the run never got past the anchor at all: an arm whose
+        *best* is worse than predicting nothing has no learning to have kept,
+        and dividing by its negative headroom would report a number that
+        looks like one (a mini arm read 1.16 that way).
+        """
         best = self.best_metrics.get(self.selected_on) if self.selected_on else None
         if self.anchor is None or best is None or value is None:
             return None
-        headroom = self.anchor - float(best)
-        if abs(headroom) < 1e-12:
+        sign = 1.0 if self.lower_is_better else -1.0
+        headroom = sign * (self.anchor - float(best))
+        if headroom <= 1e-12:
             return None
-        return float(self.anchor - float(value)) / headroom
+        return sign * float(self.anchor - float(value)) / headroom
 
     @property
     def signal_retained(self) -> float | None:
@@ -133,6 +142,7 @@ class TrainResult:
             "worst_step": self.worst_step,
             "selected_on": self.selected_on,
             "anchor": self.anchor,
+            "lower_is_better": self.lower_is_better,
             "restored": self.restored,
             "divergence_final_over_best": self.divergence,
             "instability_worst_over_best": self.instability,
@@ -175,7 +185,9 @@ def run_training(
     use_amp = bool(cfg.train.amp) and device.startswith("cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-    result = TrainResult(steps=steps, anchor=select_anchor)
+    result = TrainResult(
+        steps=steps, anchor=select_anchor, lower_is_better=select_lower_is_better
+    )
     if keep_best is None:
         keep_best = getattr(cfg.train, "checkpoint_selection", "best") == "best"
     eval_every = eval_every or max(1, steps // 4)

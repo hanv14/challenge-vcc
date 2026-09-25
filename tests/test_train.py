@@ -367,3 +367,27 @@ def test_signal_retained_reads_an_anchored_metric_the_way_it_means(session_cfg):
     assert TrainResult(
         steps=1, selected_on="r", best_metrics={"r": 0.8}, final_metrics={"r": 0.9}
     ).signal_retained is None
+
+
+def test_an_arm_that_never_beat_the_baseline_has_no_signal_to_have_kept():
+    """`(anchor - final) / (anchor - best)` inverts when the best is on the
+    wrong side of the anchor: a mini arm whose best was 1.0844 against a
+    baseline of 1.0 reported that it kept 116% of what it learned."""
+    from vccp.train.loop import TrainResult
+
+    never = TrainResult(
+        steps=1, selected_on="r", anchor=1.0,
+        best_metrics={"r": 1.0844}, final_metrics={"r": 1.0982},
+    )
+    assert never.signal_retained is None
+
+    # Higher-is-better metrics read the same way, mirrored.
+    rising = TrainResult(
+        steps=1, selected_on="r", anchor=0.5, lower_is_better=False,
+        best_metrics={"r": 0.9}, final_metrics={"r": 0.7},
+    )
+    assert rising.signal_retained == pytest.approx(0.5)
+    assert TrainResult(
+        steps=1, selected_on="r", anchor=0.5, lower_is_better=False,
+        best_metrics={"r": 0.4}, final_metrics={"r": 0.3},
+    ).signal_retained is None

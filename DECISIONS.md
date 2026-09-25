@@ -1699,6 +1699,11 @@ So `TrainResult` gained an `anchor` and `signal_retained = (anchor − final) /
 the baseline, negative ended worse than that. Phase 2 passes `anchor=1.0`,
 flags an arm below 50%, and the summary tables those arms out.
 
+`signal_retained` is `None` when the arm's *best* is already worse than the
+anchor: there is no learning to have kept, and the ratio would otherwise
+invert — a mini arm whose best was 1.0844 against a baseline of 1.0 reported
+keeping 116% of what it learned before this was guarded.
+
 **Alternative.** Early stopping — end the run at the best step. Rejected: the
 budget is a config number the user tunes, and stopping early would hide that
 the run does not converge. Keeping the best weights *and* reporting the swing
