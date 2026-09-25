@@ -506,6 +506,19 @@ def _phase1_contribution_text(contribution: dict[str, Any]) -> str:
             "one — so the number here and the model on disk are not the same "
             "thing. Lower `train.lr` or shorten that arm.\n"
         )
+    if contribution.get("arms_share_initialization") is False:
+        text += (
+            "\n**The arms did not start from the same weights** "
+            f"({contribution.get('init_fingerprints')}), so part of the difference "
+            "above is the initialization rather than Phase 1. Do not read this "
+            "table from this run.\n"
+        )
+    text += (
+        "\nOne run of this ablation is one draw: repeats on the server have put "
+        "`core_scratch` 0.12 apart on a quantity whose whole effect is 0.18. Read "
+        "it over at least three runs before it changes the design (DECISIONS.md "
+        "D84).\n"
+    )
     favours = contribution.get("budget_favours")
     text += (
         f"\nThe two arms spent {steps.get('warm')} and {steps.get('scratch')} steps "

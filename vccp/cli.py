@@ -293,6 +293,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, type=Path, help="path to a YAML config")
     parser.add_argument("--run-name", default=None, help="override run_name from the config")
     parser.add_argument(
+        "--seed",
+        default=None,
+        type=int,
+        help="override seed from the config. Repeats of an ablation differ only in "
+        "this: within a run every arm starts from the same weights, so the seed is "
+        "what one repeat is a draw from (DECISIONS.md D84).",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="rerun stages that have already finished"
     )
     parser.add_argument(
@@ -322,6 +330,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.run_name:
         cfg = dataclasses.replace(cfg, run_name=args.run_name)
+        cfg.validate()
+
+    if args.seed is not None:
+        cfg = dataclasses.replace(cfg, seed=args.seed)
         cfg.validate()
 
     run_paths = RunPaths(cfg)

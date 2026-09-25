@@ -258,3 +258,13 @@ def test_the_run_config_records_the_code_that_made_it(tmp_path):
     assert set(recorded) >= {"git", "packages", "python", "started_at"}
     assert "torch" in recorded["packages"]
     assert "commit" in recorded["git"]
+
+
+def test_seed_can_be_overridden_for_repeats(tmp_path):
+    """Within a run every arm now starts from the same weights, so a repeat
+    of an ablation is a repeat *of the seed* — and needing a second config
+    file to change one integer is how repeats do not get run (D84)."""
+    code, run_paths = run("check-data", ["--seed", "7"], tmp_path=tmp_path)
+    assert code == 0
+    # The seed that ran is the seed recorded, not the one in the file.
+    assert yaml.safe_load(run_paths.config.read_text())["seed"] == 7

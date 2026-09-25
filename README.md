@@ -260,7 +260,23 @@ learning at all, before any of the above is worth looking at:
   means Phase 1 helped. The two arms do not spend equal effort on Phase 2's
   own objective — `n_phase2_steps` is reported with it, and the difference
   favours `core_scratch`, so a small positive number is a stronger result
-  than it looks.
+  than it looks. Check `arms_share_initialization` first: `false` means the
+  arms started from different weights and the table cannot be read.
+  **One run of this is one draw.** Three server runs put `core_scratch`
+  0.12 apart on a quantity whose whole effect is 0.18, so repeat it before
+  it changes anything — three runs differing only in the seed:
+
+  ```bash
+  for seed in 0 1 2; do
+    nice -n 10 ionice -c3 python -m vccp phase2 \
+      --config configs/server.yaml --run-name server_seed$seed --seed $seed
+  done
+  ```
+
+  Each run needs `priors/` and `checkpoints/` in its run directory (copy
+  them from a finished run, as for any stage run on its own). Average the
+  per-metric `improvement` across the three; the spread between them is the
+  error bar.
 
 **`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
 run — whether the OT pairing carries information on this data at all. Read

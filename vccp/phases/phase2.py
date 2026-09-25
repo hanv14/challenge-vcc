@@ -27,6 +27,7 @@ than taken on trust — see `phases/forgetting.py`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,6 +41,7 @@ from ..data import replogle as replogle_data
 from ..logging_utils import get_logger
 from ..models.core import as_index, zscore_across_genes
 from ..paths import DataPaths
+from ..runtime import seed_everything
 from ..train.loop import masked_mse, pearson, sample_output_genes
 
 PHASE = "phase2"
@@ -52,6 +54,22 @@ POOLED, PERCELL = "pooled", "percell"
 SCRATCH_ARM = "core_scratch"
 #: What Phase 2 may inherit from Phase 1 (DECISIONS.md D80).
 FULL, WITHOUT_DELTA, NONE = "full", "without_delta", "none"
+
+
+def initialization_fingerprint(model) -> str:
+    """A short digest of a freshly built model's weights.
+
+    The ablation arms are only comparable if they all start from the same
+    random initialization. That is a property of the run, not of the code,
+    so each arm records the digest of the weights it was built with and the
+    contribution report says whether they agree — across arms and, since the
+    digest is stable for a given seed and layout, across runs (D84).
+    """
+    digest = hashlib.blake2b(digest_size=8)
+    for name, tensor in sorted(model.state_dict().items()):
+        digest.update(name.encode("utf-8"))
+        digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
 
 
 def reset_delta(model) -> int:
@@ -881,8 +899,17 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         warm arm is what the first phase is worth (PLAN_PERCELL.md §7.6).
         `without_delta` takes the network but not the per-gene memorization.
         The priors stay in every case — this ablates Phase 1, not §4.1.
+
+        Every arm is re-seeded here, immediately before its weights are
+        drawn. The run is seeded once at start-up, so without this an arm's
+        random initialization depends on how much of the global torch stream
+        the *preceding* arms consumed — which differs whenever the arm list
+        differs. That made the ablation's own control arm move between runs
+        in which it could not legitimately move at all (DECISIONS.md D84).
         """
+        seed_everything(cfg.seed)
         model = build_model(cfg, features).to(device)
+        fingerprint = initialization_fingerprint(model)
         for name in (phase1.ADAPTER, ADAPTER):
             model.add_adapter(name)
         if warm_start != NONE:
@@ -946,9 +973,17 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             select_on=SELECTION_METRIC,
         )
         frozen = frozen_check.end(model, plan, before)
-        return model, result, frozen
+        return model, result, frozen, fingerprint
 
-    def arm_record(arm: str, unfreeze_core: bool, result, frozen, steps: int, warm: str):
+    def arm_record(
+        arm: str,
+        unfreeze_core: bool,
+        result,
+        frozen,
+        steps: int,
+        warm: str,
+        fingerprint: str,
+    ):
         replayed = sum((result.replay or {}).get("steps_replayed", {}).values())
         divergence, instability = result.divergence, result.instability
         # Two ways a run can be untrustworthy, and `final / best` only sees
@@ -994,6 +1029,9 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             "divergence_final_over_best": divergence,
             "instability_worst_over_best": instability,
             "diverged": diverged,
+            # The weights this arm was built with, before any warm start.
+            # Equal across arms is the precondition for comparing them.
+            "init_fingerprint": fingerprint,
             "trainable": frozen,
         }
 
@@ -1010,13 +1048,13 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             "resetting the gene vocabulary's per-gene vectors, which Phase 1 trained "
             "on the 955 panel genes alone"
         )
-    model, result, frozen = train_arm(
+    model, result, frozen, fingerprint = train_arm(
         main_arm, cfg.phase2.unfreeze_core, cfg.phase2.steps,
         warm_start=cfg.phase2.warm_start,
     )
     arms[main_arm] = arm_record(
         main_arm, cfg.phase2.unfreeze_core, result, frozen, cfg.phase2.steps,
-        cfg.phase2.warm_start,
+        cfg.phase2.warm_start, fingerprint,
     )
 
     save_core(
@@ -1033,11 +1071,12 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         other = "core_frozen" if cfg.phase2.unfreeze_core else "core_unfrozen"
         steps = max(1, int(round(cfg.phase2.steps * cfg.train.ablation_steps_fraction)))
         log.info("phase 2 ablation: %s for %d steps", other, steps)
-        ablation_model, ablation_result, ablation_frozen = train_arm(
+        ablation_model, ablation_result, ablation_frozen, ablation_fingerprint = train_arm(
             other, not cfg.phase2.unfreeze_core, steps
         )
         arms[other] = arm_record(
-            other, not cfg.phase2.unfreeze_core, ablation_result, ablation_frozen, steps, True
+            other, not cfg.phase2.unfreeze_core, ablation_result, ablation_frozen, steps,
+            FULL, ablation_fingerprint,
         )
         save_core(
             run_paths.core_checkpoint(f"{PHASE}_{other}"),
@@ -1061,7 +1100,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     elif cfg.train.phase1_contribution_ablation:
         steps = scratch_arm_steps(cfg)
         log.info("phase 2 ablation: core_scratch (no Phase 1) for %d steps", steps)
-        scratch_model, scratch_result, scratch_frozen = train_arm(
+        scratch_model, scratch_result, scratch_frozen, scratch_fingerprint = train_arm(
             SCRATCH_ARM, cfg.phase2.unfreeze_core, steps, warm_start=NONE
         )
         arms[SCRATCH_ARM] = arm_record(
@@ -1071,6 +1110,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             scratch_frozen,
             steps,
             NONE,
+            scratch_fingerprint,
         )
         save_core(
             run_paths.core_checkpoint(f"{PHASE}_{SCRATCH_ARM}"),
@@ -1128,6 +1168,15 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             "`validation` is each arm's best",
         },
     }
+
+    contribution = metrics["phase1_contribution"]
+    if contribution.get("arms_share_initialization") is False:
+        log.warning(
+            "phase 2: the arms did not start from the same weights (%s). The "
+            "ablations compare arms, so any difference between them is partly "
+            "the initialization — do not read phase1_contribution from this run.",
+            contribution.get("init_fingerprints"),
+        )
 
     run_paths.phase_dir(PHASE).mkdir(parents=True, exist_ok=True)
     run_paths.phase_metrics(PHASE).write_text(json.dumps(metrics, indent=2, default=str))
@@ -1229,6 +1278,12 @@ def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
         if abs(warm_steps - scratch_steps) / larger >= BUDGET_TOLERANCE:
             favours = SCRATCH_ARM if scratch_steps > warm_steps else "warm"
     diverged = sorted(name for name, r in arms.items() if r.get("diverged"))
+    fingerprints = {
+        name: record.get("init_fingerprint")
+        for name, record in arms.items()
+        if record.get("init_fingerprint")
+    }
+    shared = len(set(fingerprints.values())) == 1 if fingerprints else None
     return {
         "measured": bool(deltas),
         "warm_arm": next(name for name in arms if name != SCRATCH_ARM),
@@ -1247,6 +1302,12 @@ def _phase1_contribution(arms: dict[str, Any]) -> dict[str, Any]:
         # budget runs *for* cannot be read at all.
         "budget_favours": favours,
         "budgets_matched": favours is None,
+        # The other precondition, and the one that failed silently until it
+        # was recorded: every arm must start from the same random weights.
+        # The digest is also stable across runs for a given seed and layout,
+        # so two runs' reports can be compared (D84).
+        "init_fingerprints": fingerprints,
+        "arms_share_initialization": shared,
     }
 
 

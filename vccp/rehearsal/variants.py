@@ -38,7 +38,7 @@ from ..phases import adapt, phase1, phase2
 from ..predict.generator import GeneratorSettings
 from ..priors.build import build_priors
 from ..priors.scope import controls_only_scope, cross_context_scope, unseen_genes_scope
-from ..runtime import release_gpu_memory
+from ..runtime import release_gpu_memory, seed_everything
 from ..train.loop import run_training
 from . import common
 
@@ -87,7 +87,14 @@ def restrict_genes(tensors: phase2.ContextTensors, hidden: set[int]) -> phase2.C
 
 
 def build_and_load(cfg, features, device: str, checkpoint=None):
-    """A model with every adapter registered, optionally warm-started."""
+    """A model with every adapter registered, optionally warm-started.
+
+    Re-seeded before the build for the same reason the Phase 2 arms are
+    (DECISIONS.md D84): the variants are compared against each other and
+    against a floor and an upper bound, and a model built later in the run
+    would otherwise start from different weights than one built earlier.
+    """
+    seed_everything(cfg.seed)
     model = build_model(cfg, features).to(device)
     for name in (phase1.ADAPTER, phase2.ADAPTER, "phase3"):
         model.add_adapter(name)

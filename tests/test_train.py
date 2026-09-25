@@ -22,16 +22,26 @@ from vccp.train.replay import ReplayMixer, ReplayTask
 
 @pytest.fixture
 def model(session_cfg, built_priors):
+    # Seeded, so the weights are the same whatever ran before in this
+    # session. Without it the initialization depends on how far earlier
+    # tests advanced the global stream — the same trap DECISIONS.md D84
+    # records for the ablation arms.
+    torch.manual_seed(session_cfg.seed)
     built = build_model(session_cfg, built_priors)
     for name in ("phase1", "phase2"):
         built.add_adapter(name)
     return built
 
 
-def toy_step(model, gene_in=60, gene_out=60):
+def toy_step(model, gene_in=60, gene_out=60, seed=0):
     idx_in, idx_out = as_index(np.arange(gene_in)), as_index(np.arange(gene_out))
-    values = torch.randn(4, gene_in, 2)
-    target = torch.randn(4, gene_out)
+    # Same reason as the fixture: a toy regression problem drawn from
+    # wherever the global stream happens to be is a different problem in
+    # every session, and "the loss goes down in 30 steps" is not true of
+    # every one of them.
+    generator = torch.Generator().manual_seed(seed)
+    values = torch.randn(4, gene_in, 2, generator=generator)
+    target = torch.randn(4, gene_out, generator=generator)
 
     def step(rng):
         prediction = model(values, idx_in, idx_out)

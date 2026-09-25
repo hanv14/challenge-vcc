@@ -419,6 +419,10 @@ def test_the_phase1_contribution_is_measured_not_assumed(trained_run):
 
     contribution = metrics["phase1_contribution"]
     assert contribution["measured"] is True
+    # The arms are only comparable if they started from the same weights, and
+    # a single start-up seed does not give that (D84).
+    assert contribution["arms_share_initialization"] is True
+    assert len(set(contribution["init_fingerprints"].values())) == 1
     assert contribution["positive_means_phase1_helped"] is True
     assert contribution["improvement"]
     # The unequal step budgets are reported, because they qualify the reading.

@@ -529,6 +529,20 @@ objective. `n_phase2_steps` is recorded per arm. The bias runs against Phase
 small negative one is weaker. Equalizing it by giving the scratch arm replay
 too would put back through the side door exactly what the ablation removes.
 
+**It needs repeats, and the arms need the same starting weights.** Three
+server runs put `core_scratch` at 0.8068, 0.7955 and 0.9134 — a spread of
+0.118 on a quantity whose whole effect is 0.183. Part of that was a defect,
+now fixed: every arm drew its initial weights from one global stream that the
+arms before it had already advanced, so an arm's initialization depended on
+the company it kept (D84). Each arm is now re-seeded immediately before it is
+built and records the digest of those weights, and
+`phase1_contribution.arms_share_initialization` says whether the precondition
+held. What remains after that is ordinary run-to-run variance, so **no single
+run's `phase1_contribution` is decisive**: the three runs above give a gap of
+−0.183 ± 0.048 (n = 3, ~3.8 standard errors), and that — not any one number —
+is the reading. Anything that would change §4's three-phase design needs at
+least three runs behind it.
+
 ### 7.7 Change 4 — a cross-assay rehearsal variant
 
 Rehearsal variant 2 is cross-**context**, same assay. The cross-**assay**

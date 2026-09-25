@@ -1625,3 +1625,46 @@ limitation as a model failure.
 difference of sampled means falls as 1/n — at a cost paid only at evaluation
 time, and it is worth doing if K562_essential has at least 512 control cells.
 That is a fact about the server's data which this environment cannot check.
+
+### D84. Every ablation arm is re-seeded immediately before it is built
+
+**Decision.** `train_arm` calls `seed_everything(cfg.seed)` immediately before
+`build_model`, and each arm records a digest of the weights it was built with
+(`init_fingerprint`). `phase1_contribution` reports the digests and
+`arms_share_initialization`, and Phase 2 warns when they disagree.
+
+**Reason.** The run was seeded once, at `cli.py`'s start. Every arm then drew
+its initial weights from a *global* torch stream that the preceding arms had
+already advanced — so an arm's initialization depended on which arms ran
+before it and how many steps they took. The arms in one run were therefore
+not comparable to each other, and the same arm was not comparable across two
+runs whose arm lists differed.
+
+This was not hypothetical. `core_scratch` never warm-starts, so
+`warm_start: full` and `warm_start: without_delta` cannot touch it; it is the
+identical arm under both settings. It scored 0.7955 in the isolation run and
+1.0057 in the `without_delta` run — a difference of 0.118 against a measured
+"Phase 1 hurts" effect of 0.194. Half the effect we were about to write into
+`DECISIONS.md` as a §4 deviation was the seed.
+
+Treating the three server runs as repeats of the same measurement:
+
+| arm | A (guards on) | B (isolate) | C (nodelta) | mean | sd |
+|---|---|---|---|---|---|
+| `core_unfrozen` | 1.0804 | 0.9893 | 0.9956 | 1.0218 | 0.0509 |
+| `core_frozen` | 1.0100 | 0.9878 | 0.9908 | 0.9962 | 0.0120 |
+| `core_scratch` | 0.8068 | 0.7955 | 0.9134 | 0.8386 | 0.0651 |
+
+The gap (scratch − unfrozen) is −0.183 with a standard error of 0.048 over
+three runs: about 3.8 standard errors, so the effect probably survives — but
+it could not be read off any single run, and nothing in the artifacts said so.
+
+**Alternative.** Seed per arm from `cfg.seed + hash(arm)` so arms differ
+deliberately, and average over repeats. That measures the same thing with
+more runs; re-seeding identically removes the variance instead of paying to
+average it away. Repeats are still the right way to check a result, which is
+why the table above is in this entry rather than a single run's number.
+
+**Consequence.** Numbers from before this change are not directly comparable
+with numbers after it, and `phase1_contribution` from any earlier run should
+be read as one draw from a distribution with sd ≈ 0.05, not as a measurement.

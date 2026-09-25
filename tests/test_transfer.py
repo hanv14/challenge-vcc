@@ -788,3 +788,67 @@ def test_the_per_screen_block_says_which_model_it_describes():
 
     # When the best *is* the last step there is nothing to warn about.
     assert "two different moments" not in render(best_step=6000, steps=6000)
+
+
+# --------------------------------------------------------------------------- #
+# the arms have to start from the same weights (DECISIONS.md D84)
+# --------------------------------------------------------------------------- #
+
+
+def test_reseeding_makes_an_arm_independent_of_the_arms_before_it(
+    session_cfg, built_priors
+):
+    """The run is seeded once at start-up, so an arm built later in the list
+    draws from a torch stream the earlier arms have already moved. Re-seeding
+    immediately before the build is what makes two arms comparable — and what
+    makes one arm's initialization the same across two runs whose arm lists
+    differ."""
+    from vccp.runtime import seed_everything
+
+    def build_after(disturbance: int) -> str:
+        seed_everything(session_cfg.seed)
+        # Whatever the arms before this one consumed.
+        torch.randn(disturbance)
+        seed_everything(session_cfg.seed)
+        model = build_model(session_cfg, built_priors)
+        return phase2_mod.initialization_fingerprint(model)
+
+    assert build_after(0) == build_after(1) == build_after(17_000)
+
+    # Without the re-seed the same disturbance changes the weights, which is
+    # the failure this guards against.
+    def build_unseeded(disturbance: int) -> str:
+        seed_everything(session_cfg.seed)
+        torch.randn(disturbance)
+        return phase2_mod.initialization_fingerprint(build_model(session_cfg, built_priors))
+
+    assert build_unseeded(0) != build_unseeded(17_000)
+
+
+def test_the_contribution_report_says_whether_the_arms_started_together():
+    """A gap between arms that did not start from the same weights is partly
+    the initialization, so the report has to expose the precondition rather
+    than leave the reader to assume it."""
+    def report(warm_fingerprint, scratch_fingerprint):
+        return phase2_mod._phase1_contribution({
+            "core_unfrozen": {
+                "validation": {phase2_mod.SELECTION_METRIC: 1.0},
+                "n_phase2_steps": 100,
+                "init_fingerprint": warm_fingerprint,
+            },
+            phase2_mod.SCRATCH_ARM: {
+                "validation": {phase2_mod.SELECTION_METRIC: 0.8},
+                "n_phase2_steps": 100,
+                "init_fingerprint": scratch_fingerprint,
+            },
+        })
+
+    assert report("abc", "abc")["arms_share_initialization"] is True
+    mismatched = report("abc", "def")
+    assert mismatched["arms_share_initialization"] is False
+    assert mismatched["init_fingerprints"] == {
+        "core_unfrozen": "abc", phase2_mod.SCRATCH_ARM: "def"
+    }
+    # The improvement is still reported — it is the reading that is qualified,
+    # exactly as with the unequal step budgets.
+    assert mismatched["improvement"]
