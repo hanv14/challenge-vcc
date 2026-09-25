@@ -294,6 +294,12 @@ learning at all, before any of the above is worth looking at:
   than whatever the last step produced — the checkpoint is what the next phase
   inherits (D85). Set it to `final` to go back to the old behaviour.
 
+`phase2.eval_targets` (default 256, `0` = all) sets how many held-out targets
+`pert_mse_ratio_to_no_change` is scored over. It was `batch_size` — 32 of the
+1,907 K562_gwps offers — which made the metric noisier than the effects being
+read off it (D88). Raise it for any run whose purpose is to choose between two
+configurations; it costs forward passes at evaluation time and nothing else.
+
 `train.evals_per_run` (default 4) sets how often a phase evaluates, and so the
 resolution at which all three of those readings exist: `checkpoint_selection`
 can only pick an evaluated step, and `signal_retained` can only be measured

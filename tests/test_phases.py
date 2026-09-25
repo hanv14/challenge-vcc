@@ -505,3 +505,42 @@ def test_phase2_keeps_the_weights_it_measured_as_best(trained_run):
     describes = metrics["validation_per_context_describes"]
     assert describes["weights_kept"] == main["weights_kept"]
     assert describes["step"] == main["best_step"] or describes["is_the_best_step"]
+
+
+def test_the_selection_metric_is_not_sized_by_the_training_batch(
+    tiny_cfg, built_priors, contexts, gene_index
+):
+    """`pert_mse_ratio_to_no_change` chooses the checkpoint and decides every
+    ablation. It was computed over `batch_size` targets — 32 of the 1,907
+    K562_gwps offers, a number borrowed from training by accident (D88)."""
+    import dataclasses
+
+    model = fresh_model(tiny_cfg, built_priors, phase2.ADAPTER, wake=True)
+
+    def scored(eval_targets, batch_size):
+        cfg = dataclasses.replace(
+            tiny_cfg,
+            phase2=dataclasses.replace(
+                tiny_cfg.phase2, eval_targets=eval_targets, batch_size=batch_size
+            ),
+        )
+        per_context = phase2.evaluate_per_context(model, contexts, cfg, "cpu", gene_index)
+        return {
+            name: (v["n_pert_targets_scored"], v["pert_mse"])
+            for name, v in per_context.items()
+            if "n_pert_targets_scored" in v
+        }
+
+    # The batch size no longer moves how many are scored, and running them
+    # in blocks does not change the answer either — it only decides how many
+    # rows go through at once.
+    small, large = scored(4, 2), scored(4, 4)
+    assert set(small) == set(large)
+    for name in small:
+        assert small[name][0] == large[name][0]
+        assert small[name][1] == pytest.approx(large[name][1], rel=1e-5)
+
+    # And asking for more targets scores more of them.
+    few, many = scored(2, 2), scored(0, 2)
+    assert all(many[name][0] >= few[name][0] for name in few)
+    assert any(many[name][0] > few[name][0] for name in few)

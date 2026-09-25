@@ -668,13 +668,25 @@ def evaluate_per_context(
                 usable = [t for t in pool if t in tensors.pseudobulk]
                 if not usable:
                     continue
-                usable = usable[: cfg.phase2.batch_size]
-                target_idx = as_index([gene_index[t] for t in usable], device)
-                baseline = tensors.control_panel.unsqueeze(0).expand(len(usable), -1)
-                predicted = predict_perturbed_panel(
-                    model, tensors, baseline, target_idx, cfg.phase2.pert_type
-                )
-                truth = torch.stack([tensors.pseudobulk[t] for t in usable])
+                usable = usable[: cfg.phase2.eval_targets or len(usable)]
+                # In blocks, so the number of targets scored is a choice
+                # about the metric's noise rather than about how much fits
+                # in one forward pass.
+                predicted_blocks, truth_blocks = [], []
+                for start in range(0, len(usable), cfg.phase2.batch_size):
+                    block = usable[start : start + cfg.phase2.batch_size]
+                    target_idx = as_index([gene_index[t] for t in block], device)
+                    baseline = tensors.control_panel.unsqueeze(0).expand(len(block), -1)
+                    predicted_blocks.append(
+                        predict_perturbed_panel(
+                            model, tensors, baseline, target_idx, cfg.phase2.pert_type
+                        )
+                    )
+                    truth_blocks.append(
+                        torch.stack([tensors.pseudobulk[t] for t in block])
+                    )
+                predicted = torch.cat(predicted_blocks)
+                truth = torch.cat(truth_blocks)
 
                 mse = float(((predicted - truth) ** 2).mean())
                 no_change = float((truth**2).mean())

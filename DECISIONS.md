@@ -1782,3 +1782,66 @@ default (D86 settled what they measured; one arm is 45 minutes instead of
 result rather than the question it was written to ask. And a test now loads
 every config in `configs/`, which is what would have caught D75's `3e-4`
 before it reached the server.
+
+### D88. The selection metric is scored over 256 targets, not over `batch_size`
+
+**Decision.** `phase2.eval_targets` (default 256, `0` = every held-out target
+with a pseudobulk row). The perturbation module's validation used to score
+`usable[: cfg.phase2.batch_size]` — the *training* batch size, borrowed by
+accident — so every reading rested on **32 of the 1,907** held-out targets
+K562_gwps offers, in list order. The forward pass now runs in blocks of
+`batch_size`, which changes how many rows go through at once and nothing else.
+
+**Reason.** `pert_mse_ratio_to_no_change` chooses the checkpoint (D85),
+decides the core-freeze and Phase 1 ablations (D86), and is what
+`signal_retained` is measured on. A sample of 32 is small enough that its
+noise is the same size as the effects being read off it: three seeded repeats
+disagreed by an sd of 0.077 where the gap being measured was 0.091, and the
+"best of N evaluations" rule that D85 introduced selects partly on that noise
+— the more evaluations, the more of it is selected on.
+
+The seeds also change *which* 32, because the target split is seeded, so the
+run-to-run spread is partly a different validation set each time rather than a
+different model. Within a run the arms share the split, which is why the
+paired gap was the only reading worth quoting at all.
+
+**Cost.** Forward passes at evaluation time, nothing else: 256 targets is one
+extra matrix of (256 x n_panel) per screen per evaluation, against the cell
+sampling and the mapping pass that dominate. The delta metrics keep their own
+`delta_eval_targets` (8) because those draw 128 cells per target.
+
+**Alternative.** Resample the scored targets each evaluation. Rejected: that
+adds noise *between* evaluations, which is exactly what the checkpoint rule
+must not select on. A fixed, larger, deterministic set is comparable across
+evaluations, arms and runs.
+
+### D89. Lowering the learning rate does not fix Phase 2; it trains less
+
+**Decision.** `train.lr` stays at 3e-4. The convergence problem is not the
+step size.
+
+**Reason.** D85 read the collapse (0.8171 at step 3000, 1.0013 at 6000) as a
+rate that was too large, and predicted a lower one would hold the peak. It
+does not. One arm, seed 2, 6000 steps, eight evaluations:
+
+| `train.lr` | best | at step | last | `pert_pearson` last |
+|---|---|---|---|---|
+| 3e-4 | 0.9905 | 3000 | 0.9977 | 0.1103 |
+| 1e-4 | 1.0052 | 6000 | 1.0052 | 0.1329 |
+| 3e-5 | 1.0213 | 750 | 1.0450 | 0.0773 |
+
+Monotonically worse, and neither lower rate ever beat the no-change baseline
+at all — `signal_retained` reports `None` for both, which is the guard added
+in D85 saying exactly that. The warm arm sits at ~1.0 at every rate tested.
+
+What this rules out matters as much as what it shows: the warm arm's failure
+to learn is not an optimization-step-size problem, so the next thing to vary
+is not another training knob. It is the measurement (D88) and then the warm
+start itself — at 3e-4 the only configuration that has ever reached a real
+signal is `core_scratch` (0.8171, `pert_pearson` 0.42), and since D85 that
+peak is kept rather than thrown away, which it was when D86 called the choice
+immaterial.
+
+**Alternative.** A schedule (warmup, cosine decay) rather than a flat rate.
+Worth trying, but only after D88: choosing between schedules on a metric
+computed over 32 targets is how the last three cycles were spent.

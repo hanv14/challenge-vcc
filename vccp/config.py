@@ -304,6 +304,18 @@ class Phase2:
     delta_eval_cells: int = 128
     #: Held-out targets the delta is scored over.
     delta_eval_targets: int = 8
+    #: Held-out targets scored by the perturbation module at each evaluation,
+    #: in the order the split lists them. 0 means every one that has a
+    #: pseudobulk row.
+    #:
+    #: This is the sample `pert_mse_ratio_to_no_change` is computed over, and
+    #: that metric chooses the checkpoint, decides every ablation and is what
+    #: `signal_retained` is measured on. It used to be `batch_size` — 32 of
+    #: the 1,907 held-out targets K562_gwps offers, a number borrowed from
+    #: training by accident. Three seeded repeats then disagreed by 0.077 on
+    #: a quantity whose effects are 0.09 (DECISIONS.md D88). It costs forward
+    #: passes at evaluation time and nothing else.
+    eval_targets: int = 256
     #: How the perturbation module is supervised (PLAN_PERCELL.md §3).
     #:
     #: * `pooled` — one control pseudobulk in, the target's pseudobulk as
@@ -385,6 +397,8 @@ class Phase2:
             raise ConfigError("phase2.delta_eval_cells must be at least 2")
         if self.delta_eval_targets < 1:
             raise ConfigError("phase2.delta_eval_targets must be at least 1")
+        if self.eval_targets < 0:
+            raise ConfigError("phase2.eval_targets must not be negative (0 means all)")
         if self.warm_start not in ("full", "without_delta", "none"):
             raise ConfigError(
                 "phase2.warm_start must be 'full', 'without_delta' or 'none', got "

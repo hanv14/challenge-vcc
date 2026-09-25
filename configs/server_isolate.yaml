@@ -55,6 +55,15 @@
 # run ended at its best instead of passing through it — and `pert_pearson`
 # at the *last* step rather than only in the middle.
 #
+# **That check has been run, and the answer is no** (D89): 0.0001 and
+# 0.00003 are monotonically worse than 0.0003 and never beat the no-change
+# baseline at all. The step size is not what is wrong. What is left is the
+# measurement itself — `pert_mse_ratio_to_no_change` was scored over 32 of
+# the 1,907 held-out targets, a number borrowed from `batch_size` by
+# accident, and `phase2.eval_targets` now sets it (D88). The run worth
+# doing next is both arms at 0.0003 with that fixed, to see whether
+# `core_scratch`'s advantage survives a metric that can carry it.
+#
 # It writes to runs/server_isolate/, so it leaves the submission run alone.
 # It needs a run directory that already has `priors` and Phase 1 — copy them
 # in, or point output_root at the existing run and let `--force` redo only
@@ -78,9 +87,12 @@ train:
   deterministic: true
   output_genes_per_step: 2048
   # Must match the run this is compared against, or the difference is not
-  # about Phase 1. The 6,000-step runs used 0.0003; override it per run with
-  # `--set train.lr=...` rather than editing this line, so every run's
-  # config.yaml still records what it actually used.
+  # about Phase 1. Override it per run with `--set train.lr=...` rather than
+  # editing this line, so every run's config.yaml records what it used.
+  #
+  # 0.0003 is the best of the three tested. 0.0001 and 0.00003 are
+  # monotonically worse and never beat the no-change baseline at all, so the
+  # collapse this config was pointed at is not a step-size problem (D89).
   lr: 0.0003
   # The two the run is about. Both off, for every arm.
   l2sp_weight: 0.0
@@ -99,6 +111,9 @@ train:
   # runs found happened between two evaluation points 1,500 steps apart, so
   # at four there is no way to see when it starts (D85).
   evals_per_run: 8
+  # More evaluations means more chances for "keep the best" to select on the
+  # metric's own noise, which is why eval_targets below matters more here
+  # than in the submission run.
   # Keep the weights the run measured as best. On by default; stated here
   # because this config's whole subject is runs that pass through their best.
   checkpoint_selection: best
@@ -116,6 +131,10 @@ phase2:
   # Left on: the question here is about the warm start, and `without_delta`
   # was measured and did not rescue it (D80, D84).
   warm_start: full
+  # Every held-out target with a pseudobulk row, rather than the default 256
+  # — this is a diagnostic run, and the whole difficulty has been reading a
+  # metric noisier than the effects being read off it (D88).
+  eval_targets: 0
 
 rehearsal:
   max_targets: 100
