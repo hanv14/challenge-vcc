@@ -53,7 +53,9 @@ POOLED, PERCELL = "pooled", "percell"
 #: The arm trained with no Phase 1 input at all (PLAN_PERCELL.md §7.6).
 SCRATCH_ARM = "core_scratch"
 #: What Phase 2 may inherit from Phase 1 (DECISIONS.md D80).
-FULL, WITHOUT_DELTA, NONE = "full", "without_delta", "none"
+FULL, WITHOUT_DELTA, PERTURBATION_ONLY, NONE = (
+    "full", "without_delta", "perturbation_only", "none",
+)
 
 
 def initialization_fingerprint(model) -> str:
@@ -95,6 +97,55 @@ def reset_delta(model) -> int:
                 parameter.zero_()
                 reset += 1
     return reset
+
+
+#: The parameters that make up the perturbation module: what the model knows
+#: about *what a perturbation does*, as opposed to what a cell looks like.
+#: The target-role half of the gene vocabulary — its projection and its
+#: per-gene table — plus the assay-type vocabulary the token is built from
+#: (`models/core.py: tokenize`).
+PERTURBATION_PARAMETERS = (
+    "vocabulary.projections.target.",
+    "vocabulary.deltas.target",
+    "pert_type_base",
+    "pert_type_delta",
+)
+
+
+def is_perturbation_parameter(name: str) -> bool:
+    return any(name == key or name.startswith(key) for key in PERTURBATION_PARAMETERS)
+
+
+def keep_only_perturbation(model, fresh: dict) -> dict[str, int]:
+    """Undo a warm start everywhere except the perturbation module.
+
+    Phase 1 sees 688 LINCS knockouts against 955 panel genes. What it can
+    plausibly know that Replogle does not is *what perturbing a given gene
+    does* — and that lives in the target-role embedding and the assay-type
+    vocabulary. What it cannot plausibly know is what a single cell looks
+    like, which is everything else, and which is measured to stop Phase 2
+    learning at all when it is handed over (D90, D91).
+
+    So this restores the freshly built weights everywhere except the
+    perturbation module, leaving the checkpoint's values only where they are
+    about perturbation. Returns the counts, for the record.
+    """
+    import torch
+
+    kept = restored = 0
+    with torch.no_grad():
+        for name, tensor in model.state_dict().items():
+            if is_perturbation_parameter(name):
+                kept += 1
+                continue
+            reference = fresh.get(name)
+            if reference is None:
+                continue
+            tensor.copy_(reference)
+            restored += 1
+    return {"kept_from_phase1": kept, "restored_to_the_priors": restored}
+
+
 CONTROL, PERTURBED = "control", "perturbed"
 
 
@@ -924,7 +975,16 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         fingerprint = initialization_fingerprint(model)
         for name in (phase1.ADAPTER, ADAPTER):
             model.add_adapter(name)
+        transfer: dict[str, Any] = {}
         if warm_start != NONE:
+            # Snapshotted before the checkpoint lands, because
+            # `perturbation_only` is defined as "the fresh weights, except
+            # where they are about perturbation" and needs them to put back.
+            fresh = (
+                {name: t.detach().clone() for name, t in model.state_dict().items()}
+                if warm_start == PERTURBATION_ONLY
+                else None
+            )
             load_core(
                 run_paths.core_checkpoint(phase1.PHASE),
                 model,
@@ -932,7 +992,15 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
                 strict=False,
             )
             if warm_start == WITHOUT_DELTA:
-                reset_delta(model)
+                transfer = {"delta_tensors_reset": reset_delta(model)}
+            elif warm_start == PERTURBATION_ONLY:
+                transfer = keep_only_perturbation(model, fresh)
+                log.info(
+                    "  %s: kept %d perturbation tensors from Phase 1, put %d back to "
+                    "the priors",
+                    arm, transfer["kept_from_phase1"], transfer["restored_to_the_priors"],
+                )
+            del fresh
         model.use_adapters([ADAPTER])
 
         plan = set_trainable(
@@ -991,7 +1059,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             select_anchor=1.0,
         )
         frozen = frozen_check.end(model, plan, before)
-        return model, result, frozen, fingerprint
+        return model, result, frozen, fingerprint, transfer
 
     def arm_record(
         arm: str,
@@ -1001,6 +1069,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         steps: int,
         warm: str,
         fingerprint: str,
+        transfer: dict[str, Any],
     ):
         replayed = sum((result.replay or {}).get("steps_replayed", {}).values())
         divergence, instability = result.divergence, result.instability
@@ -1051,6 +1120,9 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             # 84% of the trainable parameters and which Phase 1 trained on
             # the 955 panel genes alone (D80).
             "warm_start": warm,
+            # What that warm start actually moved, when it is one of the
+            # partial ones: tensors reset, or kept and put back.
+            "warm_start_transfer": transfer,
             "steps": steps,
             # What the arm actually spent on Phase 2's own objective. A warm
             # arm gives `replay_fraction` of its steps to Phase 1 and a
@@ -1097,13 +1169,20 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             "resetting the gene vocabulary's per-gene vectors, which Phase 1 trained "
             "on the 955 panel genes alone"
         )
-    model, result, frozen, fingerprint = train_arm(
+    elif cfg.phase2.warm_start == PERTURBATION_ONLY:
+        log.info(
+            "phase2.warm_start is 'perturbation_only': taking Phase 1's perturbation "
+            "module — the target-role embedding and the assay-type vocabulary — and "
+            "starting everything else from the priors. `full` and `without_delta` "
+            "were both measured and neither learns (DECISIONS.md D91)."
+        )
+    model, result, frozen, fingerprint, transfer = train_arm(
         main_arm, cfg.phase2.unfreeze_core, cfg.phase2.steps,
         warm_start=cfg.phase2.warm_start,
     )
     arms[main_arm] = arm_record(
         main_arm, cfg.phase2.unfreeze_core, result, frozen, cfg.phase2.steps,
-        cfg.phase2.warm_start, fingerprint,
+        cfg.phase2.warm_start, fingerprint, transfer,
     )
 
     save_core(
@@ -1125,12 +1204,13 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         other = "core_frozen" if cfg.phase2.unfreeze_core else "core_unfrozen"
         steps = max(1, int(round(cfg.phase2.steps * cfg.train.ablation_steps_fraction)))
         log.info("phase 2 ablation: %s for %d steps", other, steps)
-        ablation_model, ablation_result, ablation_frozen, ablation_fingerprint = train_arm(
-            other, not cfg.phase2.unfreeze_core, steps
-        )
+        (
+            ablation_model, ablation_result, ablation_frozen, ablation_fingerprint,
+            ablation_transfer,
+        ) = train_arm(other, not cfg.phase2.unfreeze_core, steps)
         arms[other] = arm_record(
             other, not cfg.phase2.unfreeze_core, ablation_result, ablation_frozen, steps,
-            FULL, ablation_fingerprint,
+            FULL, ablation_fingerprint, ablation_transfer,
         )
         save_core(
             run_paths.core_checkpoint(f"{PHASE}_{other}"),
@@ -1159,9 +1239,10 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
     elif cfg.train.phase1_contribution_ablation:
         steps = scratch_arm_steps(cfg)
         log.info("phase 2 ablation: core_scratch (no Phase 1) for %d steps", steps)
-        scratch_model, scratch_result, scratch_frozen, scratch_fingerprint = train_arm(
-            SCRATCH_ARM, cfg.phase2.unfreeze_core, steps, warm_start=NONE
-        )
+        (
+            scratch_model, scratch_result, scratch_frozen, scratch_fingerprint,
+            scratch_transfer,
+        ) = train_arm(SCRATCH_ARM, cfg.phase2.unfreeze_core, steps, warm_start=NONE)
         arms[SCRATCH_ARM] = arm_record(
             SCRATCH_ARM,
             cfg.phase2.unfreeze_core,
@@ -1170,6 +1251,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             steps,
             NONE,
             scratch_fingerprint,
+            scratch_transfer,
         )
         save_core(
             run_paths.core_checkpoint(f"{PHASE}_{SCRATCH_ARM}"),

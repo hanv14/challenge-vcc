@@ -919,3 +919,58 @@ def test_starting_phase2_from_the_priors_is_reported_as_a_deviation(tmp_path):
     reason = checklist._shared_core_status(base)()[1]
     assert "warm_start" in reason and "0.7585" in reason
     assert item5("none")["item"] == 5
+
+
+# --------------------------------------------------------------------------- #
+# `warm_start: perturbation_only` (DECISIONS.md D92)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_perturbation_module_is_the_target_role_and_the_type_vocabulary(
+    session_cfg, built_priors
+):
+    """What Phase 1 can plausibly know that Replogle cannot is what
+    perturbing a gene does — the target-role embedding and the assay-type
+    vocabulary. Everything else is what a cell looks like."""
+    model = build_model(session_cfg, built_priors)
+    names = set(model.state_dict())
+
+    perturbation = {n for n in names if phase2_mod.is_perturbation_parameter(n)}
+    assert perturbation == {
+        "vocabulary.projections.target.weight",
+        "vocabulary.deltas.target",
+        "pert_type_base",
+        "pert_type_delta",
+    }
+    # The feature role is what a cell looks like, and is not in it.
+    assert not phase2_mod.is_perturbation_parameter("vocabulary.deltas.feature")
+    assert not phase2_mod.is_perturbation_parameter("vocabulary.projections.feature.weight")
+    assert perturbation < names
+
+
+def test_keeping_only_the_perturbation_module_restores_everything_else(
+    session_cfg, built_priors
+):
+    """`perturbation_only` is defined as the fresh weights except where they
+    are about perturbation, so every other tensor must come back exactly."""
+    from vccp.runtime import seed_everything
+
+    seed_everything(session_cfg.seed)
+    model = build_model(session_cfg, built_priors)
+    fresh = {name: t.detach().clone() for name, t in model.state_dict().items()}
+
+    # Stand in for the checkpoint: move every parameter somewhere else.
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(1.5)
+    warm = {name: t.detach().clone() for name, t in model.state_dict().items()}
+
+    counts = phase2_mod.keep_only_perturbation(model, fresh)
+    assert counts["kept_from_phase1"] == 4
+    assert counts["restored_to_the_priors"] == len(fresh) - 4
+
+    for name, tensor in model.state_dict().items():
+        if phase2_mod.is_perturbation_parameter(name):
+            assert torch.equal(tensor, warm[name]), f"{name} should still be Phase 1's"
+        else:
+            assert torch.equal(tensor, fresh[name]), f"{name} should be back to fresh"

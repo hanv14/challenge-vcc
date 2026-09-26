@@ -374,6 +374,13 @@ class Phase2:
     #:   `delta` reset to zero. Transfers the network Phase 1 learned without
     #:   the per-gene memorization it learned it on, and removes the
     #:   panel/rest asymmetry above.
+    #: * `perturbation_only` — the fresh weights everywhere except the
+    #:   perturbation module: the target-role projection and per-gene table,
+    #:   and the assay-type vocabulary. Phase 1 sees 688 LINCS knockouts
+    #:   against 955 panel genes, so what it can plausibly know that Replogle
+    #:   does not is *what perturbing a gene does*, and what it cannot is
+    #:   what a single cell looks like. This transfers the first and drops
+    #:   the second, which is the form of transfer §4's design is after.
     #: * `none` — from the priors alone. A two-phase model, which is a
     #:   deviation from §4's design and is recorded as one. It also makes the
     #:   `core_scratch` ablation redundant, and Phase 2 says so rather than
@@ -411,10 +418,10 @@ class Phase2:
             raise ConfigError("phase2.delta_eval_targets must be at least 1")
         if self.eval_targets < 0:
             raise ConfigError("phase2.eval_targets must not be negative (0 means all)")
-        if self.warm_start not in ("full", "without_delta", "none"):
+        if self.warm_start not in ("full", "without_delta", "perturbation_only", "none"):
             raise ConfigError(
-                "phase2.warm_start must be 'full', 'without_delta' or 'none', got "
-                f"{self.warm_start!r}"
+                "phase2.warm_start must be 'full', 'without_delta', "
+                f"'perturbation_only' or 'none', got {self.warm_start!r}"
             )
         if self.perturbation_mode not in ("pooled", "percell"):
             raise ConfigError(

@@ -79,8 +79,20 @@
 # reaches Phase 2 through the gene vocabulary priors built from
 # phase1_lincs.h5ad, which every arm carries.
 #
-# What this config is still for: testing a *new* form of transfer against
-# the `core_scratch` curve above, on equal terms.
+# What this config is still for, and the one experiment left on the warm
+# start: `perturbation_only` (D92). It keeps Phase 1's target-role embedding
+# and assay-type vocabulary — what perturbing a gene does, which is what 688
+# LINCS knockouts can plausibly teach — and starts everything else from the
+# priors, because what a single cell looks like is what Phase 1 cannot know
+# and is where the damage was measured:
+#
+#     python -m vccp phase2 --config configs/server_isolate.yaml \
+#       --run-name server_perturbonly --seed 2 \
+#       --set phase2.warm_start=perturbation_only
+#
+# Beating 0.7585 brings CLAUDE.md §4's three phases back and retires the D91
+# deviation. Matching `none` means Phase 1's weights have nothing to give
+# Phase 2 in any form.
 #
 # It writes to runs/server_isolate/, so it leaves the submission run alone.
 # It needs a run directory that already has `priors` and Phase 1 — copy them

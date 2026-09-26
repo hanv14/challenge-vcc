@@ -573,6 +573,13 @@ has not been tried. LINCS knows what a knockdown does; Replogle knows what
 cells look like. That is one 45-minute arm against the `core_scratch` curve,
 and it is the one way back to three phases.
 
+**Built** as `phase2.warm_start: perturbation_only` (D92): Phase 1's
+target-role projection and per-gene table plus the assay-type vocabulary —
+the four tensors `models/core.py: tokenize` builds the perturbation token
+from — with every other tensor restored to the fresh initialization. Not the
+default until it is measured. `configs/server_isolate.yaml` carries the
+command and the curve to beat.
+
 ### 7.7 Change 4 — a cross-assay rehearsal variant
 
 Rehearsal variant 2 is cross-**context**, same assay. The cross-**assay**

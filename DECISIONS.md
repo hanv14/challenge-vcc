@@ -1973,3 +1973,45 @@ still there" for the `without_delta` arm, whose best beat the baseline by
 0.0016. The ratio is correct; as a percentage it is arithmetic, not
 information. `signal_headroom` is now recorded beside `signal_retained`, and
 below 0.01 of headroom the message reports the headroom instead of a share.
+
+### D92. `warm_start: perturbation_only` — the transfer §4 is actually after
+
+**Decision.** A fourth `phase2.warm_start` mode. Phase 2 builds from the
+priors as `none` does, then keeps Phase 1's values for four tensors only: the
+target-role projection and per-gene table (`vocabulary.projections.target.*`,
+`vocabulary.deltas.target`) and the assay-type vocabulary (`pert_type_base`,
+`pert_type_delta`). Everything else is put back to the fresh initialization.
+Not the default — it is an experiment until it is measured.
+
+**Reason.** D91 established that handing Phase 1's weights to Phase 2 stops
+Phase 2 learning, in both forms the code could hand them over. But "Phase 1's
+weights" is not one thing. Phase 1 sees 688 LINCS knockouts against 955 panel
+genes, on bulk Level-3 profiles. What it can plausibly know that Replogle
+cannot is **what perturbing a given gene does** — which is exactly the
+target-role embedding and the type vocabulary that `models/core.py: tokenize`
+builds the perturbation token from. What it cannot plausibly know is what a
+single cell looks like, and that is everything else: the value encoder, the
+latent blocks, the decoder, the feature-role embedding. Those are the weights
+measured to do the damage.
+
+So the two settings that failed both transferred the second along with the
+first. This transfers the first alone, which is the claim §4's design is
+really making — and it is the only version of that claim still standing.
+
+**How it is implemented.** The fresh weights are snapshotted before the
+checkpoint is loaded, and restored afterwards for every tensor that is not
+in `PERTURBATION_PARAMETERS`. The alternative — loading the checkpoint into a
+filtered state dict — would depend on what `load_core(strict=False)` happens
+to match; snapshot-and-restore is exact either way, and a test asserts every
+non-perturbation tensor comes back bit-identical.
+
+L2-SP anchors to the model's state *after* the restore, so it pulls toward
+where this arm started rather than toward Phase 1, which is what the guard
+means here. Replay stays on, because there is now something of Phase 1 to
+forget.
+
+**Not measured yet.** It is one 45-minute arm against `core_scratch`'s curve
+(`configs/server_isolate.yaml` carries both). If it beats 0.7585, CLAUDE.md
+§4's three phases come back and the D91 deviation goes away; if it matches
+`none`, Phase 1's weights have nothing to give Phase 2 in any form and D91
+stands as the final answer.

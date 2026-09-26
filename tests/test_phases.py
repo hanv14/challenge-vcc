@@ -552,3 +552,30 @@ def test_the_selection_metric_is_not_sized_by_the_training_batch(
     few, many = scored(2, 2), scored(0, 2)
     assert all(many[name][0] >= few[name][0] for name in few)
     assert any(many[name][0] > few[name][0] for name in few)
+
+
+def test_phase2_can_take_phase1s_perturbation_module_alone(trained_run, tmp_path):
+    """`full` and `without_delta` were both measured and neither learns, so
+    the remaining form of transfer is the perturbation module by itself
+    (DECISIONS.md D92). This asserts it runs and records what it moved."""
+    import shutil
+
+    cfg, _, _ = trained_run
+    output_root = tmp_path / "runs"
+    shutil.copytree(RunPaths(cfg).root, output_root / cfg.run_name)
+
+    cold = dataclasses.replace(
+        cfg,
+        output_root=output_root,
+        phase2=dataclasses.replace(cfg.phase2, warm_start=phase2.PERTURBATION_ONLY),
+        train=dataclasses.replace(
+            cfg.train, core_freeze_ablation=False, phase1_contribution_ablation=False
+        ),
+    )
+    metrics = phase2.run_phase2(cold)
+
+    arm = metrics["arms"][metrics["main_arm"]]
+    assert arm["warm_start"] == phase2.PERTURBATION_ONLY
+    transfer = arm["warm_start_transfer"]
+    assert transfer["kept_from_phase1"] == 4
+    assert transfer["restored_to_the_priors"] > transfer["kept_from_phase1"]

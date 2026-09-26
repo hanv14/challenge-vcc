@@ -264,6 +264,12 @@ held-out ones (DECISIONS.md D90, D91). Phase 1 is still trained, still scored,
 and still reaches Phase 2 through the three gene-vocabulary prior blocks built
 from `phase1_lincs.h5ad`; what is dropped is the transfer of weights.
 
+A fourth mode, `perturbation_only`, keeps Phase 1's target-role embedding and
+assay-type vocabulary — what perturbing a gene does — and starts everything
+else from the priors. It is the one form of transfer not yet measured, and
+the one way back to three phases (D92); `configs/server_isolate.yaml` has the
+command.
+
 * `phase1_contribution`, a per-metric `scratch − warm` difference between the
   `core_scratch` arm (no Phase 1 at all) and the warm-started one. Positive
   means Phase 1 helped. The two arms do not spend equal effort on Phase 2's
