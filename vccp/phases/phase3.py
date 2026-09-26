@@ -173,12 +173,23 @@ def run_phase3(cfg: Config) -> dict[str, Any]:
     per_context = {}
     run_paths.phase_dir(PHASE).mkdir(parents=True, exist_ok=True)
 
+    # The policy decides whether adapting happens at all, from rehearsal
+    # variant 1 — which runs this very procedure on a context whose answers
+    # are known (D94). Zero steps still measures and still writes the
+    # artifact; it just leaves Phase 2's mapping alone.
+    adapt_steps = cfg.phase3.adapt_steps if policy["adapt"]["context_adapters"] else 0
+    if adapt_steps == 0:
+        log.warning(
+            "phase 3: not adapting on the controls — %s",
+            policy["adapt"].get("reason", "the policy does not permit it"),
+        )
+
     for name, context in contexts.items():
         result = adapt.adapt_on_controls(
             model,
             context,
             cfg,
-            steps=cfg.phase3.adapt_steps,
+            steps=adapt_steps,
             device=device,
             rng=np.random.default_rng(cfg.seed),
             phase=PHASE,

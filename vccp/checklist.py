@@ -53,10 +53,6 @@ def build(cfg, run_paths) -> dict[str, Any]:
     def phase_files(phase: str) -> list[Path]:
         return [run_paths.phase_metrics(phase)]
 
-    contexts = sorted(
-        path.name for path in run_paths.predictions_dir.glob("*") if path.is_dir()
-    )
-
     rows = [
         (1, "Gene vocabulary — all challenge genes, embedding = W·prior + δ", "4.1",
          [run_paths.prior_features], None),
@@ -72,7 +68,7 @@ def build(cfg, run_paths) -> dict[str, Any]:
         (6, "Frozen core + per-phase and per-context adapters, verified frozen", "4.3",
          [run_paths.frozen_check], None),
         (7, "Guard against forgetting — replay, L2-SP, Phase 1 re-scored", "4.3",
-         [run_paths.forgetting], None),
+         [run_paths.forgetting], _forgetting_status(run_paths)),
         (8, "Phase 1 — LINCS, control + perturbation → signature → perturbed", "4.4",
          phase_files("phase1"), None),
         (9, "Phase 2 — Siamese panel→rest on control and perturbed cells", "4.5",
@@ -148,6 +144,41 @@ def _vcc_status(run_paths):
             DEVIATION,
             "`vcc prep` did not produce a .vcc — see reports/validate.json for what "
             "the tool said.",
+        )
+
+    return status
+
+
+def _forgetting_status(run_paths):
+    """Item 7 asks for Phase 1 validation *re-scored* after Phases 2 and 3.
+
+    The file existing is not the same as the re-scoring having happened: a
+    core that never carried Phase 1's weights has an untrained Phase 1 head,
+    which predicts a constant and scores NaN. The server run wrote a
+    forgetting report whose Phase 2 and Phase 3 rows were both NaN and the
+    item still read `done` (DECISIONS.md D93).
+    """
+    def status() -> tuple[str, str | None]:
+        try:
+            report = json.loads(run_paths.forgetting.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            return DEVIATION, f"the forgetting report could not be read: {exc}"
+
+        checkpoints = report.get("checkpoints", {})
+        unmeasured = sorted(
+            name for name, entry in checkpoints.items() if entry.get("measurable") is False
+        )
+        if not unmeasured:
+            return DONE, None
+        reasons = {
+            entry.get("not_measurable_because")
+            for name, entry in checkpoints.items()
+            if name in unmeasured and entry.get("not_measurable_because")
+        }
+        return (
+            DEVIATION,
+            f"Phase 1 validation could not be re-scored under {', '.join(unmeasured)}: "
+            + " ".join(sorted(reasons)),
         )
 
     return status

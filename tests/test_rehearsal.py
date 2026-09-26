@@ -254,3 +254,69 @@ def test_nothing_holds_every_target_at_once(m4_run, prediction_index):
         assert len(blocks) == sum(
             1 for b in prediction_index["blocks"] if b["context"] == context
         )
+
+
+# --------------------------------------------------------------------------- #
+# the policy is read off the rehearsal, not written in (DECISIONS.md D94)
+# --------------------------------------------------------------------------- #
+
+
+def _controls_only(ratios):
+    from vccp.rehearsal import common
+    from vccp.rehearsal.variants import VariantResult
+
+    return [
+        VariantResult(
+            variant="controls_only",
+            context=name,
+            arms={common.METHOD: {"rest_genes": {"mse_ratio_to_no_change": ratio}}},
+        )
+        for name, ratio in ratios.items()
+    ]
+
+
+def test_the_policy_forbids_adapting_when_the_rehearsal_measured_it_harmful():
+    """§4.6 says the policy states what Phase 3 may adapt *chosen from these
+    results*. Variant 1 runs Phase 3's own procedure on a context whose
+    answers are known: 1.484, 1.509 and 1.468 against a floor of 1.0 on the
+    server, which is a measured harm, not a neutral step."""
+    from vccp.rehearsal.stage import _adapt_policy
+
+    harmful = _adapt_policy(_controls_only({"a": 1.484, "b": 1.509, "c": 1.468}))
+    assert harmful["measured"] is True
+    assert harmful["context_adapters"] is False
+    assert harmful["delta"] is False
+    assert "1.484" in str(harmful["controls_only_ratio_per_context"]["a"])
+    assert "worse" in harmful["reason"]
+
+    helpful = _adapt_policy(_controls_only({"a": 0.91, "b": 0.88, "c": 1.01}))
+    assert helpful["context_adapters"] is True and helpful["delta"] is True
+    assert "permitted" in helpful["reason"]
+
+    # The perturbation module and the core are never adaptable, whatever the
+    # rehearsal says: §4.7 is explicit and this is not what is measured.
+    for policy in (harmful, helpful):
+        assert policy["core"] is False
+        assert policy["perturbation_module"] is False
+        assert policy["heads"] is False
+
+
+def test_without_variant_1_the_policy_falls_back_to_what_4_7_describes():
+    from vccp.rehearsal.stage import _adapt_policy
+
+    policy = _adapt_policy([])
+    assert policy["measured"] is False
+    assert policy["context_adapters"] is True and policy["delta"] is True
+    assert "did not run" in policy["reason"]
+
+
+def test_a_tie_with_the_baseline_still_lets_phase3_adapt():
+    """The threshold is slightly above 1.0 on purpose: a mapping that merely
+    matches the baseline has not been shown to do harm."""
+    from vccp.rehearsal.stage import CONTROLS_ONLY_TOLERANCE, _adapt_policy
+
+    assert CONTROLS_ONLY_TOLERANCE > 1.0
+    assert _adapt_policy(_controls_only({"a": 1.0}))["context_adapters"] is True
+    assert _adapt_policy(
+        _controls_only({"a": CONTROLS_ONLY_TOLERANCE + 0.01})
+    )["context_adapters"] is False

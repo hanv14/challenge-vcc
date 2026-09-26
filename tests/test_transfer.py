@@ -974,3 +974,61 @@ def test_keeping_only_the_perturbation_module_restores_everything_else(
             assert torch.equal(tensor, warm[name]), f"{name} should still be Phase 1's"
         else:
             assert torch.equal(tensor, fresh[name]), f"{name} should be back to fresh"
+
+
+def test_a_nan_phase1_score_is_not_a_comparison(tmp_path):
+    """The server run logged `sig_pearson +nan` for two cores and then drew
+    "consider flipping phase2.unfreeze_core" out of comparing them. A core
+    that never carried Phase 1's weights has an untrained head, which
+    predicts a constant — that is not a score (D93)."""
+    import dataclasses
+    import json
+
+    from vccp import checklist
+    from vccp.config import load_config
+    from vccp.paths import RunPaths
+    from vccp.phases import forgetting
+
+    from tests.conftest import MINI_CONFIG
+
+    cfg = dataclasses.replace(load_config(MINI_CONFIG), output_root=tmp_path / "runs")
+    nan = {forgetting.HEADLINE: float("nan")}
+    real = {forgetting.HEADLINE: 0.12}
+
+    assert forgetting._measurable(real)
+    assert not forgetting._measurable(nan)
+    assert not forgetting._measurable({})
+
+    ablation = forgetting._ablation(
+        cfg, {"phase2": {"metrics": nan}, "phase2_core_frozen": {"metrics": real}}
+    )
+    assert ablation["available"] is False
+    assert "non-finite" in ablation["reason"]
+    assert "flipping" not in ablation["reason"]
+
+    both_real = forgetting._ablation(
+        cfg,
+        {
+            "phase2": {"metrics": real},
+            "phase2_core_frozen": {"metrics": {forgetting.HEADLINE: 0.10}},
+        },
+    )
+    assert both_real["available"] is True
+
+    # And the checklist stops calling item 7 done over a report of NaN.
+    run_paths = RunPaths(cfg)
+    run_paths.ensure()
+    run_paths.forgetting.write_text(json.dumps({
+        "checkpoints": {
+            "phase1": {"measurable": True},
+            "phase2": {"measurable": False, "not_measurable_because": "no warm start"},
+        }
+    }))
+    status, reason = checklist._forgetting_status(run_paths)()
+    assert status == checklist.DEVIATION
+    assert "phase2" in reason and "no warm start" in reason
+
+    run_paths.forgetting.write_text(json.dumps({
+        "checkpoints": {"phase1": {"measurable": True}, "phase2": {"measurable": True}}
+    }))
+    assert checklist._forgetting_status(run_paths)() == (checklist.DONE, None)

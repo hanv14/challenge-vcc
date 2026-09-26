@@ -315,6 +315,14 @@ command.
 read off it (D88). Raise it for any run whose purpose is to choose between two
 configurations; it costs forward passes at evaluation time and nothing else.
 
+**`reports/forgetting.json`** — Phase 1 validation re-scored under each saved
+core. Under `warm_start: none` the Phase 2 and Phase 3 cores never carried
+Phase 1's weights, so their Phase 1 head is untrained, predicts a constant,
+and scores NaN. Those rows now say `measurable: false` with the reason, the
+core-freeze comparison refuses to run on them, and checklist item 7 reports a
+deviation rather than `done` (D93) — a NaN is not a score, and the first
+server run turned one into a recommendation to flip a config key.
+
 `train.evals_per_run` (default 4) sets how often a phase evaluates, and so the
 resolution at which all three of those readings exist: `checkpoint_selection`
 can only pick an evaluated step, and `signal_retained` can only be measured
@@ -356,8 +364,19 @@ Two habits make that worth something:
 * **record three columns per upload**: run name, commit, leaderboard score.
 
 The settings that decide a prediction live in `phase3_policy.json` (the
-generator's threshold and scale) and `predictions/model/index.json` (what the
-blocks were actually built with). Those two, plus the commit, are the whole
+generator's threshold and scale, **and whether Phase 3 adapts at all**) and
+`predictions/model/index.json` (what the blocks were actually built with).
+
+Read `phase3_policy.json`'s `adapt` block before each run: it is now measured
+rather than fixed (DECISIONS.md D94). Rehearsal variant 1 runs Phase 3's own
+procedure — fit the mapping on a held-out context's controls alone — on a
+context whose answers are known, and when that comes out worse than
+predicting no change the policy sets `context_adapters: false` and Phase 3
+keeps Phase 2's mapping. The block carries the per-context ratios it decided
+on. On the first full server run they were 1.484, 1.509 and 1.468 against a
+floor of 1.0, and Phase 3's own logs showed two of three challenge contexts
+getting worse by adapting. A policy written before this change is refused
+with a message asking you to rerun the `rehearsal` stage. Those two, plus the commit, are the whole
 provenance of a submission.
 
 Runs are also **reproducible**: `train.deterministic` (on by default) turns

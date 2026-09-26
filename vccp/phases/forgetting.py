@@ -95,6 +95,11 @@ def run_forgetting(cfg: Config) -> dict[str, Any]:
             f"no core checkpoint under {run_paths.checkpoints}; run the phases first"
         )
 
+    for name, entry in scores.items():
+        entry["measurable"] = _measurable(entry["metrics"])
+        if not entry["measurable"]:
+            entry["not_measurable_because"] = _why_unmeasurable(cfg, name)
+
     reference = scores.get("phase1", {}).get("metrics", {})
     for name, entry in scores.items():
         entry["change_from_phase1"] = {
@@ -127,6 +132,11 @@ def run_forgetting(cfg: Config) -> dict[str, Any]:
     for name, entry in scores.items():
         headline = entry["metrics"].get(HEADLINE)
         change = entry["change_from_phase1"].get(HEADLINE)
+        if not entry["measurable"]:
+            # Printing `+nan` invited reading it as a number; the server run
+            # then drew a recommendation out of one (DECISIONS.md D93).
+            log.info("  %-24s not measurable — %s", name, entry["not_measurable_because"])
+            continue
         log.info(
             "  %-24s %s %s",
             name,
@@ -149,6 +159,32 @@ def run_forgetting(cfg: Config) -> dict[str, Any]:
     return report
 
 
+def _measurable(metrics: dict[str, Any]) -> bool:
+    """Whether this core produced a Phase 1 score that is a number.
+
+    A core that never carried Phase 1's weights has an untrained `sig` head,
+    which is zero-initialized and so predicts a constant — and the Pearson
+    of a constant is NaN, not a bad score.
+    """
+    value = metrics.get(HEADLINE)
+    return value is not None and bool(np.isfinite(value))
+
+
+def _why_unmeasurable(cfg: Config, name: str) -> str:
+    if name.startswith("phase2") or name.startswith("phase3"):
+        if cfg.phase2.warm_start == "none":
+            return (
+                "`phase2.warm_start: none`, so this core never carried Phase 1's "
+                "weights: its Phase 1 head is untrained and predicts a constant. "
+                "There is nothing of Phase 1 in it to forget, which is the D91 "
+                "deviation showing up here rather than a failure of the guard"
+            )
+    return (
+        f"{HEADLINE} came back non-finite under this core — a head that predicts a "
+        "constant has no correlation to report"
+    )
+
+
 def _ablation(cfg: Config, scores: dict[str, dict]) -> dict[str, Any]:
     """Compare the two Phase 2 arms on Phase 1 validation."""
     configured = "core_unfrozen" if cfg.phase2.unfreeze_core else "core_frozen"
@@ -162,6 +198,23 @@ def _ablation(cfg: Config, scores: dict[str, dict]) -> dict[str, Any]:
             "available": False,
             "reason": "the ablation arm was not trained "
             "(train.core_freeze_ablation is off, or Phase 2 has not run)",
+            "configured_arm": configured,
+        }
+
+    # A comparison against NaN answers every question the same way, and the
+    # server run turned one into "consider flipping phase2.unfreeze_core".
+    unmeasurable = [
+        name
+        for name, metrics in ((configured, main), (other, ablation))
+        if not _measurable(metrics)
+    ]
+    if unmeasurable:
+        return {
+            "available": False,
+            "reason": (
+                f"{', '.join(unmeasurable)} scored non-finite on {HEADLINE}: "
+                + _why_unmeasurable(cfg, "phase2")
+            ),
             "configured_arm": configured,
         }
 

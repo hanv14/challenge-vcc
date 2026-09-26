@@ -116,6 +116,11 @@ def adapt_on_controls(
     The perturbation module is frozen — what a knockdown does was learned in
     Phases 1 and 2 from data this context does not have, and a context whose
     only evidence is unperturbed cells has nothing to say about it.
+
+    `steps=0` measures the mapping without touching it, which is what the
+    policy asks for when the rehearsal measured controls-only adaptation to
+    do harm (DECISIONS.md D94). The artifact §4.8 item 11 wants — the loss
+    before and after — is still written; the two are simply equal.
     """
     log = get_logger()
     adapter = context_adapter(source.name)
@@ -149,30 +154,43 @@ def adapt_on_controls(
         loss = masked_mse(predicted, rest[:, positions])
         return loss + model.regularization(), {"mapping": float(loss.detach())}
 
-    l2sp = L2SP(model, cfg.train.l2sp_weight)
-    result = run_training(
-        model,
-        step,
-        steps=steps,
-        cfg=cfg,
-        phase=f"{phase}:{source.name}",
-        rng=rng,
-        device=device,
-        l2sp=l2sp,
-    )
+    if steps > 0:
+        l2sp = L2SP(model, cfg.train.l2sp_weight)
+        result = run_training(
+            model,
+            step,
+            steps=steps,
+            cfg=cfg,
+            phase=f"{phase}:{source.name}",
+            rng=rng,
+            device=device,
+            l2sp=l2sp,
+        )
+        curve = result.curve
+    else:
+        curve = []
 
     loss_after, pearson_after = evaluate_mapping(model, source, cfg, device, rng, batch_size)
     trainable = check.end(model, plan, before_snapshot)
 
-    log.info(
-        "  adapted %s on %d control-cell steps: mapping mse %.4f -> %.4f, pearson %+.3f -> %+.3f",
-        source.name,
-        steps,
-        loss_before,
-        loss_after,
-        pearson_before,
-        pearson_after,
-    )
+    if steps > 0:
+        log.info(
+            "  adapted %s on %d control-cell steps: mapping mse %.4f -> %.4f, "
+            "pearson %+.3f -> %+.3f",
+            source.name,
+            steps,
+            loss_before,
+            loss_after,
+            pearson_before,
+            pearson_after,
+        )
+    else:
+        log.info(
+            "  %s not adapted, as the policy says: mapping mse %.4f, pearson %+.3f",
+            source.name,
+            loss_before,
+            pearson_before,
+        )
     return AdaptationResult(
         context=source.name,
         adapter=adapter,
@@ -181,6 +199,6 @@ def adapt_on_controls(
         loss_after=loss_after,
         pearson_before=pearson_before,
         pearson_after=pearson_after,
-        curve=result.curve,
+        curve=curve,
         trainable=trainable,
     )

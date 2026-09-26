@@ -2015,3 +2015,87 @@ forget.
 §4's three phases come back and the D91 deviation goes away; if it matches
 `none`, Phase 1's weights have nothing to give Phase 2 in any form and D91
 stands as the final answer.
+
+### D93. A NaN is not a score, and the checklist does not call it one
+
+**Decision.** The forgetting stage marks each core `measurable` and says why
+when it is not; the core-freeze ablation refuses to compare non-finite
+scores; and checklist item 7 reports a `deviation` when Phase 1 validation
+could not be re-scored, rather than `done` because the file exists.
+
+**Reason.** The first full server run under `warm_start: none` logged:
+
+```
+  phase2                   sig_pearson +nan
+  phase3                   sig_pearson +nan
+  core-freeze ablation: core_frozen is better on sig_pearson by +nan
+      ->  core_frozen retains more of Phase 1 than the configured default
+          (core_unfrozen); consider flipping phase2.unfreeze_core
+```
+
+Three things wrong. The NaN is not a bad score: the Phase 1 head is
+zero-initialized, so a core that never carried Phase 1's weights predicts a
+constant, and the Pearson of a constant has no value. `main >= other` with a
+NaN on either side is always false, so the ablation silently declared the
+*other* arm better and recommended flipping a config key on the strength of
+it. And item 7 of §4.8 — "Phase 1 validation re-scored after Phase 2 and
+after Phase 3" — read `done`, because `forgetting.json` existed.
+
+**What it means for the run, not just the report.** Under D91's
+`warm_start: none` there is nothing of Phase 1 in Phase 2's core to forget,
+so §4.3's guard has nothing to guard and item 7 cannot be satisfied as
+written. That is the D91 deviation surfacing a second time, and the honest
+place to say so is the checklist, which now does.
+
+**Alternative.** Score the phase 2 and 3 cores with Phase 1's *trained* head
+grafted on. Rejected: that measures a model the run never had, and the
+question item 7 asks — what does the saved core still remember — has the
+answer "nothing, by construction" under this setting. Saying that is better
+than manufacturing a number for it.
+
+### D94. Phase 3 adapts only if the rehearsal measured that adapting helps
+
+**Decision.** `phase3_policy.json`'s `adapt` block is read off rehearsal
+variant 1 instead of being written in. When the controls-only mapping scores
+worse than predicting no change (median above `CONTROLS_ONLY_TOLERANCE`,
+1.02), `context_adapters` and `delta` are both false, and Phase 3 measures
+the mapping without touching it — `adapt_<context>.json` is still written,
+with `steps: 0` and equal loss before and after. `POLICY_VERSION` is 2, so a
+policy from before this is refused rather than obeyed.
+
+**Reason.** §4.6 says the policy "states which modules Phase 3 may adapt …
+chosen from these results". It was a literal transcription of §4.7 instead:
+`context_adapters: True, delta: True`, hardcoded, with a comment explaining
+why that is reasonable. Variant 1 exists precisely to test it — it fits the
+mapping on a held-out context's controls alone, which *is* Phase 3's
+procedure, and scores the rest genes it then predicts. The first full server
+run measured, per context, against a floor of 1.0:
+
+| context | method | upper bound (perturbed cells allowed) |
+|---|---|---|
+| K562_essential | 1.484 | 0.989 |
+| K562_gwps | 1.509 | 1.002 |
+| rpe1 | 1.468 | 0.890 |
+
+Adapting the mapping on controls alone makes the rest genes about 50% worse
+than leaving them at no change, where the same mapping given perturbed cells
+sits at 1.0 or better. Phase 3 then did the same thing to the challenge
+contexts and reported it: A 1.0091 → 0.8786, but B 0.7208 → **0.8422** and
+C 0.8699 → **0.9568**. Two of three contexts were made worse by their own
+adaptation, in the run's own logs, and nothing acted on it.
+
+**This is a departure from §4.7's described procedure**, taken on §4.6's
+explicit instruction that the policy be chosen from the rehearsal. It is
+recorded in the policy file itself, with the numbers, so a reader can see
+which of the two sections the run followed and why. When variant 1 does not
+run, the policy falls back to §4.7 as written and says `measured: false`.
+
+**Alternative.** Adapt anyway and let the generator's confidence threshold
+suppress the damage. Rejected: the threshold works on predicted fold changes
+per gene, and a mapping that is uniformly worse does not announce itself
+gene by gene. The cheaper and more honest fix is not to do the thing that
+was measured to hurt.
+
+**What it does not change.** The core, the perturbation module and the heads
+are never adaptable whatever the rehearsal says: §4.7 is explicit, and
+nothing here measures them.

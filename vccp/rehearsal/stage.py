@@ -25,7 +25,12 @@ from ..runtime import release_gpu_memory, resolve_device
 from . import calibrate as calibration_module
 from . import common, variants
 
-POLICY_VERSION = 1
+#: Bumped to 2 when `adapt` stopped being a fixed block and became a reading
+#: off rehearsal variant 1 (DECISIONS.md D94). A version 1 policy says
+#: `context_adapters: true` because it was written that way, not because it
+#: was measured, so Phase 3 refuses it and asks for the rehearsal again
+#: rather than adapting on the strength of a claim nobody checked.
+POLICY_VERSION = 2
 
 
 def run_rehearsal(cfg: Config) -> dict[str, Any]:
@@ -364,24 +369,88 @@ def _leaderboard_scale(cfg, results) -> dict[str, Any]:
     }
 
 
+#: How much worse than predicting no change the controls-only mapping may be
+#: before Phase 3 is told not to adapt at all. Slightly above 1.0 so that a
+#: mapping which merely ties with the baseline is still allowed to try.
+CONTROLS_ONLY_TOLERANCE = 1.02
+
+
+def _adapt_policy(results) -> dict[str, Any]:
+    """Whether Phase 3 may adapt, read off rehearsal variant 1.
+
+    §4.6 says the policy states what Phase 3 may adapt *chosen from these
+    results*, and variant 1 is the measurement that bears on it: it fits the
+    mapping on a held-out context's controls alone — exactly Phase 3's
+    procedure — and scores the rest genes it then predicts. If that comes
+    out worse than predicting no change, adapting on the challenge controls
+    is not a neutral step that might help, it is a measured harm, and the
+    policy has to say so instead of permitting it because §4.7 describes it.
+
+    The first full server run measured 1.484, 1.509 and 1.468 against a
+    floor of 1.0, with the same mapping reaching 0.989 when it was allowed
+    the perturbed cells too (DECISIONS.md D94).
+    """
+    ratios = {}
+    for result in results:
+        if result.variant != "controls_only":
+            continue
+        scores = result.arms.get(common.METHOD, {}).get("rest_genes")
+        if scores and np.isfinite(scores.get("mse_ratio_to_no_change", float("nan"))):
+            ratios[result.context] = float(scores["mse_ratio_to_no_change"])
+
+    permitted = {
+        "core": False,
+        "perturbation_module": False,
+        "heads": False,
+        "measured_on": "rehearsal variant 1 (controls_only), rest genes, "
+        "mse against predicting no change",
+        "controls_only_ratio_per_context": ratios,
+    }
+    if not ratios:
+        return {
+            **permitted,
+            "context_adapters": True,
+            "delta": True,
+            "measured": False,
+            "reason": "variant 1 did not run, so §4.7's design stands as written: a "
+            "challenge context arrives as control cells and nothing else, so the "
+            "mapping is the only thing it can support.",
+        }
+
+    worst = max(ratios.values())
+    median = float(np.median(list(ratios.values())))
+    helps = median <= CONTROLS_ONLY_TOLERANCE
+    return {
+        **permitted,
+        "context_adapters": helps,
+        "delta": helps,
+        "measured": True,
+        "controls_only_ratio_median": round(median, 4),
+        "controls_only_ratio_worst": round(worst, 4),
+        "reason": (
+            "variant 1 fits the mapping on a held-out context's controls alone — "
+            f"Phase 3's own procedure — and reaches {median:.3f} against predicting "
+            "no change (1.0). Adapting is at worst harmless, so it is permitted."
+            if helps
+            else
+            "variant 1 fits the mapping on a held-out context's controls alone — "
+            f"Phase 3's own procedure — and reaches {median:.3f} against predicting "
+            f"no change (1.0), worst {worst:.3f}. Adapting on controls is therefore "
+            "measured to make the rest genes worse than leaving them alone, so "
+            "Phase 3 keeps Phase 2's mapping unchanged. This is a departure from "
+            "§4.7's described procedure, taken on §4.6's instruction that the "
+            "policy be chosen from the rehearsal."
+        ),
+    }
+
+
 def build_policy(cfg, calibration, results) -> dict[str, Any]:
     """`phase3_policy.json`: what Phase 3 may adapt, and how it generates."""
     return {
         "version": POLICY_VERSION,
         "description": "what Phase 3 may adapt, and the generator calibration chosen "
         "from the rehearsal (CLAUDE.md §4.6, §4.7)",
-        "adapt": {
-            # Exactly what §4.7 permits: context adapters and delta for genes
-            # first seen here, on the challenge controls.
-            "context_adapters": True,
-            "delta": True,
-            "core": False,
-            "perturbation_module": False,
-            "heads": False,
-            "reason": "a challenge context arrives as control cells and nothing else, "
-            "so the mapping is the only thing it can support. What a knockdown does "
-            "was learned in Phases 1 and 2 from data this context does not have.",
-        },
+        "adapt": _adapt_policy(results),
         "generator": {
             "name": cfg.predict.generator,
             **calibration.settings.as_dict(),
