@@ -205,6 +205,14 @@ vcc prep runs/server/submission/prediction.h5ad \
 (`python -m vccp package --config configs/server.yaml` does exactly the second
 command when the tool is installed.) Upload the `.vcc`.
 
+`vcc prep` refuses to overwrite its output, so the `package` stage deletes an
+existing `prediction.vcc` before calling it: after a failure there is then no
+`.vcc` rather than the previous run's, which the checklist would otherwise
+read as item 13 done (D97). If you run the tool by hand into a directory that
+already has one, delete it first or `vcc prep` will exit 1 — and check that
+the `.vcc` you upload is newer than the `prediction.h5ad` beside it.
+Checklist item 13 now checks that for you.
+
 ---
 
 ## What to read before you submit

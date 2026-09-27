@@ -131,6 +131,19 @@ def _vcc_status(run_paths):
         from .submit import package
 
         if run_paths.submission_vcc.is_file():
+            # A .vcc older than the prediction beside it is a previous run's,
+            # and uploading it would submit a different model's cells (D97).
+            if (
+                run_paths.submission.is_file()
+                and run_paths.submission_vcc.stat().st_mtime
+                < run_paths.submission.stat().st_mtime
+            ):
+                return (
+                    DEVIATION,
+                    f"{_rel(run_paths, run_paths.submission_vcc)} is older than the "
+                    "prediction beside it, so it was packaged from a different run. "
+                    "Rerun the `package` stage before uploading anything.",
+                )
             return DONE, None
         if package.tool_path() is None:
             return (

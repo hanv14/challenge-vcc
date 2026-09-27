@@ -316,6 +316,17 @@ class Phase2:
     #: a quantity whose effects are 0.09 (DECISIONS.md D88). It costs forward
     #: passes at evaluation time and nothing else.
     eval_targets: int = 256
+    #: Let Phase 2 train the gene vocabulary's projection `W`
+    #: (§4.1's `embedding = W·prior + δ`), which it otherwise inherits and
+    #: freezes.
+    #:
+    #: Off by default, which is what every measurement so far was taken
+    #: under. It matters because Phase 1 *does* train `W`, so a warm-started
+    #: Phase 2 is locked to a projection fitted to LINCS bulk, and the
+    #: `perturbation_only` arm behaves exactly as that would predict: ahead
+    #: at step 750, stuck thereafter (DECISIONS.md D95). Turning it on is the
+    #: test of that explanation.
+    train_projections: bool = False
     #: How the perturbation module is supervised (PLAN_PERCELL.md §3).
     #:
     #: * `pooled` — one control pseudobulk in, the target's pseudobulk as

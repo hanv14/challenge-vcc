@@ -1032,3 +1032,35 @@ def test_a_nan_phase1_score_is_not_a_comparison(tmp_path):
         "checkpoints": {"phase1": {"measurable": True}, "phase2": {"measurable": True}}
     }))
     assert checklist._forgetting_status(run_paths)() == (checklist.DONE, None)
+
+
+def test_phase2_can_be_allowed_to_train_the_projection(session_cfg, built_priors):
+    """Phase 1 trains `W` and Phase 2 has always frozen it, so a warm arm is
+    locked to a projection fitted to LINCS bulk — the likely reason
+    `perturbation_only` leads at step 750 and is stuck by 6000 (D95)."""
+    import dataclasses
+
+    from vccp.train.freeze import parameter_group, set_trainable
+
+    def groups(train_projections):
+        cfg = dataclasses.replace(
+            session_cfg,
+            phase2=dataclasses.replace(
+                session_cfg.phase2, train_projections=train_projections
+            ),
+        )
+        model = build_model(cfg, built_priors)
+        model.add_adapter(phase2_mod.ADAPTER)
+        plan = set_trainable(
+            model,
+            "phase2",
+            core=True,
+            adapters=[phase2_mod.ADAPTER],
+            delta=True,
+            projections=cfg.phase2.train_projections,
+            heads=True,
+        )
+        return {parameter_group(name) for name in plan.trainable}
+
+    assert "projections" not in groups(False), "the default is what was measured"
+    assert "projections" in groups(True)

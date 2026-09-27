@@ -192,3 +192,33 @@ def test_the_summary_draws_figures(pipeline_run):
     for figure in figures:
         assert figure.stat().st_size > 1000
         assert f"figures/{figure.name}" in pipeline_run.summary_md.read_text()
+
+
+def test_a_stale_vcc_is_not_a_packaged_submission(tmp_path):
+    """`vcc prep` refuses to overwrite, so a rerun left the previous run's
+    .vcc in place and the checklist read item 13 as done — for a file that
+    does not match the prediction beside it (DECISIONS.md D97)."""
+    import dataclasses
+    import os
+
+    from vccp import checklist
+    from vccp.config import load_config
+    from vccp.paths import RunPaths
+
+    from tests.conftest import MINI_CONFIG
+
+    cfg = dataclasses.replace(load_config(MINI_CONFIG), output_root=tmp_path / "runs")
+    run_paths = RunPaths(cfg)
+    run_paths.submission.parent.mkdir(parents=True, exist_ok=True)
+
+    run_paths.submission_vcc.write_bytes(b"packaged earlier")
+    run_paths.submission.write_bytes(b"predicted just now")
+    os.utime(run_paths.submission_vcc, (1, 1))
+
+    status, reason = checklist._vcc_status(run_paths)()
+    assert status == checklist.DEVIATION
+    assert "older than the prediction" in reason
+
+    # Packaged after the prediction it describes, it counts.
+    os.utime(run_paths.submission_vcc, None)
+    assert checklist._vcc_status(run_paths)() == (checklist.DONE, None)

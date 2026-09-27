@@ -1009,7 +1009,10 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             core=unfreeze_core,
             adapters=[ADAPTER],
             delta=True,
-            projections=False,
+            # Phase 1 trains `W` and Phase 2 has always frozen it, so a warm
+            # arm is locked to a projection fitted to LINCS bulk (D95). Off
+            # by default: every measurement so far was taken that way.
+            projections=cfg.phase2.train_projections,
             heads=True,
         )
         before = frozen_check.begin(model, plan)

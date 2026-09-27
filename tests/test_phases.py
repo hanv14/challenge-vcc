@@ -579,3 +579,51 @@ def test_phase2_can_take_phase1s_perturbation_module_alone(trained_run, tmp_path
     transfer = arm["warm_start_transfer"]
     assert transfer["kept_from_phase1"] == 4
     assert transfer["restored_to_the_priors"] > transfer["kept_from_phase1"]
+
+
+def test_adapting_zero_steps_reports_no_change_at_all(session_cfg, built_priors):
+    """`loss_before` and `loss_after` are a *paired* comparison, so they have
+    to be measured on the same cells. They were measured on two draws of the
+    shared training rng: with the policy setting `steps: 0`, where the model
+    provably cannot change, a server context read 1.1076 before and 0.6941
+    after (DECISIONS.md D96)."""
+    from vccp.phases import adapt
+
+    n_panel, n_rest, n_cells = 12, 20, 64
+    generator = torch.Generator().manual_seed(0)
+    panel = torch.randn(n_cells, n_panel, generator=generator)
+    rest = torch.randn(n_cells, n_rest, generator=generator)
+
+    class Source:
+        name = "ctx"
+        panel_idx = as_index(np.arange(n_panel))
+        rest_idx = as_index(np.arange(n_panel, n_panel + n_rest))
+        context_profile = torch.zeros(n_panel, 1)
+
+        def draw_controls(self, n, rng, device):
+            rows = rng.choice(n_cells, size=min(n, n_cells), replace=False)
+            return panel[rows], rest[rows]
+
+    model = build_model(session_cfg, built_priors)
+    for name in ("phase1", "phase2", "phase3"):
+        model.add_adapter(name)
+    # Heads are zero-initialized, so an untrained model predicts a constant
+    # and its correlation is NaN rather than a number to compare.
+    with torch.no_grad():
+        for head in model.heads.values():
+            head[-1].base.weight.normal_(0, 0.1)
+
+    result = adapt.adapt_on_controls(
+        model,
+        Source(),
+        session_cfg,
+        steps=0,
+        device="cpu",
+        rng=np.random.default_rng(0),
+        batch_size=16,
+    )
+    assert result.steps == 0
+    assert result.curve == []
+    assert result.loss_after == result.loss_before
+    assert result.pearson_after == result.pearson_before
+    assert result.as_dict()["loss_improvement"] == 0.0

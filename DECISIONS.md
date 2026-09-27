@@ -2079,10 +2079,16 @@ run measured, per context, against a floor of 1.0:
 
 Adapting the mapping on controls alone makes the rest genes about 50% worse
 than leaving them at no change, where the same mapping given perturbed cells
-sits at 1.0 or better. Phase 3 then did the same thing to the challenge
-contexts and reported it: A 1.0091 → 0.8786, but B 0.7208 → **0.8422** and
-C 0.8699 → **0.9568**. Two of three contexts were made worse by their own
-adaptation, in the run's own logs, and nothing acted on it.
+sits at 1.0 or better. The seed-2 run measured the same thing worse still:
+2.030, 2.167 and 2.505.
+
+**Correction.** This entry originally also cited Phase 3's own before/after
+numbers — A 1.0091 → 0.8786, B 0.7208 → 0.8422, C 0.8699 → 0.9568 — as two
+of three contexts being made worse by their own adaptation. That evidence
+was worthless: the two measurements drew different control cells, so their
+difference was sampling noise (D96). The rehearsal variant, which scores 100
+targets against a floor, is what this decision rests on, and it is
+unaffected.
 
 **This is a departure from §4.7's described procedure**, taken on §4.6's
 explicit instruction that the policy be chosen from the rehearsal. It is
@@ -2099,3 +2105,113 @@ was measured to hurt.
 **What it does not change.** The core, the perturbation module and the heads
 are never adaptable whatever the rehearsal says: §4.7 is explicit, and
 nothing here measures them.
+
+### D95. `perturbation_only` helps at first and then holds Phase 2 back
+
+**Decision.** `warm_start` stays at `none`. `perturbation_only` remains
+available and is worth another look if the instability is fixed, but it is
+not the default.
+
+**Reason.** Measured on seed 2, one arm, the same config as everything else
+in D90–D91, against `none` on the same seed:
+
+| step | `none` | `perturbation_only` |
+|---|---|---|
+| 750 | 0.9195 | **0.8815** |
+| 1500 | 0.8976 | 0.9301 |
+| 2250 | 0.8348 | 0.9232 |
+| 3000 | 0.8209 | 0.9683 |
+| 3750 | 0.8068 | 0.8832 |
+| 4500 | 0.7809 | 0.9308 |
+| 5250 | 0.7734 | 0.9468 |
+| 6000 | **0.7585** | 1.0275 |
+
+Phase 1's perturbation module is worth something: at step 750 the warm arm is
+ahead, 0.8815 against 0.9195, with `pert_pearson` 0.299 against 0.275. It is
+the first evidence in this project that anything of Phase 1 transfers. But it
+then stops improving and drifts back to the no-change line, where `none`
+falls monotonically past it and keeps going. Best against best, 0.8815
+against 0.7585.
+
+So the reading is not "Phase 1's perturbation module is useless" but "it is a
+better starting point than the priors and a worse place to stay". That is the
+signature of a constraint, not of bad information.
+
+**The likely constraint, not yet tested.** Phase 2 runs with
+`projections=False`: `vocabulary.projections.target.weight` — the `W` of
+§4.1's `embedding = W·prior + δ` — is **frozen for the whole of Phase 2**,
+in every warm-start mode. Phase 1 trains it (`projections=True`), so a warm
+arm inherits a `W` fitted to LINCS bulk and can never move it, while a cold
+arm gets the prior-basis initialization and also cannot move it. That would
+explain both halves of the table: the transferred target-role information
+helps immediately, and the projection it arrives through is locked to the
+wrong assay. `phase2.train_projections` (default off, so this changes
+nothing until it is asked for) makes that one 45-minute arm.
+
+**Alternative.** Lower the learning rate for the transferred tensors alone,
+so they are nudged rather than overwritten. Rejected for now: the arm is
+unstable in the same way every arm here is (best at step 750, ending 1.17x
+worse), so the first thing to try is the constraint, not a schedule.
+
+### D96. Loss before and after are measured on the same cells
+
+**Decision.** `adapt_on_controls` measures the mapping through one helper
+that builds a fresh generator from `cfg.seed` each time, so "before" and
+"after" draw the identical control cells and their difference is what
+adapting did.
+
+**Reason.** The two calls shared the training `rng`, which the first call had
+already advanced, so they drew different cells. The seed-2 run made that
+visible by accident: the policy set `steps: 0` (D94), the model provably did
+not change, and the report still showed
+
+| context | before | after | "improvement" |
+|---|---|---|---|
+| A | 0.7818 | 0.8635 | −0.0817 |
+| B | **1.1076** | **0.6941** | +0.4135 |
+| C | 0.8903 | 0.9364 | −0.0460 |
+
+B moved by 0.41 between two measurements of the same unchanged model. The
+draw is 32 control cells, so this is sampling noise reported as an effect —
+and checklist item 11's artifact is exactly "loss before and after", which
+means the artifact was not measuring anything.
+
+**What it invalidates.** The seed-0 run's "two of three contexts made worse
+by adapting" (cited in D94) was this noise, and D94 now says so. The
+decision itself stands on rehearsal variant 1, which scores 100 targets
+against a floor and is unaffected.
+
+**Alternative.** Average several draws instead. Unnecessary once the
+comparison is paired: the cell-to-cell variation cancels, which is the whole
+reason to hold the draw fixed rather than to average it away.
+
+### D97. A `.vcc` from an earlier run is not this run's submission
+
+**Decision.** The `package` stage deletes an existing `prediction.vcc` before
+calling `vcc prep`, and checklist item 13 reports a deviation when the `.vcc`
+on disk is older than the `prediction.h5ad` beside it.
+
+**Reason.** The seed-2 server run ended:
+
+```
+16:17:47 ERROR   vcc exited 1: ['vcc prep: Output already exists:
+                 .../submission/prediction.vcc. Re-run with --force ...']
+16:17:47 ERROR   `vcc prep` did not write a .vcc; prediction.h5ad remains the deliverable
+...
+  13. [  done   ] Submission and validation, `vcc prep` where available
+```
+
+The tool refuses to overwrite, so the `.vcc` from the *previous* run stayed
+on disk — packaged from a different model's cells — and item 13 read `done`
+because a file with the right name existed. The run's own log said the
+packaging had failed two lines earlier. Uploading that file would have
+submitted the wrong predictions with no warning anywhere.
+
+Deleting first rather than passing `--force` is deliberate: after a failure
+for any other reason there is then no `.vcc` at all, so the checklist's
+existence test is honest by construction rather than by a second check. The
+mtime test covers the other path, where `package` is not rerun at all.
+
+**Alternative.** Keep the old file and name the new one after the run. That
+multiplies files whose only difference is which model made them, in a
+directory the user uploads from. One current file is safer.

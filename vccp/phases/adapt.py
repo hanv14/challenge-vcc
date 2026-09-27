@@ -143,7 +143,21 @@ def adapt_on_controls(
     check = frozen_check or FrozenCheck()
     before_snapshot = check.begin(model, plan)
 
-    loss_before, pearson_before = evaluate_mapping(model, source, cfg, device, rng, batch_size)
+    def measure() -> tuple[float, float]:
+        """The mapping, on the *same* control cells every time.
+
+        A fresh generator with a fixed seed, so "before" and "after" differ
+        only by what adapting did. Sharing the training rng meant the two
+        calls drew different cells, and their difference was reported as the
+        effect of adaptation: in the run where the policy set `steps: 0` —
+        where the model provably did not change — one context read 1.1076
+        before and 0.6941 after (DECISIONS.md D96).
+        """
+        return evaluate_mapping(
+            model, source, cfg, device, np.random.default_rng(cfg.seed), batch_size
+        )
+
+    loss_before, pearson_before = measure()
 
     def step(step_rng: np.random.Generator):
         panel, rest = source.draw_controls(batch_size, step_rng, device)
@@ -170,7 +184,7 @@ def adapt_on_controls(
     else:
         curve = []
 
-    loss_after, pearson_after = evaluate_mapping(model, source, cfg, device, rng, batch_size)
+    loss_after, pearson_after = measure()
     trainable = check.end(model, plan, before_snapshot)
 
     if steps > 0:

@@ -118,6 +118,16 @@ def package(cfg, paths, submission: Path, output: Path, *, warning_only: bool) -
             "the exact `vcc prep` command to run on the server.",
         )
     output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        # `vcc prep` refuses to overwrite, so a second run of this stage in a
+        # run directory that already has a .vcc fails with "Output already
+        # exists" and leaves the *previous* run's file sitting there — which
+        # the checklist then read as item 13 done, for a file that does not
+        # match the prediction.h5ad beside it (DECISIONS.md D97). Removing it
+        # first means the file on disk is always this run's, or absent.
+        log = get_logger()
+        log.info("  replacing the .vcc left by an earlier run: %s", output)
+        output.unlink()
     return _run(
         [
             executable, "prep", str(submission),
