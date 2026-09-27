@@ -1846,6 +1846,12 @@ immaterial.
 Worth trying, but only after D88: choosing between schedules on a metric
 computed over 32 targets is how the last three cycles were spent.
 
+**Superseded — do not cite this entry as evidence** (see D98). Both runs above
+were measured on the 32-target metric, before D88 fixed it, *and* on
+`warm_start: full`, which D90 then showed does not learn at any setting.
+Lowering the learning rate of a flat line gives a flatter line. Nothing here
+says anything about the arm that does learn.
+
 ### D90. The warm start prevents Phase 2 from learning. D86 is superseded
 
 **What the measurement now says.** One run, seed 2, three arms sharing an
@@ -2215,3 +2221,46 @@ mtime test covers the other path, where `package` is not rerun at all.
 **Alternative.** Keep the old file and name the new one after the run. That
 multiplies files whose only difference is which model made them, in a
 directory the user uploads from. One current file is safer.
+
+### D98. Freeing the projection makes Phase 2 learn faster and then collapse
+
+**Decision.** `phase2.train_projections` stays off. D95's explanation of the
+`perturbation_only` arm is refuted.
+
+**Reason.** Four arms, seed 2, guards off, 6000 steps, 908 held-out targets —
+every one of them the same except for two switches:
+
+| step | `none`, W frozen | `none`, W trained | `pert_only`, W frozen | `pert_only`, W trained |
+|---|---|---|---|---|
+| 750 | 0.9195 | 0.8454 | 0.8815 | **0.8295** |
+| 1500 | 0.8976 | **0.8061** | 0.9301 | 0.9716 |
+| 3000 | 0.8209 | 1.0376 | 0.9683 | 0.9640 |
+| 4500 | 0.7809 | 1.1040 | 0.9308 | 1.0799 |
+| 6000 | **0.7585** | 0.9843 | 1.0275 | 1.0000 |
+
+Training `W` did not rescue the warm start. It made *both* arms learn faster
+at the start — 0.8454 and 0.8295 at step 750, against 0.9195 frozen — and
+then destabilised both. Best against best, the fully constrained arm still
+wins: 0.7585, and it is the only one of the four that is monotone, and the
+only one still improving at the last step it was given.
+
+**The pattern across all four, which is the real finding.** Every degree of
+freedom added to Phase 2 — a transferred perturbation module, a trainable
+projection, or both — buys faster early progress and costs convergence. The
+arm that reaches the best value is the most constrained one, by a clear
+margin, and it has not finished. So the question is no longer "what should
+Phase 2 inherit" but "why does this optimisation diverge the moment it has
+room to", and the cheapest thing to try is not another transfer: it is more
+steps for the arm that is still going down.
+
+**Correction to D89.** D89 concluded that lowering `train.lr` makes things
+monotonically worse and that the step size is therefore not the problem.
+Those two runs were measured on the 32-target metric (before D88) *and* on
+`warm_start: full` — the arm that has since been shown not to learn at any
+setting. Lowering the learning rate of a flat line produces a flatter line,
+which is what was observed. D89's numbers are not evidence about the arm that
+learns, and the lr question is open for it, behind the budget question.
+
+**Alternative considered.** Training `W` with a smaller learning rate than
+the rest. That is a third knob on an optimisation already failing on two, and
+the arm that works needs neither.

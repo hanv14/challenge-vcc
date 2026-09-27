@@ -573,6 +573,16 @@ has not been tried. LINCS knows what a knockdown does; Replogle knows what
 cells look like. That is one 45-minute arm against the `core_scratch` curve,
 and it is the one way back to three phases.
 
+**Measured, and it loses to no transfer at all** (D95, D98): 0.8815 at step
+750 against `none`'s 0.9195 — the first sign that anything of Phase 1
+transfers — then it stalls while `none` falls monotonically to 0.7585.
+Freeing the gene vocabulary's projection, the obvious explanation, made both
+arms faster early and then unstable (best 0.8061 and 0.8295). Across all four
+arms the pattern is that every added degree of freedom buys early progress
+and costs convergence, and the most constrained arm wins and has not
+finished. §7 is therefore closed: the open question is the optimisation, not
+the transfer.
+
 **Built** as `phase2.warm_start: perturbation_only` (D92): Phase 1's
 target-role projection and per-gene table plus the assay-type vocabulary —
 the four tensors `models/core.py: tokenize` builds the perturbation token
