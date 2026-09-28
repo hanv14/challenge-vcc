@@ -2448,3 +2448,112 @@ the job, and nothing about whether a better mapping would move the six
 official metrics — the rehearsal's controls-only upper bound sat at 1.00–1.03
 on rest genes even when it was allowed the perturbed cells (D94). This is a
 diagnosis of one step, not a route to a score.
+
+### D103. The runs are deterministic, and the error bar is sd 0.0146
+
+**Measured, not built.** Recorded a session late: the previous session ran
+both measurements and could not commit them.
+
+**A0 — determinism.** Two 1,000-step Phase 2 runs of one configuration
+(`configs/server_isolate.yaml`, seed 2) agreed on **26 of 26** validation
+metrics to the last bit, and the run header read "fused attention off". D99's
+fix works: with only the math attention kernel enabled, one configuration and
+one seed now give one answer.
+
+**A1 — the standing error bar.** Three seeds of `configs/server_isolate.yaml`
+(`warm_start: none`, `W` frozen, 6,000 steps), selection metric
+`pert_mse_ratio_to_no_change` on the held-out targets:
+
+| seed | best | at step | last | retained |
+|---|---|---|---|---|
+| 0 | 0.7802 | 6000 | 0.7802 | 1.00 |
+| 1 | 0.8092 | 5250 | 0.8117 | 0.99 |
+| 2 | 0.7915 | 6000 | 0.7915 | 1.00 |
+| **mean** | **0.7936** | | | |
+
+sd **0.0146**, range 0.0290. By PLAN_MAPPING §A2's table this is the first
+row: **one run per configuration is enough**, and a difference under **0.03**
+(2 sd) between two configurations is not a difference. Every later claim
+states the gap against this figure. The seed moves the held-out target set as
+well as the initialization and the cells, so 0.0146 is the spread of a
+comparison between two *different* seeds; comparing two configurations at the
+same seed can only be tighter, which makes 0.03 conservative.
+
+**What it says about the instability.** All three deterministic runs end at
+or beside their best (retained 0.99–1.00). The same configuration run
+non-deterministically for 12,000 steps (D99) peaked at step 3,000 and had
+given everything back by 12,000 (retained −0.12). That weakens D98 further:
+its four-arm "every degree of freedom costs convergence" pattern was read off
+runs of that non-deterministic kind.
+
+**What it does not say.** Reordering floating-point sums does not make
+training worse *in expectation*; it makes one run unrepresentative of the
+configuration. So the runs above show that 6,000 steps of this configuration
+do not collapse, three times out of three. They do not show what happens
+between 6,000 and 12,000, which is where most of D99's decline happened
+(0.9015 at 6,000, 1.0139 at 12,000). The direct test is one deterministic
+12,000-step arm; with sd 0.0146 one run answers it.
+
+**Alternative.** Five seeds instead of three. Not needed: at this spread the
+effects the project is chasing (0.05 and up) are over three sd, and the
+seed-to-seed range is already smaller than every gap D90–D92 rest on.
+
+### D104. The panel→rest mapping does not learn, and the logged curve cannot show it
+
+**Measured.** `map_control` from `runs/server/phase2/curves.csv`, 6,000 steps
+— the mapping's training loss on control cells, in control-SD units, where a
+zero-initialized model (predict each gene's control mean) scores 1.0:
+
+| step | 25 | 525 | 1025 | 1525 | 2025 | 2525 | 3025 | 3525 | 4025 | 4525 | 5025 | 5525 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| map | 0.974 | 0.922 | 0.940 | 1.027 | 0.957 | 1.041 | 0.933 | 1.050 | 1.114 | 0.962 | 1.090 | 0.948 |
+
+No trend: it bounces around 1.0 and ends where it started, while the
+perturbation module in the same network trains to 0.79 (D103). It is not
+losing a weighting argument: `loss_mapping` and `loss_perturbation` are both
+1.0 and both terms sit on a ~1.0 scale.
+
+**The ratio that explains why nothing is visible.** From D102's ceiling, on
+this loss a ridge regression gains 0.014 over no change and a perfect
+predictor 0.086; the half-range of `map_control` between logged steps is
+0.096. What a good linear map would achieve is about **a seventh** of the
+step-to-step noise, and even a perfect predictor's gain is smaller than it.
+
+**Two corrections to how that was first read.**
+
+1. **The logged value is on 16 cells, not 32.** `make_step` splits
+   `batch_size` 32 into 16 control and 16 perturbed cells, so `map_control` is
+   16 cells × 2,048 sampled rest genes (`train.output_genes_per_step`).
+2. **The bounce is not, by itself, evidence of not learning.** Each logged
+   value is a *different* 16 cells, and most of its movement is common to
+   every predictor — a batch of deep cells has a larger variance around the
+   control mean whatever predicts it. A zero model would bounce the same way,
+   and so would a mapping that had learned the ridge's 0.014. The curve cannot
+   tell those apart. What does tell them apart is a *paired* measurement, and
+   there are two: D102's held-out 1.144 and 1.109 on K562_gwps and rpe1, and
+   the `val_map_control_mse` columns in the same `curves.csv`, which the loop
+   writes at each of the eight evaluations on **the same** control cells every
+   time (`evaluate` reseeds from `cfg.seed + 1`). Those, not the training
+   curve, are the evidence that the mapping moves *backwards*.
+
+**What it leaves open.** Why the mapping ends above 1.0 on data it trains on.
+Two explanations fit, and they predict different arms:
+
+* **It fits per-step noise.** The achievable signal is a seventh of the noise
+  in each gradient estimate. Predicts that `phase2.batch_size=128` and
+  `train.output_genes_per_step=0` (all rest genes) move it and
+  `loss_mapping=0` does not help it.
+* **The other objectives drag it.** The mapping's decoder, value head and
+  latents are shared with the perturbation module, and the **delta term**
+  (`loss_delta` 0.5) trains the same decoder on group-mean changes. Predicts
+  that the mapping drifts above 1.0 even with `loss_mapping=0`.
+
+`--set phase2.loss_mapping=0` alone does not separate these: the delta term
+still trains the decoder. `loss_mapping=0` *and* `loss_delta=0` does — the
+decoder then receives no gradient from any mapping objective, and wherever
+`val_map_control_mse` ends is where the shared weights put it.
+
+**Alternative.** Read the smoothed training curve instead of the paired one.
+Smoothing twenty logged points removes about 4.5× of the noise, which still
+leaves a 0.014 effect at the edge of visibility; the paired evaluation column
+has no such problem and is already on disk.

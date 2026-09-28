@@ -95,6 +95,9 @@ which backend is still enabled and Part A stops there — the protocol in A2
 would be measuring two things at once, and the remedy is another switch in
 `_deterministic_attention`, not another run.
 
+**Run: passed** (D103). 26 of 26 metrics identical to the last bit, header
+"fused attention off".
+
 ### A1. Seed-to-seed spread (2.2 hours)
 
 With the arithmetic fixed, a configuration has one answer per seed. What
@@ -128,6 +131,10 @@ for name, values in (("best", best), ("last", last)):
           f"range {max(values) - min(values):.4f}")
 PY
 ```
+
+**Run** (D103): best 0.7802 / 0.8092 / 0.7915 for seeds 0 / 1 / 2, mean
+0.7936, **sd 0.0146**, range 0.0290; all three end at or beside their best
+(retained 0.99–1.00).
 
 ### A2. What the answer licenses
 
@@ -190,6 +197,16 @@ Three readings, each with a different consequence:
   no useful gradient at all, and that is a bug to find, not a weight to tune.
   Candidates: the 2048-gene subsample per step against ~7,000 measured rest
   genes; the mask from `genes.csv`; the `mapping_no_change` normalization.
+
+**Read** (D104): flat. `map_control` bounces between 0.92 and 1.11 with no
+trend over 6,000 steps. But the logged value is a different 16 cells each
+time, and its movement is mostly common to every predictor, so a ridge-sized
+gain (0.014) would be invisible in it either way. The paired readings are
+`val_map_control_mse` in the same file (fixed cells at every evaluation) and
+D102's held-out 1.144 / 1.109 — those are what say the mapping moves
+backwards. Which of the three bullets above holds is still open; §B3 arm 1
+with `loss_delta=0` as well separates "fits noise" from "dragged by the shared
+objectives".
 
 ### B1. What is achievable at all (CPU, under an hour)
 

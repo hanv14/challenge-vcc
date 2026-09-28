@@ -225,6 +225,12 @@ Checklist item 13 now checks that for you.
 
 In `runs/<run_name>/`:
 
+**The error bar.** Runs are deterministic (D103): one configuration and one
+seed give one answer. Between seeds, Phase 2's selection metric
+`pert_mse_ratio_to_no_change` has sd 0.0146 (three seeds, 6,000 steps), so two
+configurations that differ by less than **0.03** on it have not been shown to
+differ.
+
 **`sanity/summary.txt`** — the seven checks of §6.1, each `pass`, `warn` or
 `fail` with the value measured and the threshold it was measured against. A
 **fail** of check 1 stops the pipeline before a submission is written; the
