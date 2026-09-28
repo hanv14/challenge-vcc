@@ -390,3 +390,11 @@ PLAN_PERCELL.md's §7 and §11 did. A deviation from CLAUDE.md §4 goes in
   seed 2. It asks whether the per-cell level loss is the whole cost. If
   `pert` lands near 0.74 and `map_delta` near 0.83, that loss pays for
   nothing the metrics score, and dropping it is a §4.5 deviation to record.
+
+**Measured** (D108): `loss_mapping=0` alone gives 0.7721 held out, 0.019 better
+than both on (1.3 sd, not a difference), with `map_delta` 0.846 against 0.830.
+The level loss stays, because it is the only thing that anchors the
+mapping's absolute level, and Phase 3's prediction reads that level directly.
+The open item is to predict the rest change as
+`map(predicted panel) − map(control panel)`, matching what the delta term
+trains.

@@ -2744,3 +2744,65 @@ so the next arms remain comparable with D103's error bar and with D106.
 of the cost. Rejected: the mapping and the delta term are still improving
 between 7,500 and 12,000. The 2.4 hours fit the budget, and
 `checkpoint_selection: best` keeps the best step whatever comes after it.
+
+### D108. The per-cell level loss costs 0.019, not significant; it stays, because it anchors the level
+
+**Measured.** `configs/server_isolate.yaml`, seed 2, 6,000 steps, three arms
+that differ only in which mapping objectives are on:
+
+| at step 6000 | both on (`noise_seed2`) | delta only (`loss_mapping=0`) | neither (`b3_nomap`) |
+|---|---|---|---|
+| `pert_mse_ratio_to_no_change` (held out) | 0.7915 | 0.7721 | 0.7397 |
+| `pert_train_mse_ratio_to_no_change` | 0.7447 | 0.7302 | 0.7033 |
+| `map_delta_ratio_to_no_change` (floor 0.46, 8 targets) | 0.830 | 0.846 | 1.001 |
+| `map_control_pearson` | 0.082 | 0.063 | −0.005 |
+| `map_control_mse` (no change on these cells: **1.0718**) | 1.0659 | 1.1004 | 1.0719 |
+
+All three ended at their best step.
+
+**Readings.**
+
+1. **D105 is confirmed directly.** The new column measures no change on
+   seed 2's 32 control cells at 1.0718. The arm whose mapping received no
+   gradient scored 1.0719, so it was exactly no change. As ratios, the
+   6,000-step mapping is at 0.9945 and the 12,000-step one (D107) at
+   0.9865. That matches what the ridge gains on its own cells (0.986,
+   D102).
+2. **Neither term's cost is established alone.** Dropping the per-cell level
+   loss gains 0.019 (1.3 sd, D103), which is not a difference. The remaining
+   gap to "neither" is 0.032, just at 2 sd. Only the total cost of the two
+   together, 0.052, is established. As an indicative split, about a third of
+   the cost is the level loss and two thirds the delta term.
+3. **The delta term alone teaches the group-level rest change.** Its
+   `map_delta` (0.846) is indistinguishable from both-on (0.830) on 8
+   targets. The level loss adds nothing measurable to the quantity the
+   metrics score.
+4. **Without the level loss, the level is unanchored.** The delta loss
+   compares `mean(map(perturbed)) − mean(map(control))` with the observed
+   change, so adding the same constant per gene to the mapping's output
+   leaves it unchanged. With nothing else pinning the level, the last
+   evaluation moved in one jump: `map_control` ratio 0.9959 → **1.0270**,
+   `map_perturbed` 0.9886 → 1.0170, `pert_percell` 1.0031 → 1.0132. Over
+   the same interval the delta and the pooled perturbation metrics improved.
+
+**Why reading 4 decides it.** Phase 3's pooled prediction
+(`predict/run.py`, `predicted_log2fc`) takes the mapping's **absolute**
+output for the predicted perturbed panel and converts it to a fold change
+against `ctrl_mean`. It does not subtract the mapping's output for the
+control profile. A drifting offset would therefore become a predicted
+change on every rest gene of every target: the same for all targets, so
+worse on discrimination, and exactly what the DE metrics punish when too
+many genes are called.
+
+**Decision.** `phase2.loss_mapping` stays 1.0. The gain is inside the error
+bar, and dropping the loss would buy it with an offset the prediction path
+passes straight through. A §4.5 deviation is not justified.
+
+**What it opens.** Training teaches the rest genes as a *difference*: the
+delta term is what learns them, and it is offset-invariant. Prediction
+reads them as an *absolute level*. Predicting the rest change as
+`map(predicted panel) − map(control panel)` would read them the way they
+were trained. The level loss would then only need to keep the per-cell
+mapping sane, not carry the submission's offset. Not built. It is one
+switch in `predicted_log2fc`, and the rehearsal's cross-context variant
+is what measures it.
