@@ -581,7 +581,10 @@ arms faster early and then unstable (best 0.8061 and 0.8295). Across all four
 arms the pattern is that every added degree of freedom buys early progress
 and costs convergence, and the most constrained arm wins and has not
 finished. §7 is therefore closed: the open question is the optimisation, not
-the transfer.
+the transfer — and D99 then showed the runs those four arms came from were not
+reproducible, so even the pattern is weaker than it looked. What to do instead
+is in `PLAN_MAPPING.md`: measure the run-to-run spread first, then the
+panel→rest mapping, which is the step the score actually turns on.
 
 **Built** as `phase2.warm_start: perturbation_only` (D92): Phase 1's
 target-role projection and per-gene table plus the assay-type vocabulary —

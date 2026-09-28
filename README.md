@@ -24,6 +24,12 @@ vccp/
   report/    `summary.md` and its figures
 ```
 
+The written record, in the order it was written: `PLAN.md` (the first build),
+`PLAN_PERCELL.md` (the per-cell redesign — §7 and §11 both closed by
+measurement), `PLAN_MAPPING.md` (the next cycle: the run-to-run error bar,
+then the panel→rest mapping), and `DECISIONS.md`, where every non-obvious
+choice is one entry and the superseded ones are marked rather than deleted.
+
 ---
 
 ## On the server, from a clean checkout
