@@ -115,7 +115,13 @@ def set_determinism(enabled: bool, device: str) -> dict[str, Any]:
 
     `warn_only` because a few ops have no deterministic implementation: a
     warning names them and the run continues, which is better than failing
-    at hour three of twelve.
+    at hour three of twelve. But `warn_only` on its own is not reproducibility
+    and was mistaken for it: `F.scaled_dot_product_attention` dispatches to
+    cuDNN on CUDA, whose *backward* is non-deterministic, so every server run
+    warned about it and drifted, and two runs of one configuration produced
+    different curves (DECISIONS.md D99). So the fused attention backends are
+    turned off here and the math one left on, which for 64 latents against
+    956 tokens costs almost nothing and is deterministic.
     """
     import torch
 
@@ -125,6 +131,7 @@ def set_determinism(enabled: bool, device: str) -> dict[str, Any]:
     torch.use_deterministic_algorithms(True, warn_only=True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    attention_backends = _deterministic_attention(torch)
     # TF32 trades mantissa bits for speed on matmuls — the single largest
     # source of run-to-run drift on an Ampere or later GPU.
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -138,6 +145,10 @@ def set_determinism(enabled: bool, device: str) -> dict[str, Any]:
         "tf32": False,
         CUBLAS_WORKSPACE: workspace or "<unset>",
         "warn_only": True,
+        # Which attention kernels the run may use. The fused ones are fast and
+        # their backward passes are not deterministic, so a run that reports
+        # anything but `math` here is not reproducible whatever else it says.
+        "attention_backends": attention_backends,
         "note": "seeds fix the sampling; this fixes the arithmetic",
     }
     if not workspace and device == "cuda":
@@ -151,6 +162,31 @@ def set_determinism(enabled: bool, device: str) -> dict[str, Any]:
             "process imports torch — `python -m vccp` does this for you."
         )
     return report
+
+
+def _deterministic_attention(torch) -> dict[str, bool]:
+    """Leave `scaled_dot_product_attention` only kernels that reproduce.
+
+    Each switch is guarded: the names have changed across torch versions, and
+    a missing one must not fail a run. What is reported is what was actually
+    set, so the log says whether determinism was achieved rather than
+    requested.
+    """
+    wanted = {"cudnn": False, "flash": False, "mem_efficient": False, "math": True}
+    enabled = {}
+    for name, allow in wanted.items():
+        setter = getattr(torch.backends.cuda, f"enable_{name}_sdp", None)
+        getter = getattr(torch.backends.cuda, f"{name}_sdp_enabled", None)
+        if setter is None:
+            enabled[name] = "unknown to this torch"
+            continue
+        try:
+            setter(allow)
+        except Exception as exc:  # noqa: BLE001 — a refused switch is not a failure
+            enabled[name] = f"could not be set: {type(exc).__name__}"
+            continue
+        enabled[name] = bool(getter()) if getter is not None else allow
+    return enabled
 
 
 def apply_resources(device: str, cpu_threads: int, gpu_memory_fraction: float) -> None:

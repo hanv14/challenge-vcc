@@ -340,7 +340,14 @@ when diagnosing (`configs/server_isolate.yaml` uses 8) and leave it at 4 for
 the submission run.
 
 **`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
-run — whether the OT pairing carries information on this data at all. Read
+run — whether the OT pairing carries information on this data at all. **On the
+server it returns `matches-the-null`** (D100): pairing control cells against
+other control cells produces 95–107% of the per-cell variation that pairing
+them against perturbed cells does, and removes the same share of the residual,
+so the coupling is matching on depth and cell state rather than on the
+perturbation. `phase2.perturbation_mode` defaults to `pooled`, so nothing
+shipped rests on the per-cell premise; read the verdict before turning
+`percell` on. Read
 `target_spread` (how much the per-cell targets vary; zero means the per-cell
 loss is the pooled loss under another name) against `residual_reduction`
 (whether pairing brings each target nearer its control cell; above 1 means
@@ -388,8 +395,14 @@ with a message asking you to rerun the `rehearsal` stage. Those two, plus the co
 provenance of a submission.
 
 Runs are also **reproducible**: `train.deterministic` (on by default) turns
-off TF32, asks torch for deterministic kernels and fixes the cuBLAS
-workspace, so the same checkpoint and seeds give the same predictions. And a
+off TF32, asks torch for deterministic kernels, disables the fused attention
+backends — whose backward passes are not deterministic — and fixes the cuBLAS
+workspace, so the same checkpoint and seeds give the same predictions. **Check
+the `determinism` line in the run header**: it names the attention backends
+that were actually enabled and says outright when the run is not
+reproducible. Before this, every server run warned that cuDNN attention was
+non-deterministic and two runs of one configuration gave different curves
+(D99) — 0.7585 against 0.9015 at the same step. And a
 stage whose inputs have been rewritten since it ran is no longer considered
 finished — rerunning `predict` un-finishes `sanity` and `validate`, so a
 `.vcc` can never quietly describe predictions that no longer exist.

@@ -67,6 +67,13 @@ DEGENERATE_TARGET_SPREAD = 0.02
 #: Below this `library_size_pearson` at every `epsilon`, the coupling is not
 #: matching on depth, so the mechanism §4 claims is not the one operating.
 UNINFORMATIVE_LIBRARY_PEARSON = 0.1
+NULL_MARGIN = 1.25
+#: How much more the perturbed arm's per-cell targets must vary than the
+#: control-against-control arm's before the variation counts as being about
+#: the perturbation. Below this the coupling produces the same structure with
+#: no perturbation present at all, and a per-cell target built on it carries
+#: nothing the pooled one does not (DECISIONS.md D100). 1.0 would mean "any
+#: excess at all"; 1.25 asks for a quarter more.
 
 #: The sweep, as fractions of the batch's mean cost (DECISIONS.md D52).
 EPSILONS = (0.005, 0.01, 0.02, 0.05, float("inf"))
@@ -188,7 +195,15 @@ def measure_arm(
 
 
 def verdict(arms: dict[str, Any]) -> tuple[str, str]:
-    """`(verdict, reading)` from the perturbed arm's numbers.
+    """`(verdict, reading)` from the perturbed arm, against the null arm.
+
+    The control-against-control arm is computed so that the perturbed arm can
+    be read against it, and for a while it was computed and then ignored: the
+    verdict came from the perturbed numbers alone, which is how a run whose
+    pairing reproduced 95% of its own null could report that the premise
+    holds (DECISIONS.md D100). Targets that vary between control cells are
+    only interesting if they vary *more* than they do when nothing was
+    perturbed.
 
     `residual_reduction` does not decide the verdict, but it qualifies it.
     The two numbers that matter pull in opposite directions: `target_spread`
@@ -233,6 +248,39 @@ def verdict(arms: dict[str, Any]) -> tuple[str, str]:
             "not the one operating, so the residual after pairing is not "
             "obviously closer to the perturbation."
         )
+    null = {
+        k: v
+        for k, v in arms.get(CONTROL_ARM, {}).get("per_epsilon", {}).items()
+        if k != "inf"
+    }
+    excess = {
+        k: finite[k]["target_spread"] / null[k]["target_spread"]
+        for k in finite
+        if k in null and null[k]["target_spread"] > 0
+    }
+    if excess and max(excess.values()) < NULL_MARGIN:
+        best = max(excess, key=excess.get)
+        removed = {
+            k: (1.0 - finite[k]["residual_reduction"], 1.0 - null[k]["residual_reduction"])
+            for k in finite
+            if k in null
+        }
+        return "matches-the-null", (
+            "the targets vary between control cells, but no more than they do "
+            "when nothing was perturbed: pairing controls against *controls* "
+            f"reproduces the spread to within a factor of {max(excess.values()):.2f} "
+            f"at its most favourable epsilon ({best}), and the residual it "
+            "removes is the same too ("
+            + ", ".join(
+                f"eps {k}: {pert:+.3f} perturbed against {none:+.3f} null"
+                for k, (pert, none) in sorted(removed.items(), key=lambda kv: float(kv[0]))
+            )
+            + "). Whatever the coupling finds, it finds it with no perturbation "
+            "present, so a per-cell target built on it carries nothing about the "
+            "perturbation that the pooled target does not. This is the reading "
+            "that explains a per-cell loss stuck at its no-change value."
+        )
+
     residuals = {k: v["residual_reduction"] for k, v in finite.items()}
     best_epsilon = min(residuals, key=residuals.get)
     reading = (
@@ -346,6 +394,7 @@ def run_coupling_check(
         "thresholds": {
             "degenerate_target_spread": DEGENERATE_TARGET_SPREAD,
             "uninformative_library_pearson": UNINFORMATIVE_LIBRARY_PEARSON,
+            "null_margin": NULL_MARGIN,
         },
     }
 

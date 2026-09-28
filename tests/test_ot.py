@@ -206,3 +206,79 @@ def test_the_diagnostics_report_the_premise_and_the_residual():
     assert ot.coupling_diagnostics(uninformative)["effective_partners"] == pytest.approx(
         8.0, rel=1e-3
     )
+
+
+# --------------------------------------------------------------------------- #
+# the coupling check reads the perturbed arm against its null (D100)
+# --------------------------------------------------------------------------- #
+
+
+def _arms(null_spread, pert_spread, null_residual=0.94, pert_residual=0.95):
+    def arm(spread, residual):
+        return {
+            "per_epsilon": {
+                "0.005": {
+                    "target_spread": spread,
+                    "residual_reduction": residual,
+                    "library_size_pearson": 0.4,
+                    "effective_partners": 3.5,
+                },
+                "0.02": {
+                    "target_spread": spread / 5,
+                    "residual_reduction": residual,
+                    "library_size_pearson": 0.5,
+                    "effective_partners": 45.0,
+                },
+                "inf": {
+                    "target_spread": 0.0,
+                    "residual_reduction": 1.0,
+                    "library_size_pearson": float("nan"),
+                    "effective_partners": 256.0,
+                },
+            }
+        }
+
+    from vccp.diagnostics import coupling
+
+    return {
+        coupling.CONTROL_ARM: arm(null_spread, null_residual),
+        coupling.PERTURBED_ARM: arm(pert_spread, pert_residual),
+    }
+
+
+def test_a_coupling_that_reproduces_its_own_null_is_not_informative():
+    """The server's real numbers: pairing controls against controls gave 95%
+    of the spread pairing them against perturbed cells did, and the verdict
+    said the premise holds because it never looked at the null arm."""
+    from vccp.diagnostics import coupling
+
+    decision, reading = coupling.verdict(_arms(null_spread=0.513, pert_spread=0.544))
+    assert decision == "matches-the-null"
+    assert "no perturbation present" in reading
+    assert "1.06" in reading
+
+
+def test_a_coupling_that_beats_its_null_still_reads_as_informative():
+    from vccp.diagnostics import coupling
+
+    decision, _ = coupling.verdict(_arms(null_spread=0.20, pert_spread=0.55))
+    assert decision == "informative"
+
+
+def test_the_null_comparison_does_not_mask_a_degenerate_coupling():
+    """Degeneracy is checked first: a coupling that hands every cell the
+    pooled mean is useless whatever its null does."""
+    from vccp.diagnostics import coupling
+
+    decision, _ = coupling.verdict(_arms(null_spread=0.001, pert_spread=0.001))
+    assert decision == "degenerate"
+
+
+def test_without_a_null_arm_the_verdict_is_unchanged():
+    """A report from before the null arm existed still reads."""
+    from vccp.diagnostics import coupling
+
+    arms = _arms(null_spread=0.20, pert_spread=0.55)
+    del arms[coupling.CONTROL_ARM]
+    decision, _ = coupling.verdict(arms)
+    assert decision == "informative"

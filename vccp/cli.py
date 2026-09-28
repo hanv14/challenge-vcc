@@ -330,6 +330,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _determinism_line(determinism: dict) -> str:
+    """What the run can actually promise, not what it asked for.
+
+    A fused attention backend left on means a non-deterministic backward, so
+    two runs of one configuration diverge — which is how a curve that looked
+    monotone in one run peaked mid-training in the next (DECISIONS.md D99).
+    The header says which it is rather than printing "on" either way.
+    """
+    if not determinism["deterministic"]:
+        return "OFF — two runs of the same checkpoint may differ (train.deterministic)"
+    backends = determinism.get("attention_backends", {})
+    fused = sorted(name for name, on in backends.items() if on is True and name != "math")
+    if fused:
+        return (
+            "on for tf32 and cuDNN, but NOT reproducible: the "
+            f"{', '.join(fused)} attention backend(s) are still enabled and their "
+            "backward passes are non-deterministic"
+        )
+    return "on (tf32 off, deterministic kernels, fused attention off)"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -388,9 +409,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("thread env    : %s", _format_env(effective_thread_env()))
     log.info(
         "determinism   : %s",
-        "on (tf32 off, deterministic kernels)" if determinism["deterministic"]
-        else "OFF — two runs of the same checkpoint may differ (train.deterministic)",
+        _determinism_line(determinism),
     )
+    if determinism.get("warning"):
+        log.warning("determinism   : %s", determinism["warning"])
 
     stages = stage_names() if args.stage == "all" else [args.stage]
 

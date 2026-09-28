@@ -2264,3 +2264,106 @@ learns, and the lr question is open for it, behind the budget question.
 **Alternative considered.** Training `W` with a smaller learning rate than
 the rest. That is a third knob on an optimisation already failing on two, and
 the arm that works needs neither.
+
+### D99. The runs were not reproducible, and the comparisons rest on that
+
+**Decision.** When `train.deterministic` is on, the fused attention backends
+(cuDNN, flash, memory-efficient) are disabled and only the math kernel is
+left, so `F.scaled_dot_product_attention` has a deterministic backward. The
+run header now reports which backends are enabled and says plainly when the
+run is **not** reproducible, instead of printing "deterministic kernels"
+either way.
+
+**Reason.** Every server log carried this line and none of us read it:
+
+```
+UserWarning: cuDNN Attention defaults to a non-deterministic algorithm. To
+explicitly enable determinism call torch.use_deterministic_algorithms(True,
+warn_only=False).
+```
+
+`set_determinism` called `use_deterministic_algorithms(True, warn_only=True)`,
+which lets a non-deterministic op through with a warning rather than failing.
+That was a deliberate choice for ops with no deterministic implementation —
+but attention is in the model's inner loop, so its backward was
+non-deterministic on every step of every run.
+
+The 12,000-step run is what made it undeniable. Same seed, same config, same
+code as the 6,000-step run, `warm_start: none`, W frozen:
+
+| step | 6,000-step run | 12,000-step run |
+|---|---|---|
+| ~1,000 | 0.9195 (750) | 0.9178 |
+| ~2,000 | 0.8976 (1500) | 0.8904 |
+| ~3,000 | 0.8209 | **0.8820** |
+| ~4,500 | 0.7809 | 0.8935 (4000) |
+| ~6,000 | **0.7585** | 0.9015 |
+| 12,000 | — | 1.0139 |
+
+At step 6,000 one realisation reads 0.7585 and the other 0.9015. Nothing
+differed but the arithmetic.
+
+**What this costs.** The monotone curve that D98 built its argument on is one
+realisation of a stochastic process, not a property of the configuration. So:
+
+* **D98's four-arm pattern is weakened.** "Every degree of freedom costs
+  convergence" was read off single runs whose run-to-run spread is now known
+  to be at least 0.14 on this metric — larger than most of the gaps it
+  compared. The arms may still differ; the evidence no longer shows it.
+* **D95's `perturbation_only` reading is weakened** for the same reason.
+* **D90 and D91 survive.** Those gaps are 0.2 and larger, they reproduced on
+  the training targets as well as the held-out ones, and the flat arms were
+  flat at every evaluation of every run. A 0.14 spread does not turn a flat
+  line into a monotone descent.
+* **D84's seeding fix is untouched** — it was about initialization, which is
+  seeded, not about the arithmetic afterwards.
+
+**Cost of the fix.** The math kernel materialises the attention matrix. Here
+that is 64 latents against at most 956 tokens, and the model's expense is the
+decoder over 17,578 genes, so the cost should be small — but it is unmeasured
+in the cloud and worth watching on the first server run.
+
+**Alternative.** `warn_only=False`, which raises on the first
+non-deterministic op. Rejected: it would fail a twelve-hour run at hour
+three over an op we could have simply avoided, and the avoidance is one call.
+
+### D100. The coupling check computed a null arm and then ignored it
+
+**Decision.** `verdict` compares the perturbed arm against the
+control-against-control arm and returns `matches-the-null` when the perturbed
+arm's per-cell target spread is under `NULL_MARGIN` (1.25×) of the null's.
+
+**Reason.** The check ran on the server and returned `informative`: "the
+barycentric targets vary 0.544 as much as the perturbed cells at epsilon
+0.005 … The premise holds." It reached that verdict from the perturbed arm's
+numbers alone. The null arm sat in the same file:
+
+| epsilon | target spread, null | perturbed | ratio | residual removed, null | perturbed |
+|---|---|---|---|---|---|
+| 0.005 | 0.5131 | 0.5438 | 1.06 | −0.294 | −0.333 |
+| 0.01 | 0.3113 | 0.3253 | 1.05 | −0.103 | −0.124 |
+| 0.02 | 0.0987 | 0.1056 | 1.07 | +0.062 | +0.053 |
+| 0.05 | 0.0118 | 0.0111 | 0.95 | +0.064 | +0.063 |
+
+Pairing control cells against **other control cells** produces 95–107% of the
+per-cell variation that pairing them against perturbed cells does, and
+removes the same share of the residual — slightly *more* of it at the epsilon
+the pipeline actually uses. Whatever the coupling is matching on, it matches
+on it when there is no perturbation at all: sequencing depth and cell state,
+which is real structure and is not the perturbation.
+
+So the premise of PLAN_PERCELL §3 does not hold as implemented. This is the
+reading that explains `pert_percell_ratio_to_no_change` sitting at 1.00 in
+every run since the per-cell mode was built: the per-cell target is the
+pooled target plus noise that is unrelated to what was perturbed.
+
+**What it does not say.** The costs are not concentrated — `cost_spread`
+0.198 against a null of 0.053 — so there is real structure between these
+cells. The failure is not distance concentration, which is what the check was
+originally written to catch. It is that the structure OT finds is not
+perturbation-specific.
+
+**Alternative.** Compare the residuals rather than the spreads. Both are in
+the reading, and the spread is what decides, because the spread is what the
+training step sees: it is the quantity that makes the per-cell loss differ
+from the pooled loss at all.

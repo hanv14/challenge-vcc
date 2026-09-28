@@ -804,6 +804,31 @@ reproducible everywhere else.)
   ```bash
   python scripts/coupling_check.py --config configs/server.yaml
   ```
+
+  **Run on the server, and that one argument is refuted** (DECISIONS.md
+  D100). On K562_essential, 256 cells a side, 724 panel genes:
+
+  | epsilon | target spread null | perturbed | residual removed null | perturbed |
+  |---|---|---|---|---|
+  | 0.005 | 0.5131 | 0.5438 | −0.294 | −0.333 |
+  | 0.02 (configured) | 0.0987 | 0.1056 | **+0.062** | **+0.053** |
+  | 0.05 | 0.0118 | 0.0111 | +0.064 | +0.063 |
+
+  The perturbed pairing removes *no more* residual than the control pairing
+  does, and at the configured epsilon slightly less. The value of the method
+  rested on exactly that comparison, so the premise does not hold as
+  implemented — and this is what `pert_percell_ratio_to_no_change` has been
+  saying at 1.00 since the mode was built.
+
+  The verdict logic said `informative` both times because it read the
+  perturbed column alone. The table above was already in this document from
+  P3, on mini, with the two arms side by side at 0.57 and 0.52; the caveat
+  was written and the conclusion was drawn from one column anyway. The check
+  now returns `matches-the-null` and exits non-zero.
+
+  **What this does not excuse.** `phase2.perturbation_mode` defaults to
+  `pooled`, so nothing shipped was built on the refuted premise. The per-cell
+  mode stays in the code as the measured negative result it is.
 * **The coupling matches on depth and the residual is depth.** This is the
   intended mechanism, but if library size dominates completely the module
   may learn a depth correction and nothing else. Diagnostic: the correlation
@@ -918,7 +943,7 @@ means one server run answers both transfer questions.
 | **P0** | capacity check on 8 targets | ✅ `can-fit` on mini **and** on the server (§10) |
 | **P1** | `train/ot.py` + unit tests (ε → ∞ reproduces the pooled target; ε → 0 approaches hard assignment; marginals uniform) | ✅ 16 tests green; ε made relative and the grid revised (§4) |
 | **P2** | the delta term, group-mean form, pooled mode; `core_scratch` arm; type vocabulary | ✅ Phase 2 reports `map_delta_ratio_to_no_change` with its noise floor, and `phase1_contribution` per metric |
-| **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | ✅ premise checked on real cells first — `informative` (§11); both modes scored on both questions |
+| **P3** | `phase2.perturbation_mode: percell` + the per-pair delta term | ⚠️ premise checked on real cells first and read as `informative`; the server run says `matches-the-null` — the coupling finds the same structure with no perturbation present (§11, D100). `pooled` remains the default, so nothing shipped rests on it |
 | **P4** | per-cell prediction and generator | ✅ `all` green in both modes; 706 s pooled against 1653 s per-cell (2.34x); sanity identical, no variance collapse |
 | **P5** | rehearsal A/B, ε swept, per-assay scale | a table of leaderboard-scale numbers, both modes |
 | **P6** | server run, submission | **yours to run** — `configs/server_sweep.yaml` and README §5b are the hand-off; a leaderboard number to compare against −0.131 |
