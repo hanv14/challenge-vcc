@@ -345,6 +345,14 @@ nothing in between. Each evaluation costs a full validation pass, so raise it
 when diagnosing (`configs/server_isolate.yaml` uses 8) and leave it at 4 for
 the submission run.
 
+**`reports/mapping_ceiling.json`**, when `scripts/mapping_ceiling.py` has been
+run — what a ridge regression from the panel reaches on control cells, and how
+well a single cell's rest genes correlate with themselves under a binomial
+split. The mapping's own `map_control_pearson` has never exceeded 0.08, and
+these two numbers say whether that is the model or the task (PLAN_MAPPING.md
+§B1). CPU only, minutes per screen, trains nothing. Check
+`best_at_grid_edge` is false before quoting the ceiling.
+
 **`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
 run — whether the OT pairing carries information on this data at all. **On the
 server it returns `matches-the-null`** (D100): pairing control cells against

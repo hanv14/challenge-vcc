@@ -214,12 +214,26 @@ UMIs most of the 7,000 rest genes are at zero or one count, so this bound may
 be near zero — in which case per-cell rest-gene prediction is not a solvable
 problem and B2 is the answer rather than a fallback.
 
-**Deliverable.** `scripts/mapping_ceiling.py` writing
-`reports/mapping_ceiling.json`: per screen, ridge pearson and mse/no-change
-at each penalty, the split-half reliability raw and corrected, and the
-model's own numbers from `phase2/metrics.json` beside them. Runs on
-`mini_data` in the test suite and on a server screen in minutes. No GPU, no
-training, no checkpoint.
+**Built.** `vccp/diagnostics/mapping.py` with `scripts/mapping_ceiling.py` as
+its CLI, writing `reports/mapping_ceiling.json`: per screen, ridge pearson and
+mse/no-change at each penalty, the library-size-only fit, the split-half
+reliability raw and Spearman–Brown corrected, and the model's own
+`map_control_pearson` read from `phase2/metrics.json` beside them. It picks
+the branch itself — `model-underperforms`, `not-predictable-per-cell`,
+`linear-is-no-better`, or a refusal — and exits non-zero on anything but the
+first, which is the only one with a cheap fix.
+
+```bash
+python scripts/mapping_ceiling.py --config configs/server.yaml --run-name server
+```
+
+Run it from the checkout, with `--config` pointing at the config you use; it
+writes into that run's `reports/`. Defaults are 20,000 control cells to fit on
+and 2,048 held out, which is minutes per screen on CPU. Two things to check in
+the output before reading the verdict: `best_at_grid_edge` must be false (a
+ceiling chosen at the largest penalty offered is a statement about the grid,
+and the verdict says so), and `n_eval_cells` should be the 2,048 asked for
+rather than a fifth of a small screen.
 
 ### B2. The reframe, if B1 says the task is not solvable per cell
 
