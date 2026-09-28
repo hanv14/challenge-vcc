@@ -353,6 +353,12 @@ these two numbers say whether that is the model or the task (PLAN_MAPPING.md
 §B1). CPU only, minutes per screen, trains nothing. Check
 `best_at_grid_edge` is false before quoting the ceiling.
 
+**On the server it returns `model-underperforms`** (D102): the ceiling is
+pearson 0.29–0.32, a ridge regression from the panel reaches about half of it,
+and the model reaches 5–19% — less than library size alone on two screens. The
+ceiling is `max_achievable_pearson`, the square root of the reliability, not
+the reliability itself (D101).
+
 **`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
 run — whether the OT pairing carries information on this data at all. **On the
 server it returns `matches-the-null`** (D100): pairing control cells against

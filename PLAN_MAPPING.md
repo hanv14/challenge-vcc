@@ -235,6 +235,27 @@ ceiling chosen at the largest penalty offered is a statement about the grid,
 and the verdict says so), and `n_eval_cells` should be the 2,048 asked for
 rather than a fifth of a small screen.
 
+**Run, and the answer is §B3** (DECISIONS.md D102). Pearson on held-out
+control cells, with the ceiling `sqrt(reliability)`:
+
+| screen | model | ridge | depth only | ceiling | model's share |
+|---|---|---|---|---|---|
+| K562_essential | 0.033 | 0.140 | 0.054 | 0.294 | **11%** |
+| K562_gwps | 0.016 | 0.146 | 0.077 | 0.294 | **5%** |
+| rpe1 | 0.061 | 0.188 | 0.065 | 0.317 | **19%** |
+
+The per-cell quantity exists — 8.6–10% of the variance is reproducible signal
+— so §B2's reframe is not forced. A ridge regression reaches about half the
+ceiling; the gene-token model reaches 5–19%, less than library size alone on
+two screens, and on two screens its error is *above* the no-change baseline on
+data it trains on. Go to §B3, and start with the third bullet of §B0 rather
+than with capacity: a model that has moved backwards from its zero-initialized
+state is not short of parameters.
+
+The run also corrected the instrument: the ridge came back above what the
+diagnostic called the ceiling, because the ceiling on a predictor's
+correlation is the square root of the reliability, not the reliability (D101).
+
 ### B2. The reframe, if B1 says the task is not solvable per cell
 
 **None of the six metrics scores a single cell's rest genes.** Expression

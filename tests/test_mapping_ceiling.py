@@ -60,6 +60,7 @@ def test_a_singular_system_does_not_raise():
 def test_split_half_reliability_is_high_for_deep_cells_and_low_for_shallow():
     """A cell sequenced deeply enough measures its own rest genes twice and
     agrees with itself; at one count per gene it cannot."""
+
     rng = np.random.default_rng(2)
     n_cells, n_genes = 64, 200
     is_panel = np.zeros(n_genes, dtype=bool)
@@ -80,7 +81,31 @@ def test_split_half_reliability_is_high_for_deep_cells_and_low_for_shallow():
     assert deep["half_depth_pearson"] > 0.8
     assert shallow["half_depth_pearson"] < deep["half_depth_pearson"]
     # Spearman-Brown lifts the half-depth figure toward the full-depth one.
-    assert deep["full_depth_pearson"] > deep["half_depth_pearson"]
+    assert deep["reliability"] > deep["half_depth_pearson"]
+
+
+def test_the_ceiling_is_the_square_root_of_the_reliability():
+    """Two fallible measurements of one quantity correlate `r`; a noiseless
+    predictor of the underlying signal correlates `sqrt(r)`. Reporting `r` as
+    the ceiling understated it so badly that the server's ridge regression
+    came out above it — 0.14 against a claimed ceiling of 0.086 (D101)."""
+    rng = np.random.default_rng(4)
+    n_cells, n_genes = 256, 400
+    is_panel = np.zeros(n_genes, dtype=bool)
+    is_panel[:100] = True
+    rate = rng.gamma(2.0, 3.0, size=(n_cells, n_genes))
+    counts = rng.poisson(rate)
+    library = counts.sum(axis=1).astype(np.float64)
+
+    result = mapping.split_half_reliability(
+        counts, library, np.zeros(n_genes, np.float32), np.ones(n_genes, np.float32),
+        is_panel, np.random.default_rng(5),
+    )
+    r = result["reliability"]
+    assert 0.0 < r < 1.0
+    assert result["max_achievable_pearson"] == pytest.approx(np.sqrt(r))
+    assert result["max_achievable_pearson"] > r, "sqrt lifts a reliability below 1"
+    assert result["best_possible_mse_ratio"] == pytest.approx(1.0 - r)
 
 
 def test_reliability_is_nan_safe():
@@ -97,43 +122,51 @@ def test_reliability_is_nan_safe():
         np.random.default_rng(0),
     )
     assert np.isnan(result["half_depth_pearson"])
-    assert np.isnan(result["full_depth_pearson"])
+    assert np.isnan(result["reliability"])
+    assert np.isnan(result["max_achievable_pearson"])
+    assert np.isnan(result["best_possible_mse_ratio"])
 
 
 # --------------------------------------------------------------------------- #
 # which branch of §B the answer chooses
 # --------------------------------------------------------------------------- #
-def _screen(linear, model_pearson, corrected, at_edge=False):
+def _screen(linear, model_pearson, ceiling, at_edge=False):
     return {
         "measured": True,
         "linear_ceiling": {"pearson": linear},
         "best_at_grid_edge": at_edge,
-        "target_reliability": {"full_depth_pearson": corrected},
+        "target_reliability": {
+            "reliability": ceiling**2,
+            "max_achievable_pearson": ceiling,
+            "best_possible_mse_ratio": 1 - ceiling**2,
+        },
     }, {"map_control_pearson": model_pearson}
 
 
-def _verdict(linear, model_pearson, corrected, at_edge=False):
-    screen, model = _screen(linear, model_pearson, corrected, at_edge)
+def _verdict(linear, model_pearson, ceiling, at_edge=False):
+    screen, model = _screen(linear, model_pearson, ceiling, at_edge)
     return mapping.verdict({"s": screen}, {"per_context": {"s": model}})
 
 
 def test_a_linear_map_that_beats_the_model_points_at_the_model():
-    decision, reading = _verdict(linear=0.35, model_pearson=0.06, corrected=0.6)
+    decision, reading = _verdict(linear=0.35, model_pearson=0.06, ceiling=0.7)
     assert decision == "model-underperforms"
     assert "B3" in reading
+    # The share of the ceiling each one reaches is the reading that matters.
+    assert "9%" in reading and "50%" in reading
 
 
 def test_an_unreliable_target_points_at_the_reframe():
     """Neither predictor works and the target barely correlates with itself:
     the quantity does not exist at this depth, so §B2 rather than §B3."""
-    decision, reading = _verdict(linear=0.04, model_pearson=0.06, corrected=0.02)
+    decision, reading = _verdict(linear=0.04, model_pearson=0.06, ceiling=0.05)
     assert decision == "not-predictable-per-cell"
     assert "B2" in reading
     assert "control resample" in reading
 
 
 def test_a_reliable_target_nobody_predicts_is_a_capacity_question():
-    decision, reading = _verdict(linear=0.07, model_pearson=0.06, corrected=0.7)
+    decision, reading = _verdict(linear=0.07, model_pearson=0.06, ceiling=0.8)
     assert decision == "linear-is-no-better"
     assert "64 latents" in reading
 
@@ -141,12 +174,12 @@ def test_a_reliable_target_nobody_predicts_is_a_capacity_question():
 def test_a_ceiling_chosen_at_the_edge_of_the_grid_says_so():
     """The best penalty being the largest offered is a statement about the
     grid, and the reading must not be quoted as the ceiling."""
-    _, reading = _verdict(linear=0.07, model_pearson=0.06, corrected=0.7, at_edge=True)
+    _, reading = _verdict(linear=0.07, model_pearson=0.06, ceiling=0.8, at_edge=True)
     assert "lower bound" in reading
 
 
 def test_without_the_model_the_verdict_refuses_to_choose():
-    screen, _ = _screen(0.35, 0.06, 0.6)
+    screen, _ = _screen(0.35, 0.06, 0.7)
     decision, reading = mapping.verdict({"s": screen}, {"per_context": {}})
     assert decision == "no-model-to-compare"
     assert "phase2" in reading
@@ -185,3 +218,4 @@ def test_the_ceiling_runs_on_a_mini_screen(session_cfg, tmp_path):
     # because "the panel is a depth correction" is a live hypothesis.
     assert np.isfinite(entry["depth_only"]["pearson"])
     assert np.isfinite(entry["target_reliability"]["half_depth_pearson"])
+    assert np.isfinite(entry["target_reliability"]["max_achievable_pearson"])

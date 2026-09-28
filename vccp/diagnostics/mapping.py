@@ -61,6 +61,10 @@ MIN_EVAL_CELLS = 64
 #: A correlation the model would have to beat before the mapping counts as
 #: underperforming a linear baseline rather than the task being hard.
 LINEAR_MARGIN = 0.05
+#: Below this ceiling on the achievable correlation, per-cell prediction is not
+#: worth pursuing whatever the model does — there is nothing there to reach.
+#: Compared against `sqrt(reliability)`, not against the reliability (D101).
+MIN_ACHIEVABLE_PEARSON = 0.10
 
 
 def _z(values: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
@@ -128,16 +132,33 @@ def split_half_reliability(
     is_panel: np.ndarray,
     rng: np.random.Generator,
 ) -> dict[str, float]:
-    """How well a cell's rest genes correlate with themselves.
+    """How well a cell's rest genes correlate with themselves, and what that
+    permits a predictor to reach.
 
     Each gene's count is split binomially at p = 0.5 and each half normalized
     at half the library size, which leaves CP10K on the original scale in
-    expectation. The correlation between the halves is the reliability at half
-    depth; Spearman–Brown lifts it to the full depth the model actually sees.
+    expectation. The correlation between the halves is the **reliability** `r`
+    at half depth; Spearman–Brown, `2r / (1 + r)`, lifts it to the full depth
+    the model sees. `r` is the share of the target's variance that is
+    reproducible signal rather than sampling noise.
 
-    This is the ceiling on any per-cell predictor. If it is near zero, a
-    single cell's rest genes are mostly sampling noise at this depth and the
-    quantity Phase 2 is asked to predict does not exist.
+    **`r` is not the ceiling on a predictor.** Two fallible measurements of the
+    same quantity correlate `r` with each other, but a *noiseless* predictor of
+    the underlying signal correlates `sqrt(r)` with either of them — the
+    classical attenuation bound. Reporting `r` as the ceiling understates it
+    badly: at `r = 0.086` the ceiling is 0.29, not 0.086, and the first server
+    run produced a ridge regression at 0.14 that would have looked impossible
+    (DECISIONS.md D101). The two derived bounds are therefore both reported:
+
+    * `max_achievable_pearson` = `sqrt(r)` — no predictor correlates higher;
+    * `best_possible_mse_ratio` = `1 - r` — no predictor's mse against the
+      no-change baseline goes lower, because the noise cannot be predicted.
+
+    One approximation: `log1p` is not linear, so thinning the counts and then
+    normalizing is not exactly a linear split of the model's target. At ~11,000
+    UMIs over ~7,000 rest genes most counts are 0 or 1, where `log1p` is very
+    nearly linear, so the error is small — but it is an approximation and the
+    bound should be read as indicative rather than exact.
     """
     from data_prep.phase_data import log1p_cp10k
 
@@ -151,11 +172,22 @@ def split_half_reliability(
     from ..train.loop import pearson
 
     half = pearson(a, b)
-    corrected = float("nan") if not np.isfinite(half) else 2 * half / (1 + half)
+    if not np.isfinite(half):
+        reliability = float("nan")
+    else:
+        reliability = 2 * half / (1 + half)
+    usable = np.isfinite(reliability) and reliability > 0
     return {
         "half_depth_pearson": half,
-        "full_depth_pearson": corrected,
-        "note": "Spearman-Brown, 2r/(1+r): the ceiling on any per-cell predictor",
+        # The reliability at full depth: the share of the target's variance
+        # that is signal. Spearman-Brown, 2r/(1+r).
+        "reliability": reliability,
+        # What that permits. sqrt for a correlation, 1-r for the error: a
+        # predictor can match the signal exactly and still not touch the noise.
+        "max_achievable_pearson": float(np.sqrt(reliability)) if usable else float("nan"),
+        "best_possible_mse_ratio": 1.0 - reliability if np.isfinite(reliability) else float("nan"),
+        "note": "reliability is Spearman-Brown 2r/(1+r); the ceiling on a "
+        "predictor's correlation is its square root, not itself (D101)",
     }
 
 
@@ -245,8 +277,11 @@ def measure_context(
         eval_counts, eval_library, mean, std, is_panel, rng
     )
     log.info(
-        "    target reliability   pearson %+.4f at half depth, %+.4f corrected",
-        reliability["half_depth_pearson"], reliability["full_depth_pearson"],
+        "    target reliability   %.4f of the variance is signal; a predictor can "
+        "reach pearson %+.4f and mse/no-change %.4f at best",
+        reliability["reliability"],
+        reliability["max_achievable_pearson"],
+        reliability["best_possible_mse_ratio"],
     )
 
     best = max(ridge, key=lambda key: ridge[key]["pearson"])
@@ -322,8 +357,8 @@ def verdict(contexts: dict[str, Any], model: dict[str, Any]) -> tuple[str, str]:
         return "not-measured", "no screen had enough control cells"
 
     linear = {name: entry["linear_ceiling"]["pearson"] for name, entry in measured.items()}
-    reliability = {
-        name: entry["target_reliability"]["full_depth_pearson"]
+    ceiling = {
+        name: entry["target_reliability"]["max_achievable_pearson"]
         for name, entry in measured.items()
     }
     available = (model or {}).get("per_context") or {}
@@ -341,7 +376,16 @@ def verdict(contexts: dict[str, Any], model: dict[str, Any]) -> tuple[str, str]:
         )
 
     gaps = {name: linear[name] - theirs[name] for name in theirs}
-    worst_reliability = min(reliability.values())
+    highest_ceiling = max(v for v in ceiling.values() if np.isfinite(v)) if ceiling else 0.0
+    share = {
+        name: (theirs[name] / ceiling[name], linear[name] / ceiling[name])
+        for name in theirs
+        if np.isfinite(ceiling.get(name, float("nan"))) and ceiling[name] > 0
+    }
+    shares = ", ".join(
+        f"{name} {100 * model:.0f}% against the linear fit's {100 * ridge:.0f}%"
+        for name, (model, ridge) in sorted(share.items())
+    )
     edge = sorted(name for name, entry in measured.items() if entry.get("best_at_grid_edge"))
     caveat = (
         f" (the best penalty is at the edge of the grid for {', '.join(edge)}, so "
@@ -354,27 +398,30 @@ def verdict(contexts: dict[str, Any], model: dict[str, Any]) -> tuple[str, str]:
         return "model-underperforms", (
             f"a ridge regression from the panel beats the gene-token model on "
             f"{ahead} by {gaps[ahead]:+.3f} pearson ({linear[ahead]:+.3f} against "
-            f"{theirs[ahead]:+.3f}), and by {gaps} across the screens measured. The "
-            "information is in the panel and a linear map extracts more of it than "
-            "the model does, so this is §B3: read phase2/curves.csv for which of "
-            "the three loss terms is winning, then the loss weights and the latent "
-            "width." + caveat
+            f"{theirs[ahead]:+.3f}), and by {gaps} across the screens measured. "
+            f"Against the ceiling the target's reliability permits, the model "
+            f"reaches {shares}. The information is in the panel, a linear map "
+            "extracts a good share of it and the model extracts a fraction, so this "
+            "is §B3: read phase2/curves.csv for which of the three loss terms is "
+            "winning, then the loss weights and the latent width." + caveat
         )
-    if worst_reliability < LINEAR_MARGIN:
+    if highest_ceiling < MIN_ACHIEVABLE_PEARSON:
         return "not-predictable-per-cell", (
             "neither the model nor a ridge regression predicts a single cell's rest "
-            f"genes (ridge {linear}, model {theirs}), and the target barely "
-            f"correlates with itself: {reliability} after the Spearman-Brown "
-            "correction. At this sequencing depth most of those genes are at zero "
-            "or one count, so the quantity Phase 2 is asked for is mostly sampling "
-            "noise. No architecture fixes that. §B2 — predict one rest-gene fold "
-            "change per (context, target) and take cell-to-cell variation from the "
-            "control resample, which is all the six metrics ever score." + caveat
+            f"genes (ridge {linear}, model {theirs}), and the target has almost no "
+            f"signal to predict: the highest correlation the reliability permits is "
+            f"{highest_ceiling:.3f}, against a threshold of "
+            f"{MIN_ACHIEVABLE_PEARSON}. At this sequencing depth most of those genes "
+            "are at zero or one count, so the quantity Phase 2 is asked for is "
+            "mostly sampling noise. No architecture fixes that. §B2 — predict one "
+            "rest-gene fold change per (context, target) and take cell-to-cell "
+            "variation from the control resample, which is all the six metrics ever "
+            "score." + caveat
         )
     return "linear-is-no-better", (
         f"a linear fit does not beat the model (ridge {linear}, model {theirs}), but "
-        f"the target is reliable ({reliability} corrected), so the information is "
-        "there and neither reaches it. That is §B3 with the capacity questions "
+        f"the target has signal to predict — up to pearson {highest_ceiling:.3f} — "
+        f"and neither reaches it ({shares}). That is §B3 with the capacity questions "
         "ahead of the loss weights: 64 latents carry every cell's panel through to "
         "thousands of gene queries." + caveat
     )
@@ -426,7 +473,10 @@ def run_mapping_ceiling(
         "model": model,
         "verdict": decision,
         "reading": reading,
-        "thresholds": {"linear_margin": LINEAR_MARGIN},
+        "thresholds": {
+            "linear_margin": LINEAR_MARGIN,
+            "min_achievable_pearson": MIN_ACHIEVABLE_PEARSON,
+        },
     }
 
     log.info("")

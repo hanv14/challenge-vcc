@@ -2367,3 +2367,84 @@ perturbation-specific.
 the reading, and the spread is what decides, because the spread is what the
 training step sees: it is the quantity that makes the per-cell loss differ
 from the pooled loss at all.
+
+### D101. The reliability is not the ceiling; its square root is
+
+**Decision.** `split_half_reliability` reports `reliability` (the share of the
+target's variance that is signal) and derives the two bounds it implies:
+`max_achievable_pearson` = `sqrt(reliability)` and `best_possible_mse_ratio`
+= `1 - reliability`. The verdict compares against the first, with
+`MIN_ACHIEVABLE_PEARSON` (0.10) as the threshold below which per-cell
+prediction is not worth pursuing.
+
+**Reason.** D100's sibling diagnostic said "no predictor correlates with a
+target better than the target correlates with itself" and reported the
+Spearman–Brown reliability as the ceiling. That is wrong. Two fallible
+measurements of one quantity correlate `r` with each other; a *noiseless*
+predictor of the underlying signal correlates `sqrt(r)` with either of them —
+the classical attenuation bound. At `r = 0.086`, the ceiling is 0.29, not
+0.086.
+
+The data caught it on the first server run. The ridge regression came back at
+0.140, 0.146 and 0.188 pearson, **above** the claimed ceilings of 0.086,
+0.086 and 0.101. A predictor cannot exceed a real ceiling, so either the
+ridge or the bound was wrong, and it was the bound.
+
+Had the error stood, the verdict rule — reliability under 0.05 means "not
+predictable" — would have been one bad run away from declaring a task
+impossible that a linear regression solves to half its ceiling.
+
+**Alternative.** Report the reliability alone and leave the reader to square-
+root it. Rejected: the number is only useful as a bound, the bound is what the
+verdict tests, and the first person to use it got it wrong.
+
+### D102. Phase 2's mapping reaches a fifth of what is available
+
+**What the measurement says.** `scripts/mapping_ceiling.py` on the server,
+8.6k–20k control cells fitted per screen, 2,048 held out, ridge optimum
+interior to the grid in all three:
+
+| screen | model | ridge | depth only | ceiling | model's share | ridge's share |
+|---|---|---|---|---|---|---|
+| K562_essential | 0.033 | 0.140 | 0.054 | 0.294 | **11%** | 48% |
+| K562_gwps | 0.016 | 0.146 | 0.077 | 0.294 | **5%** | 50% |
+| rpe1 | 0.061 | 0.188 | 0.065 | 0.317 | **19%** | 59% |
+
+Pearson on held-out control cells; the ceiling is `sqrt(reliability)` (D101).
+In error terms, against a no-change baseline of 1.0 and a best possible of
+0.914, 0.914 and 0.899:
+
+| screen | model mse ratio | ridge | best possible |
+|---|---|---|---|
+| K562_essential | 0.964 | 0.986 | 0.914 |
+| K562_gwps | **1.144** | 0.985 | 0.914 |
+| rpe1 | **1.109** | 0.971 | 0.899 |
+
+**Three readings, in order of how much they matter.**
+
+1. **The task is real and the model is not doing it.** A single cell's rest
+   genes carry 8.6–10% reproducible variance, enough for a correlation of
+   0.29–0.32. A ridge regression from the panel reaches about half of that. The
+   gene-token model reaches 5–19%, so between 2.5× and 9× less than a linear
+   map on the same inputs. PLAN_MAPPING §B2's reframe is **not** forced: the
+   per-cell quantity exists.
+2. **On two screens the model is worse than predicting library size alone.**
+   0.016 against 0.077 on K562_gwps, 0.033 against 0.054 on K562_essential.
+   One predictor beats 716.
+3. **On two screens it is worse than predicting nothing.** An mse ratio of
+   1.144 and 1.109 against a no-change baseline of 1.0, on control cells,
+   which are data it trains on. A zero-initialized model scores exactly 1.0,
+   so training moved it backwards.
+
+Taken together these say the mapping is not capacity-limited at the margin —
+it is failing at something a ridge regression does not fail at. §B3 is the
+branch, and reading 3 says the first thing to look at is not the latent width
+but why the objective moves the mapping away from where it started.
+`phase2/curves.csv` has `map_control` per step and answers that without a GPU.
+
+**What it does not license.** The ridge is fitted on control cells and scored
+on control cells. It says nothing about predicting *perturbed* cells, which is
+the job, and nothing about whether a better mapping would move the six
+official metrics — the rehearsal's controls-only upper bound sat at 1.00–1.03
+on rest genes even when it was allowed the perturbed cells (D94). This is a
+diagnosis of one step, not a route to a score.
