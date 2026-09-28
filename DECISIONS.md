@@ -2414,6 +2414,10 @@ Pearson on held-out control cells; the ceiling is `sqrt(reliability)` (D101).
 In error terms, against a no-change baseline of 1.0 and a best possible of
 0.914, 0.914 and 0.899:
 
+*(D105: the model column is `map_control_mse`, not a ratio. The 32 cells it
+is scored on have their own no-change error, 0.97–1.07, so it cannot be read
+against 1.0.)*
+
 | screen | model mse ratio | ridge | best possible |
 |---|---|---|---|
 | K562_essential | 0.964 | 0.986 | 0.914 |
@@ -2431,7 +2435,7 @@ In error terms, against a no-change baseline of 1.0 and a best possible of
 2. **On two screens the model is worse than predicting library size alone.**
    0.016 against 0.077 on K562_gwps, 0.033 against 0.054 on K562_essential.
    One predictor beats 716.
-3. **On two screens it is worse than predicting nothing.** An mse ratio of
+3. **On two screens it is worse than predicting nothing.** *(Refuted by D105: the model column below was a raw error read against 1.0, not a ratio. On the same cells no change scores about the same.)* An mse ratio of
    1.144 and 1.109 against a no-change baseline of 1.0, on control cells,
    which are data it trains on. A zero-initialized model scores exactly 1.0,
    so training moved it backwards.
@@ -2500,6 +2504,14 @@ seed-to-seed range is already smaller than every gap D90–D92 rest on.
 
 ### D104. The panel→rest mapping does not learn, and the logged curve cannot show it
 
+**Superseded in part by D105.** The paired curve was read against 1.0, but
+on its own 32 cells no change scores about 1.07. The mapping never moved
+backwards, and the two explanations below explain something that did not
+happen. What stands: the logged value is 16 cells, the training curve cannot
+show a ridge-sized gain, and `loss_mapping=0` alone leaves the delta term
+training the decoder. D106 ran the separating arm anyway, and it answered a
+different question.
+
 **Measured.** `map_control` from `runs/server/phase2/curves.csv`, 6,000 steps
 — the mapping's training loss on control cells, in control-SD units, where a
 zero-initialized model (predict each gene's control mean) scores 1.0:
@@ -2557,3 +2569,178 @@ decoder then receives no gradient from any mapping objective, and wherever
 Smoothing twenty logged points removes about 4.5× of the noise, which still
 leaves a 0.014 effect at the edge of visibility; the paired evaluation column
 has no such problem and is already on disk.
+
+### D105. The mapping was never worse than no change; the reference was wrong
+
+**Measured.** `val_map_control_mse` at every evaluation, from the runs'
+own `curves.csv`, 6,000 steps:
+
+| run | step 750 | step 6000 | range across the eight evaluations |
+|---|---|---|---|
+| `server` (seed 2, non-deterministic) | 1.0751 | 1.0708 | 1.0694–1.0751 |
+| `noise_seed0` | 0.9720 | 0.9694 | 0.9687–0.9813 |
+| `noise_seed1` | 1.0008 | 0.9924 | 0.9913–1.0008 |
+| `noise_seed2` | 1.0708 | 1.0659 | 1.0635–1.0708 |
+| `b3_nomap` (seed 2, no mapping gradient, D106) | 1.0735 | 1.0719 | 1.0719–1.0735 |
+
+**What it says.** The level is set by the seed, not by training. Each run
+moves by under 0.01 across its whole curve, while seed 0's cells score 0.97
+and seed 2's 1.07. And the arm whose mapping received **no gradient at all**
+scores 1.072 on seed 2's cells, the same as the arms that trained it. So
+1.07 is roughly what predicting no change scores on those 32 cells, not a
+mapping that has moved backwards from 1.0.
+
+The mechanism: `evaluate` draws `batch_size` (32) control cells per screen,
+and in control-SD units no change is 0, so its error is those cells' own
+mean square. That is 1.0 over the whole control population, which is what
+`ctrl_std` is computed from. It is not 1.0 over 32 cells, because cells
+share a depth factor across all 7,000 genes, and a deep or shallow draw
+moves every gene together.
+
+**What it refutes.**
+* **D102 reading 3** ("on two screens it is worse than predicting nothing …
+  training moved it backwards"). The 1.144 and 1.109 were raw errors read
+  against a population value, and D102's "model mse ratio" column was not a
+  ratio. The ridge's column was a ratio on its own 2,048 cells and stands.
+  So do D102's pearson readings (1 and 2), since correlation does not
+  depend on the baseline.
+* **D104's "those, not the training curve, are the evidence that the
+  mapping moves backwards."** The paired curve was the right instrument, but
+  it was read against the wrong reference. Neither the paired nor the
+  unpaired reading shows a mapping moving backwards.
+* **D104's "fits noise" and "dragged by the shared objectives"** were both
+  explanations of a drift above 1.0 that did not happen. Neither is needed.
+
+**What the mapping actually does.** It learns, slowly. In the deterministic
+12,000-step run (D107), `val_map_control_pearson` rises monotonically from
+0.058 at step 1,500 to 0.082 at 6,000 and 0.1105 at 12,000, and
+`val_map_control_mse` falls from 1.0673 to 1.0573 on cells where the
+no-gradient arm scores 1.0719. That is 1.4% below the no-gradient arm,
+which is about what the ridge gains (D102: 0.986). It is an approximate
+reference, not an exact one: the no-gradient arm's decoder is still shared
+with the perturbation module, though its pearson (−0.005) says it predicts
+nothing. On pearson, 0.11 is about 37% of the ~0.30 ceiling, up from the
+5–19% D102 measured on the non-deterministic run. Those two numbers come
+from 32 and 2,048 cells respectively, so the share is indicative only.
+
+**Decision.** Phase 2 now reports `map_control_no_change` and
+`map_control_ratio_to_no_change`, and the same pair for perturbed cells,
+computed on the cells each evaluation scores. The results summary's Phase 2
+table shows the ratios instead of the raw errors. The ceiling diagnostic
+passes the ratio through.
+
+**Alternative.** Evaluate on more cells, so that the draw's no-change error
+tends to 1.0. That helps, and it costs forward passes on every evaluation,
+but it never removes the offset. The ratio on the same cells removes it at
+any size, which is what `pert_mse_ratio_to_no_change` already does for the
+perturbation module.
+
+### D106. The mapping objectives cost the perturbation module 0.052
+
+**Measured.** `configs/server_isolate.yaml`, seed 2, 6,000 steps, with
+`phase2.loss_mapping=0 phase2.loss_delta=0`, against the same seed with
+both on (`noise_seed2`, D103):
+
+| at step 6000 | both on | both off | difference |
+|---|---|---|---|
+| `pert_mse_ratio_to_no_change` (held out, selects) | 0.7915 | **0.7397** | −0.052 |
+| `pert_pearson` (held out) | 0.4526 | 0.4869 | +0.034 |
+| `pert_train_mse_ratio_to_no_change` | 0.7447 | 0.7033 | −0.041 |
+| `map_delta_ratio_to_no_change` (floor 0.4625) | 0.8300 | 1.0008 | +0.171 |
+| `map_control_mse` (no-change ≈ 1.07 on these cells, D105) | 1.0659 | 1.0719 | — |
+
+Both arms ended at their best (retained 1.00).
+
+**Readings.**
+
+1. **The mapping objectives cost the perturbation module 0.052.** That is
+   3.5 sd of the seed-to-seed spread (D103), at the same seed, so it is a
+   real difference by the project's standing rule. It shows on the training
+   targets as well (−0.041), so the cost is not only in generalization: the
+   shared network fits the perturbation objective less well when it also
+   has to fit the mapping. Without them, the module reaches in 6,000 steps
+   what it reaches with them in 12,000 (0.7435, D107).
+2. **The delta term is the only thing teaching the group-level rest
+   change.** With it off, `map_delta_ratio_to_no_change` sits at 1.00 for
+   the whole run. With it on, it falls to 0.83 by 6,000 steps and 0.80 by
+   12,000, against a floor of 0.46. That is the quantity §B2 would submit and
+   the one the official metrics consume. Only 8 targets are scored, so any
+   one value is noisy, but it falls in every run on every seed (seeds 0, 1
+   and 2 end at 0.849, 0.879 and 0.830).
+3. **Which of the two terms costs the perturbation module is not yet
+   known.** This arm turned off both. The arm that separates them is
+   `loss_mapping=0` alone, which keeps the delta term. If it keeps most of
+   the 0.052 **and** keeps `map_delta` near 0.83, the per-cell level loss is
+   paying for nothing the metrics score. Dropping it would be a §4.5
+   deviation (the Siamese mapping would then be trained on differences
+   only), recorded as one with these numbers.
+
+Nothing changes in the shipped config on this arm alone. Turning off both
+terms would give up the only rest-gene signal the network learns.
+
+**A false alarm this arm exposed, and the fix.** The run ended with
+
+```
+core_unfrozen is unstable on pert_mse_ratio_to_no_change: best 0.7397 at step
+6000, worst 1.0225 at step 750 ... swing 1.38x; 100% of what it learned was
+still there at the end ... lower train.lr.
+```
+
+on a run that learned almost monotonically from its first evaluation to its
+last. `instability` is `worst / best`, and a from-scratch arm's worst is its
+start, at the no-change line. So every arm that learns more than 25% of the
+way from 1.0 would be flagged, and told to lower a learning rate that D89
+and D98 leave unsettled.
+
+`TrainResult` now records `relapse`: the largest ratio of an evaluation to
+the best seen **before** it. That is what "swings" means. On this arm it is
+1.016 (0.8164 after 0.8034). On the arm D77 was written for, 2.4615 after a
+best of 1.0804, it is 2.28 and still flagged. Phase 2's warning uses
+`relapse`. `instability_worst_over_best` is still reported beside it, so
+earlier readings stay comparable.
+
+### D107. 12,000 deterministic steps: no collapse, and 0.048 better
+
+**Measured.** `configs/server_isolate.yaml`, seed 2,
+`--set phase2.steps=12000`:
+
+| step | 1500 | 3000 | 4500 | 6000 | 7500 | 9000 | 10500 | 12000 |
+|---|---|---|---|---|---|---|---|---|
+| `pert_mse_ratio_to_no_change` | 0.8987 | 0.8597 | 0.8356 | 0.7915 | 0.7474 | 0.7445 | **0.7435** | 0.7439 |
+| `pert_train_mse_ratio_to_no_change` | 0.8814 | 0.8326 | 0.7965 | 0.7447 | 0.7071 | 0.6954 | 0.6942 | 0.6900 |
+| `map_control_pearson` | 0.058 | 0.079 | 0.081 | 0.082 | 0.086 | 0.095 | 0.104 | 0.1105 |
+| `map_delta_ratio_to_no_change` | 0.894 | 0.859 | 0.826 | 0.830 | 0.820 | 0.801 | 0.798 | 0.798 |
+
+Best 0.7435 at 10,500, last 0.7439, retained 1.00. Phase 2 took 72 minutes.
+
+**Readings.**
+
+1. **Determinism, a third time.** At every evaluation the two runs share
+   (1,500, 3,000, 4,500 and 6,000), this run reproduces `noise_seed2`
+   exactly, on both the perturbation and the mapping metrics. That holds
+   although the two were given different `steps`, so nothing in training
+   depends on the total budget.
+2. **More steps help, then plateau.** 0.7915 → 0.7435 is 0.048, 3.3 sd
+   (D103). Almost all of it arrives by 7,500 (0.7474). After that the
+   held-out metric moves by 0.004 while the training-target metric keeps
+   falling (0.7071 → 0.6900), which is where generalization stops paying.
+3. **No collapse.** The same configuration and seed run non-
+   deterministically for 12,000 steps peaked at 3,000 and ended at 1.0139
+   (D99). Run deterministically it is flat from 7,500 to the end. The
+   configuration does not collapse, and the non-deterministic run was one
+   realization among many. That is all D103 said can be concluded from
+   this: arithmetic reordering cannot make training worse on average, only
+   make one run unrepresentative. D98's pattern, read off runs of that
+   kind, is weaker again.
+4. **The mapping is still improving at 12,000.** Pearson rises at every
+   evaluation, and `map_delta` falls to 0.80 and holds there (D105, D106).
+
+**Decision.** `phase2.steps` is 12,000 in `configs/server.yaml`. That is
+72 minutes per arm, and about 2.4 hours of Phase 2 with the core-freeze
+ablation, inside §0's budget. `configs/server_isolate.yaml` stays at 6,000,
+so the next arms remain comparable with D103's error bar and with D106.
+
+**Alternative.** 7,500 steps, which captures nearly all of the gain at 62%
+of the cost. Rejected: the mapping and the delta term are still improving
+between 7,500 and 12,000. The 2.4 hours fit the budget, and
+`checkpoint_selection: best` keeps the best step whatever comes after it.

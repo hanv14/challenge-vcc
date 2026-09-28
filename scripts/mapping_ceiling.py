@@ -3,9 +3,10 @@
 
     python scripts/mapping_ceiling.py --config configs/server.yaml
 
-Phase 2's mapping sits at `map_control_mse` 0.965 to 1.144 across the three
-screens — where predicting each gene's control mean scores exactly 1.0 — with
-`map_control_pearson` never above 0.08. This bounds the problem before anyone
+Phase 2's mapping sat at `map_control_pearson` 0.016 to 0.061 across the three
+screens. (Its `map_control_mse` of 0.965 to 1.144 is not a ratio: the no-change
+error of the 32 cells it is scored on varies with the draw, so read
+`map_control_ratio_to_no_change` instead, D105.) This bounds the problem before anyone
 tries to improve it (PLAN_MAPPING.md §B1), with two numbers and no GPU:
 
 * a **ridge regression** from the panel to the rest genes on control cells, in
@@ -13,8 +14,7 @@ tries to improve it (PLAN_MAPPING.md §B1), with two numbers and no GPU:
   it does better, the model is the problem, and if it does not, the panel does
   not predict single-cell rest genes at this depth.
 * the **target's own reliability**, from a binomial split of each cell's
-  counts. No predictor correlates with a target better than the target
-  correlates with itself.
+  counts. Its square root bounds any predictor's correlation (D101).
 
 A third fit on library size alone separates "the panel carries gene-specific
 information" from "the mapping is a depth correction".

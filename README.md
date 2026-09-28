@@ -559,7 +559,7 @@ your machine actually does.
 | `check-data` | reading headers only | minutes |
 | `priors` | streaming control cells for the co-expression blocks | 20–60 min |
 | `phase1` | `phase1.steps` (400) | under an hour |
-| `phase2` | `phase2.steps` (600), twice if the core-freeze ablation is on | 1–3 h |
+| `phase2` | `phase2.steps` (12,000 in `server.yaml`), twice if the core-freeze ablation is on | **measured** 72 min per arm, ~2.4 h with the ablation |
 | `rehearsal` | retrains Phase 2 per variant, then ~**43 scoring calls** | 2–5 h |
 | `phase3` | `phase3.adapt_steps` (300) per context | under an hour |
 | `predict` | 300 targets × 3 contexts × 400 cells | 10–30 min |

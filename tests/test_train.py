@@ -318,6 +318,50 @@ def test_the_weights_kept_are_the_best_ones_not_the_last(model, session_cfg):
     assert result.best_state is None
 
 
+def test_a_run_that_starts_badly_and_learns_is_not_a_relapse(model, session_cfg):
+    """A from-scratch arm is at the no-change line at its first evaluation, so
+    its worst is its start. `worst / best` flagged 1.0225 -> 0.7397 as a 1.38x
+    swing (D106); measured against the best seen before each evaluation, it
+    never went back by more than 1.6%."""
+    curve = [1.0225, 0.8634, 0.8182, 0.8034, 0.8164, 0.8064, 0.7690, 0.7397]
+    result = run_training(
+        model,
+        toy_step(model),
+        steps=len(curve),
+        cfg=session_cfg,
+        phase="phase1",
+        rng=np.random.default_rng(0),
+        device="cpu",
+        evaluate=scripted_eval(curve),
+        eval_every=1,
+        select_on="ratio",
+        select_anchor=1.0,
+    )
+    assert result.instability == pytest.approx(1.0225 / 0.7397)
+    assert result.relapse == pytest.approx(0.8164 / 0.8034)
+    assert result.relapse_step == 5
+
+
+def test_a_run_that_learns_and_loses_it_is_a_relapse(model, session_cfg):
+    """The swing the old measure was built for (D77) is still caught: best
+    1.0804, then 2.4615."""
+    result = run_training(
+        model,
+        toy_step(model),
+        steps=3,
+        cfg=session_cfg,
+        phase="phase1",
+        rng=np.random.default_rng(0),
+        device="cpu",
+        evaluate=scripted_eval([1.0804, 2.4615, 1.2458]),
+        eval_every=1,
+        select_on="ratio",
+        select_anchor=1.0,
+    )
+    assert result.relapse == pytest.approx(2.4615 / 1.0804)
+    assert result.relapse_step == 2
+
+
 def test_keeping_the_final_weights_stays_available(model, session_cfg):
     """`final` remains selectable, because "what the last step produced" is
     the honest answer when no validation was selected on."""

@@ -278,6 +278,33 @@ def test_evaluation_reports_what_no_change_would_score(
         assert scores["pert_mse_no_change"] > 0
 
 
+def test_the_mapping_is_read_against_no_change_on_the_same_cells(
+    tiny_cfg, built_priors, contexts, gene_index
+):
+    """`map_control_mse` was read against 1.0, but the cells an evaluation
+    draws have their own no-change error — 0.97 on one seed's draw and 1.07
+    on another's — so the raw number called a mapping that had received no
+    gradient "worse than no change" (D105)."""
+    model = fresh_model(tiny_cfg, built_priors, phase2.ADAPTER)
+    per_context = phase2.evaluate_per_context(model, contexts, tiny_cfg, "cpu", gene_index)
+    for scores in per_context.values():
+        assert scores["map_control_no_change"] > 0
+        assert scores["map_control_ratio_to_no_change"] == pytest.approx(
+            scores["map_control_mse"] / scores["map_control_no_change"]
+        )
+        if "map_perturbed_mse" in scores:
+            assert scores["map_perturbed_ratio_to_no_change"] == pytest.approx(
+                scores["map_perturbed_mse"] / scores["map_perturbed_no_change"]
+            )
+
+
+def test_a_prediction_of_zero_scores_exactly_no_change():
+    truth = torch.randn(32, 50) * 1.07
+    scores = phase2._mapping_scores("map_control", torch.zeros_like(truth), truth)
+    assert scores["map_control_ratio_to_no_change"] == pytest.approx(1.0)
+    assert scores["map_control_mse"] != pytest.approx(1.0, abs=1e-3)
+
+
 def test_cells_are_drawn_in_control_sd_units(tiny_cfg, contexts):
     tensors = next(iter(contexts.values()))
     panel, rest = phase2.draw_cells(tensors, None, 16, np.random.default_rng(0), "cpu")

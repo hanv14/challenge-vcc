@@ -63,6 +63,14 @@ class TrainResult:
     #: 4500 and ended at 1.25, so it read as steady at 1.15x its best.
     worst_value: float | None = None
     worst_step: int | None = None
+    #: The largest ratio of an evaluation to the best seen *before* it, and
+    #: when. `worst / best` cannot tell a run that swung from one that simply
+    #: started where every run starts: a from-scratch arm is at the no-change
+    #: line at its first evaluation, so its worst is its start, and an arm
+    #: that learned monotonically 1.0225 -> 0.7397 was flagged as swinging
+    #: 1.38x (D106). A relapse can only happen after something was learned.
+    relapse: float | None = None
+    relapse_step: int | None = None
     selected_on: str | None = None
     #: The value the selected metric takes when the model predicts nothing,
     #: when the caller knows it. Every Phase 2 selection metric is a ratio
@@ -161,6 +169,8 @@ class TrainResult:
             "restored": self.restored,
             "divergence_final_over_best": self.divergence,
             "instability_worst_over_best": self.instability,
+            "relapse_over_best_so_far": self.relapse,
+            "relapse_step": self.relapse_step,
             "signal_retained": self.signal_retained,
             "signal_retained_worst": self.signal_retained_worst,
             "signal_headroom": self.signal_headroom,
@@ -260,6 +270,14 @@ def run_training(
                 result.selected_on = select_on
                 current = float(scores[select_on])
                 previous = result.best_metrics.get(select_on)
+                if previous is not None and abs(float(previous)) > 1e-12:
+                    ratio = (
+                        current / float(previous)
+                        if select_lower_is_better
+                        else float(previous) / current if abs(current) > 1e-12 else None
+                    )
+                    if ratio is not None and (result.relapse is None or ratio > result.relapse):
+                        result.relapse, result.relapse_step = ratio, step
                 better = (
                     previous is None
                     or (current < previous if select_lower_is_better else current > previous)

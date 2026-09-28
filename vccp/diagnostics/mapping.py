@@ -1,12 +1,15 @@
 """What could the panel→rest mapping reach? (PLAN_MAPPING.md §B1)
 
-Phase 2's mapping ends at `map_control_mse` 0.965, 1.144 and 1.109 across the
-three screens, in units where **predicting each gene's control mean scores
-exactly 1.0**, with `map_control_pearson` never above 0.08. On two screens the
-trained mapping is worse on control cells than the zero-initialized model it
-started from — and control cells are data it trains on. Before trying to
-improve that, this bounds it, with two numbers that need no GPU and no
-training:
+Phase 2's mapping ended at `map_control_mse` 0.965, 1.144 and 1.109 across the
+three screens, with `map_control_pearson` never above 0.08. That was first read
+against 1.0, which is what predicting each gene's control mean scores over the
+whole control population, and so as "worse than the zero-initialized model on
+two screens". It was not: the 32 cells an evaluation draws have their own
+no-change error, 0.97 to 1.07 depending on the draw, and an arm whose mapping
+received no gradient at all scores the same 1.07 (D105). Phase 2 now reports
+`map_control_ratio_to_no_change` on the same cells. The pearson reading stands.
+Before trying to improve the mapping, this bounds it, with two numbers that
+need no GPU and no training:
 
 * **the linear ceiling.** Ridge regression from the panel to the rest genes,
   on control cells, in the same control-SD units the model uses. A linear map
@@ -330,7 +333,12 @@ def model_numbers(cfg) -> dict[str, Any]:
         "per_context": {
             name: {
                 key: values[key]
-                for key in ("map_control_mse", "map_control_pearson")
+                for key in (
+                    "map_control_mse",
+                    "map_control_no_change",
+                    "map_control_ratio_to_no_change",
+                    "map_control_pearson",
+                )
                 if key in values
             }
             for name, values in per_context.items()

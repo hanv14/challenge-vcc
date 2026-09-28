@@ -660,6 +660,29 @@ def evaluate(
     return scores
 
 
+def _mapping_scores(
+    prefix: str, predicted: torch.Tensor, truth: torch.Tensor
+) -> dict[str, float]:
+    """The mapping's error, beside what predicting no change scores on the
+    **same** cells.
+
+    In control-SD units no change is 0, and its error is the cells' own mean
+    square. That is 1.0 over the whole control population but not over the
+    32 cells an evaluation draws: seed 2's draw scores 1.07 and seed 0's 0.97
+    with no model at all. `map_control_mse` read against 1.0 therefore called
+    the mapping worse than no change on two screens when it was not (D105);
+    the ratio is the reading to use.
+    """
+    mse = float(((predicted - truth) ** 2).mean())
+    no_change = float((truth**2).mean())
+    return {
+        f"{prefix}_mse": mse,
+        f"{prefix}_no_change": no_change,
+        f"{prefix}_ratio_to_no_change": mse / no_change if no_change > 0 else float("nan"),
+        f"{prefix}_pearson": pearson(predicted.cpu().numpy(), truth.cpu().numpy()),
+    }
+
+
 def evaluate_per_context(
     model,
     contexts: dict[str, ContextTensors],
@@ -680,10 +703,7 @@ def evaluate_per_context(
             # The mapping, on each state separately (checklist item 9).
             control_panel, control_rest = draw_cells(tensors, None, n, rng, device)
             predicted = map_panel_to_rest(model, tensors, control_panel)
-            scores["map_control_mse"] = float(((predicted - control_rest) ** 2).mean())
-            scores["map_control_pearson"] = pearson(
-                predicted.cpu().numpy(), control_rest.cpu().numpy()
-            )
+            scores.update(_mapping_scores("map_control", predicted, control_rest))
 
             held_out = [t for t in tensors.val_targets if t in tensors.pseudobulk]
             if not held_out:
@@ -698,10 +718,7 @@ def evaluate_per_context(
             pert_panel = torch.cat(panels)
             pert_rest = torch.cat(rests)
             predicted = map_panel_to_rest(model, tensors, pert_panel)
-            scores["map_perturbed_mse"] = float(((predicted - pert_rest) ** 2).mean())
-            scores["map_perturbed_pearson"] = pearson(
-                predicted.cpu().numpy(), pert_rest.cpu().numpy()
-            )
+            scores.update(_mapping_scores("map_perturbed", predicted, pert_rest))
 
             scores.update(_score_delta(model, tensors, cfg, device, rng, held_out))
             scores.update(
@@ -1093,9 +1110,15 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             )
         else:
             kept = "it never beat the no-change baseline, so there was nothing to keep"
+        # The swing is measured against the best seen *before* each
+        # evaluation, not the run's overall best: `worst / best` flags an arm
+        # whose worst is simply its first evaluation, which is every arm that
+        # starts from scratch and learns (D106). A run built by hand without
+        # the loop has no relapse recorded, and falls back to the old reading.
+        swing = result.relapse if result.relapse is not None else instability
         diverged = (
             (divergence is not None and divergence > DIVERGENCE_RATIO)
-            or (instability is not None and instability > DIVERGENCE_RATIO)
+            or (swing is not None and swing > DIVERGENCE_RATIO)
             # The reading `final / best` cannot give. An arm that went 0.817
             # to 1.001 kept none of what it learned and still read as 1.22x,
             # just under the 1.25 threshold (D85).
@@ -1104,7 +1127,8 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
         if diverged:
             log.warning(
                 "  %s is unstable on %s: best %.4f at step %s, worst %.4f at step %s, "
-                "ended %.4f (%.2fx best; swing %.2fx; %s). The arm keeps its best "
+                "ended %.4f (%.2fx best; relapsed to %.2fx the best before it; %s). "
+                "The arm keeps its best "
                 "weights, but an arm that swings this far is not converging — "
                 "lower train.lr.",
                 arm, SELECTION_METRIC,
@@ -1113,7 +1137,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
                 result.worst_step,
                 result.final_metrics.get(SELECTION_METRIC, float("nan")),
                 divergence if divergence is not None else float("nan"),
-                instability if instability is not None else float("nan"),
+                swing if swing is not None else float("nan"),
                 kept,
             )
         return {
@@ -1141,6 +1165,7 @@ def run_phase2(cfg: Config) -> dict[str, Any]:
             "best_step": result.best_step,
             "divergence_final_over_best": divergence,
             "instability_worst_over_best": instability,
+            "relapse_over_best_so_far": result.relapse,
             # The share of what the arm learned that its last step still
             # held: 1.0 ended at its best, 0.0 ended knowing no more than
             # the no-change baseline, negative ended worse than that.

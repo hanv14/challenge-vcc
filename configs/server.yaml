@@ -46,13 +46,14 @@ phase1:
   batch_size: 32
 
 phase2:
-  # 600 was too small to say anything: at that budget every arm sat at
-  # "no better than predicting no change". At 6,000 the from-scratch arm
-  # reached 0.807 against no-change and was **still improving**
-  # (0.918 -> 0.921 -> 0.857 -> 0.807), so this is a floor rather than a
-  # tuned value. Three arms at 6,000 steps took about 96 minutes on the
-  # server, which is affordable inside the ~12-hour budget of §0.
-  steps: 6000
+  # 600 was too small to say anything, and 6,000 was still improving on
+  # every seed. One deterministic 12,000-step run of seed 2 (D107): 0.7915
+  # at 6,000, 0.7474 at 7,500, then flat — best 0.7435 at 10,500, last
+  # 0.7439. The gain, 0.048, is over three times the seed-to-seed sd of
+  # 0.0146 (D103), and the run did not collapse. 12,000 steps took 72
+  # minutes per arm; with the core-freeze ablation that is about 2.4 hours
+  # of Phase 2, inside the ~12-hour budget of §0.
+  steps: 12000
   batch_size: 32
   cells_per_draw: 16
 

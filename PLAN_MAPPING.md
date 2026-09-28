@@ -208,6 +208,15 @@ backwards. Which of the three bullets above holds is still open; §B3 arm 1
 with `loss_delta=0` as well separates "fits noise" from "dragged by the shared
 objectives".
 
+**Then measured on the paired curve, and the reading above is superseded**
+(D105–D107). `val_map_control_mse` is flat within every run, and its level is
+set by the seed's 32-cell draw: 0.97 for seed 0, 1.07 for seed 2, and 1.07
+for an arm whose mapping received no gradient at all. So the mapping was
+never worse than no change. In the deterministic 12,000-step run its
+pearson climbs 0.058 → 0.11 and its group-level change
+(`map_delta_ratio_to_no_change`) falls to 0.80 against a floor of 0.46.
+Phase 2 now reports `map_control_ratio_to_no_change` on the same cells.
+
 ### B1. What is achievable at all (CPU, under an hour)
 
 Before improving the mapping, bound it. Two numbers, both from control cells
@@ -362,3 +371,22 @@ D98 were all superseded in place rather than deleted, and that history is the
 most useful part of the file. `PLAN_MAPPING.md` gets the result inline, as
 PLAN_PERCELL.md's §7 and §11 did. A deviation from CLAUDE.md §4 goes in
 `checklist.json` as well, so it appears in the run rather than only in prose.
+
+---
+
+## 7. Results after B0, and what B3 became (D105–D107)
+
+| arm (seed 2) | steps | held-out pert | pert, training targets | map_delta ÷ no change |
+|---|---|---|---|---|
+| all objectives on (`noise_seed2`) | 6,000 | 0.7915 | 0.7447 | 0.830 |
+| `loss_mapping=0 loss_delta=0` | 6,000 | **0.7397** | 0.7033 | 1.001 |
+| all objectives on (`det_12k`) | 12,000 | 0.7435 (best, 10,500) | 0.6900 | 0.798 |
+
+* The mapping objectives cost the perturbation module 0.052 (3.5 sd). The
+  delta term is the only one teaching the group-level rest change.
+* 12,000 steps are worth 0.048, flat from 7,500, with no collapse.
+  `configs/server.yaml` is now 12,000.
+* **Next arm:** `--set phase2.loss_mapping=0` alone (delta kept), 6,000 steps,
+  seed 2. It asks whether the per-cell level loss is the whole cost. If
+  `pert` lands near 0.74 and `map_delta` near 0.83, that loss pays for
+  nothing the metrics score, and dropping it is a §4.5 deviation to record.

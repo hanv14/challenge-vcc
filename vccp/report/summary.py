@@ -387,8 +387,11 @@ def _prior_check_section(prior_checks: dict[str, Any]) -> str:
 #: Phase 2 reports the mapping on control and on perturbed cells separately,
 #: which is what checklist item 9 asks for.
 PHASE2_COLUMNS = (
-    ("map_control_mse", "mapping: control cells"),
-    ("map_perturbed_mse", "mapping: perturbed cells"),
+    # Ratios against predicting no change on the same cells, not raw error:
+    # the raw error of a 32-cell draw is 0.97 or 1.07 with no model at all,
+    # depending on which cells were drawn (D105).
+    ("map_control_ratio_to_no_change", "mapping: control cells ÷ no change"),
+    ("map_perturbed_ratio_to_no_change", "mapping: perturbed cells ÷ no change"),
     # The two columns above are dominated by the baseline expression level.
     # This one is the *change* between them, which is the only quantity the
     # six official metrics score, reported beside the floor a perfect
