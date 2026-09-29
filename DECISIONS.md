@@ -2806,3 +2806,107 @@ were trained. The level loss would then only need to keep the per-cell
 mapping sane, not carry the submission's offset. Not built. It is one
 switch in `predicted_log2fc`, and the rehearsal's cross-context variant
 is what measures it.
+
+### D109. The rehearsal never scored the shipped model
+
+**Measured.** The first full `all` at 12,000 Phase 2 steps (`server_12k`,
+seed 2). Phase 2 improved as D107 predicted: held-out
+`pert_mse_ratio_to_no_change` went 0.9173 → 0.8280 → 0.7938 → **0.7577**
+at steps 3,000, 6,000, 9,000 and 12,000 (256 targets). The rehearsal's
+end-to-end variant did not move:
+
+| cross-context, leaderboard scale | method | floor | upper bound |
+|---|---|---|---|
+| K562_essential | −0.0470 | −0.0405 | +0.0511 |
+| K562_gwps | −0.0134 | −0.0587 | +0.0586 |
+| rpe1 | −0.2581 | −0.2628 | +0.0003 |
+| **mean** | **−0.1062** | −0.1207 | +0.0367 |
+
+The seed-2 run of PLAN_MAPPING §1 fact 5, at 6,000 non-deterministic steps,
+had the method at −0.038, −0.030 and −0.253, a mean of −0.107. A Phase 2 gain
+of 0.05 to 0.07 on its own metric moved the rehearsal by 0.001.
+
+**Why: the rehearsal's method arms were not the shipped recipe.**
+
+1. **Warm start.** Every method arm loaded Phase 1's core unconditionally.
+   That is `warm_start: full`, which D90 measured not to learn, while the
+   shipped Phase 2 has started from the priors since D91.
+2. **Budget.** They trained Phase 2 for `rehearsal.phase2_steps`, a fixed
+   300, while the shipped Phase 2 trains for 12,000. At 600 steps every arm
+   D78 measured sat at no change. The log shows it: cross-context rebuilt its
+   priors by 18:15:49 and had trained *and* adapted by 18:17:45.
+3. **Variant 1 was not Phase 3's procedure.** Its method was Phase 1's core,
+   which never saw Replogle, plus 150 adapter steps on one screen's
+   controls. Its mapping started at 1.35–1.42 on control cells. Phase 3
+   adapts a *trained* Phase 2. D94's policy ("adapting on controls makes the
+   rest genes 1.5–3× worse, so do not adapt") was read off this arm.
+
+So the method column has measured a model with no perturbation knowledge in
+every run since D91. Four things rest on it and are **not evidence about
+the shipped model**:
+* D94's no-adapt policy, and PLAN_MAPPING §1 fact 3;
+* the generator calibration (threshold 0, scale 1 in this run);
+* sanity checks 6 and 7, which read the rehearsal;
+* "the method sits at the no-change floor" (fact 5), as a statement about
+  the model rather than the rehearsal.
+
+The two leaderboard uploads (−0.1313) *were* the shipped model, so the
+leaderboard stands as the one end-to-end reading. It is also affected by
+D110.
+
+**Decision.**
+* Method arms start as `phase2.warm_start` says (`start_like_phase2`,
+  sharing Phase 2's `reset_delta` and `keep_only_perturbation`) and train
+  with `phase2.train_projections`.
+* `rehearsal.phase2_steps` defaults to 0, meaning `phase2.steps`.
+  `configs/server.yaml` sets 7,500: a 12,000-step run was at 0.7474 there
+  against its best of 0.7435, within the error bar (D107), at 62% of the
+  cost. That is four arms of about 45 minutes (three held-out screens, plus
+  unseen genes). The rehearsal arms do not evaluate while training, so they
+  keep their last step. At 7,500 the D107 curve was flat, so last ≈ best.
+* Variant 1's method **is** variant 2's held-out model: Phase 2 trained
+  without the screen, then adapted on its controls. It is trained once per
+  screen and shared (`HeldOutModel`). Variant 1 also scores the same model
+  **before** adapting (`method_unadapted`, rest genes only). The policy now
+  compares adapted with unadapted, because that is Phase 3's actual choice.
+  The floor comparison stays only as a fallback for a report without the
+  unadapted arm. `POLICY_VERSION` is 3, so every policy written from the old
+  rehearsal is refused.
+
+**Alternative.** Score the shipped Phase 2 checkpoint directly. Rejected:
+it trained on the held-out screen, which is what the upper bound is for.
+The method has to be the shipped *recipe* applied without that screen, and
+§4.1's leakage rule requires the priors rebuilt without it too.
+
+### D110. Prediction switched off Phase 2's adapter
+
+**Found, not yet measured on the server.** Phase 2 trains its core and its
+LoRA adapter (`phase2`) together, and validates them together: every Phase 2
+number in this file is with the adapter on. Phase 3's adaptation
+(`adapt_on_controls`), the prediction (`predict/run.py`) and every rehearsal
+arm then called `use_adapters([context_adapter(name)])`. That activates the
+context adapter *alone*. The Phase 2 adapter was loaded from the checkpoint
+and never used. So every submission, including both uploads, and every
+rehearsal upper bound ran a network that nothing had validated: the core
+without the low-rank weights trained alongside it. No decision chose this.
+The adapters were designed per phase and per context (§4.3), and nothing
+stacked them.
+
+**Size: unknown until measured.** `scripts/adapter_check.py` scores the
+saved Phase 2 checkpoint on Phase 2's own validation with the adapter on
+and off, on the same cells and targets. On mini the gap is 0.0001 (0.9717
+against 0.9716), because a 150-step adapter has barely moved, and the "on"
+reading reproduces the run's recorded best exactly. On the server the
+adapter has trained for 12,000 steps next to an unfrozen core. The gap
+could be anything from nothing to the whole of what Phase 2 learned, and
+it is a few GPU-minutes to find out.
+
+**Decision.** `adapt.inference_adapters(context, cfg)` returns
+`[phase2, context:<name>]`, and all four callers use it. The context adapter
+trains on top of a frozen, active Phase 2 adapter.
+`phase3.stack_phase2_adapter: false` restores the old behaviour for the A/B.
+
+**Alternative.** Merge the Phase 2 adapter into the base weights at the end
+of Phase 2. Equivalent in function, but it changes what the checkpoint
+holds, and the frozen-parameter check would need to know about it. Stacking
+is one list.

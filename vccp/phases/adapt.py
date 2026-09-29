@@ -73,6 +73,24 @@ def context_adapter(context: str) -> str:
     return f"context:{context}"
 
 
+#: Phase 2's adapter, named here rather than imported because `phase2` imports
+#: this module.
+PHASE2_ADAPTER = "phase2"
+
+
+def inference_adapters(context: str, cfg) -> list[str]:
+    """The adapters active when a context is adapted or predicted.
+
+    The context adapter sits *on top of* Phase 2's: Phase 2 trains its core
+    and its adapter together and validates them together, so switching the
+    adapter off predicts with a network nobody measured. That is what every
+    prediction did until D110. `phase3.stack_phase2_adapter: false` puts the
+    old behaviour back for the A/B.
+    """
+    base = [PHASE2_ADAPTER] if cfg.phase3.stack_phase2_adapter else []
+    return base + [context_adapter(context)]
+
+
 def map_panel_to_rest(
     model, source: ControlSource, panel_values: torch.Tensor, output_idx=None
 ) -> torch.Tensor:
@@ -127,7 +145,7 @@ def adapt_on_controls(
     batch_size = batch_size or cfg.phase2.batch_size
 
     model.add_adapter(adapter)
-    model.use_adapters([adapter])
+    model.use_adapters(inference_adapters(source.name, cfg))
 
     plan = set_trainable(
         model,

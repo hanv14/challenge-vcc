@@ -30,7 +30,7 @@ from . import common, variants
 #: `context_adapters: true` because it was written that way, not because it
 #: was measured, so Phase 3 refuses it and asks for the rehearsal again
 #: rather than adapting on the strength of a claim nobody checked.
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 
 
 def run_rehearsal(cfg: Config) -> dict[str, Any]:
@@ -54,12 +54,19 @@ def run_rehearsal(cfg: Config) -> dict[str, Any]:
     log.info("rehearsal: running the three variants (CLAUDE.md §4.6)")
     results: list[variants.VariantResult] = []
 
-    results += variants.run_controls_only(cfg, features, contexts, gene_index, device, run_paths)
-    release_gpu_memory()
-
+    # Variant 2 first: it trains, per screen, the Phase 2 that never saw that
+    # screen, and variant 1 reuses it rather than training it twice (D109).
+    held_out_models: dict[str, variants.HeldOutModel] = {}
     cross = variants.run_cross_context(
-        cfg, features, contexts, gene_index, device, run_paths, paths
+        cfg, features, contexts, gene_index, device, run_paths, paths,
+        held_out_models=held_out_models,
     )
+    release_gpu_memory()
+    results += variants.run_controls_only(
+        cfg, features, contexts, gene_index, device, run_paths,
+        held_out_models=held_out_models,
+    )
+    del held_out_models
     results += cross
     release_gpu_memory()
 
@@ -390,13 +397,14 @@ def _adapt_policy(results) -> dict[str, Any]:
     floor of 1.0, with the same mapping reaching 0.989 when it was allowed
     the perturbed cells too (DECISIONS.md D94).
     """
-    ratios = {}
+    ratios, unadapted = {}, {}
     for result in results:
         if result.variant != "controls_only":
             continue
-        scores = result.arms.get(common.METHOD, {}).get("rest_genes")
-        if scores and np.isfinite(scores.get("mse_ratio_to_no_change", float("nan"))):
-            ratios[result.context] = float(scores["mse_ratio_to_no_change"])
+        for arm, store in ((common.METHOD, ratios), (variants.METHOD_UNADAPTED, unadapted)):
+            scores = result.arms.get(arm, {}).get("rest_genes")
+            if scores and np.isfinite(scores.get("mse_ratio_to_no_change", float("nan"))):
+                store[result.context] = float(scores["mse_ratio_to_no_change"])
 
     permitted = {
         "core": False,
@@ -419,6 +427,36 @@ def _adapt_policy(results) -> dict[str, Any]:
 
     worst = max(ratios.values())
     median = float(np.median(list(ratios.values())))
+    paired = sorted(set(ratios) & set(unadapted))
+    if paired:
+        # The question Phase 3 actually faces: the same trained mapping,
+        # adapted on the new context's controls or left alone (D109).
+        before = float(np.median([unadapted[c] for c in paired]))
+        after = float(np.median([ratios[c] for c in paired]))
+        helps = after <= before
+        return {
+            **permitted,
+            "context_adapters": helps,
+            "delta": helps,
+            "measured": True,
+            "measured_on": "rehearsal variant 1 (controls_only): Phase 2 trained without "
+            "the screen, rest genes, mse against predicting no change, before and after "
+            "adapting on the screen's controls",
+            "controls_only_ratio_per_context": ratios,
+            "unadapted_ratio_per_context": unadapted,
+            "controls_only_ratio_median": round(after, 4),
+            "unadapted_ratio_median": round(before, 4),
+            "reason": (
+                f"adapting a Phase 2 that never saw the screen on its controls moves "
+                f"the rest genes from {before:.3f} to {after:.3f} against predicting no "
+                "change (median over screens). "
+                + ("Adapting helps or is neutral, so §4.7's procedure is followed."
+                   if helps else
+                   "Adapting makes them worse, so Phase 3 keeps Phase 2's mapping "
+                   "unchanged — a departure from §4.7's procedure, taken on §4.6's "
+                   "instruction that the policy be chosen from the rehearsal.")
+            ),
+        }
     helps = median <= CONTROLS_ONLY_TOLERANCE
     return {
         **permitted,
@@ -584,11 +622,13 @@ def summarize(report: dict[str, Any]) -> str:
         for partial in ("rest_genes", "hidden_genes"):
             if partial in entry["arms"].get(common.METHOD, {}):
                 lines.append(f"  {partial} (per-gene, on the genes this variant predicts):")
-                for arm in (common.METHOD, common.UPPER_BOUND, common.FLOOR):
+                for arm in (
+                    common.METHOD, variants.METHOD_UNADAPTED, common.UPPER_BOUND, common.FLOOR
+                ):
                     scores = entry["arms"].get(arm, {}).get(partial)
                     if scores:
                         lines.append(
-                            f"    {arm:<12} pearson {scores['pearson']:+.3f}  "
+                            f"    {arm:<16} pearson {scores['pearson']:+.3f}  "
                             f"mse/no-change {scores['mse_ratio_to_no_change']:.3f}"
                         )
 
@@ -603,7 +643,10 @@ def summarize(report: dict[str, Any]) -> str:
         # modality the weights were trained on, and an arm that is not
         # printed is an arm that was measured for nothing.
         standard = (common.METHOD, common.UPPER_BOUND, common.FLOOR)
-        arm_order = list(standard) + [a for a in sorted(entry["arms"]) if a not in standard]
+        arm_order = list(standard) + [
+            a for a in sorted(entry["arms"])
+            if a not in standard and key in entry["arms"][a]
+        ]
         scored_any = any(
             "scored" in entry["arms"].get(arm, {}).get(key, {}) for arm in arm_order
         )

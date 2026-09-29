@@ -278,7 +278,7 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                 f"controls_{name}.h5ad has {context.n_genes} genes but "
                 f"{paths.gene_names} lists {n_genes}"
             )
-        model.use_adapters([adapt.context_adapter(name)])
+        model.use_adapters(adapt.inference_adapters(name, cfg))
 
         budget = control_cell_budget(cfg, n_genes, context.n_cells)
         pool_rng = np.random.default_rng(cfg.seed)

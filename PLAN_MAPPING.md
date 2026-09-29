@@ -398,3 +398,26 @@ mapping's absolute level, and Phase 3's prediction reads that level directly.
 The open item is to predict the rest change as
 `map(predicted panel) − map(control panel)`, matching what the delta term
 trains.
+
+---
+
+## 8. The first 12,000-step `all`, and why the rehearsal did not move (D109, D110)
+
+Phase 2 reached 0.7577 held out, and the rehearsal's cross-context method
+stayed at a mean of −0.106 on the leaderboard scale, as it was at 6,000
+steps. Two reasons, both fixed:
+
+* **D109.** The rehearsal's method arms loaded Phase 1's core and trained 300
+  steps, so they scored a model with no perturbation knowledge. Variant 1's
+  method never saw Replogle at all. The policy, the calibration and sanity
+  checks 6–7 were all read off those arms. Now the rehearsal trains the
+  shipped recipe without each screen (7,500 steps on the server) and shares
+  that model between variants 1 and 2. The policy compares adapted with
+  unadapted.
+* **D110.** Prediction and Phase 3 activated the context adapter alone,
+  dropping the Phase 2 adapter that was trained and validated with the core.
+  They now stack. `scripts/adapter_check.py` measures what the drop cost.
+
+Every rehearsal-derived statement from before this section (§1 facts 3 and
+5 in particular) describes the rehearsal's untrained arm, not the shipped
+model.

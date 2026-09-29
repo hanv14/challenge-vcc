@@ -486,6 +486,13 @@ class Phase3:
     #: expressed in that context's controls (DECISIONS.md D8). Same floor as
     #: sanity check 3.
     knockdown_min_control_cpm: float = 1.0
+    #: Keep Phase 2's adapter switched on underneath each context adapter, so
+    #: the network that predicts is the network Phase 2 trained and validated.
+    #: It used to be switched off: prediction activated the context adapter
+    #: alone, so every submission and every rehearsal arm ran Phase 2's core
+    #: without the low-rank weights trained alongside it (DECISIONS.md D110).
+    #: `false` reproduces that, for the A/B.
+    stack_phase2_adapter: bool = True
 
     def validate(self) -> None:
         if self.adapt_steps < 1:
@@ -674,7 +681,11 @@ class Rehearsal:
     #: Steps for the controls-only adaptation each variant runs.
     adapt_steps: int = 150
     #: Steps for the Phase 2 arms the rehearsal retrains under its own scopes.
-    phase2_steps: int = 300
+    #: 0 means Phase 2's own `phase2.steps`, so the rehearsal measures the
+    #: model that ships. It was a fixed 300 while the shipped Phase 2 trained
+    #: for 12,000, and the rehearsal scored a model that had learned nothing
+    #: about perturbations (DECISIONS.md D109).
+    phase2_steps: int = 0
     #: Real cells kept per target when scoring (0 = all of them).
     cells_per_target: int = 0
     #: Control cells sampled for the scoring side (0 = all of them).
@@ -727,9 +738,12 @@ class Rehearsal:
     def validate(self) -> None:
         if self.max_targets < 2:
             raise ConfigError("rehearsal.max_targets must be at least 2")
-        for key in ("adapt_steps", "phase2_steps"):
-            if getattr(self, key) < 1:
-                raise ConfigError(f"rehearsal.{key} must be at least 1")
+        if self.adapt_steps < 1:
+            raise ConfigError("rehearsal.adapt_steps must be at least 1")
+        if self.phase2_steps < 0:
+            raise ConfigError(
+                "rehearsal.phase2_steps must be 0 (Phase 2's own steps) or positive"
+            )
         if not 0.0 < self.unseen_gene_fraction < 1.0:
             raise ConfigError("rehearsal.unseen_gene_fraction must be in (0, 1)")
         if not self.calibration_thresholds or not self.calibration_scales:

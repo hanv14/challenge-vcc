@@ -62,7 +62,13 @@ rehearsal:
   # call runs a Wilcoxon DE over this many targets, and the calibration grid
   # is one scoring per point.
   max_targets: 100
-  phase2_steps: 300
+  # The rehearsal retrains Phase 2 once per held-out screen (three screens,
+  # plus one for the unseen-genes variant), the way the shipped Phase 2
+  # trains, so that it scores the model that ships (D109). It was 300 while
+  # Phase 2 trained for 12,000. 7,500 is where a 12,000-step run had reached
+  # 0.7474 against its best of 0.7435, within the error bar (D107), at 62% of
+  # the cost: four arms of about 45 minutes. 0 would use phase2.steps.
+  phase2_steps: 7500
   adapt_steps: 150
   calibration_thresholds: [0.0, 0.05, 0.1, 0.25]
   calibration_scales: [0.25, 0.5, 1.0, 1.5]

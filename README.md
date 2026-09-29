@@ -365,6 +365,11 @@ and the model reaches 5–19% — less than library size alone on two screens. T
 ceiling is `max_achievable_pearson`, the square root of the reliability, not
 the reliability itself (D101).
 
+**`reports/adapter_check.json`**, when `scripts/adapter_check.py` has been
+run — the saved Phase 2 checkpoint scored on its own validation with its
+adapter on and off (D110). Until D110 every prediction ran with it off; the
+gap between the two columns is what that cost.
+
 **`reports/coupling_check.json`**, when `scripts/coupling_check.py` has been
 run — whether the OT pairing carries information on this data at all. **On the
 server it returns `matches-the-null`** (D100): pairing control cells against
@@ -560,7 +565,7 @@ your machine actually does.
 | `priors` | streaming control cells for the co-expression blocks | 20–60 min |
 | `phase1` | `phase1.steps` (400) | under an hour |
 | `phase2` | `phase2.steps` (12,000 in `server.yaml`), twice if the core-freeze ablation is on | **measured** 72 min per arm, ~2.4 h with the ablation |
-| `rehearsal` | retrains Phase 2 per variant, then ~**43 scoring calls** | 2–5 h |
+| `rehearsal` | retrains Phase 2 once per held-out screen plus once for unseen genes (`rehearsal.phase2_steps`, 7,500 in `server.yaml`: ~45 min each), then ~**43 scoring calls** | ~5.5 h |
 | `phase3` | `phase3.adapt_steps` (300) per context | under an hour |
 | `predict` | 300 targets × 3 contexts × 400 cells | 10–30 min |
 | `sanity` | reads every block once | 10–30 min |

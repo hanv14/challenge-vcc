@@ -103,17 +103,57 @@ def build_and_load(cfg, features, device: str, checkpoint=None):
     return model
 
 
+def rehearsal_phase2_steps(cfg) -> int:
+    """The budget a rehearsal arm trains Phase 2 for: `rehearsal.phase2_steps`,
+    or Phase 2's own when that is 0.
+
+    It was a fixed 300 while the shipped Phase 2 grew to 12,000, so the
+    rehearsal scored a model that had learned nothing about perturbations,
+    whatever the shipped one had (DECISIONS.md D109).
+    """
+    return int(cfg.rehearsal.phase2_steps or cfg.phase2.steps)
+
+
+def start_like_phase2(cfg, model, features, run_paths) -> dict[str, Any]:
+    """Apply `phase2.warm_start` to a freshly built model, as Phase 2 does.
+
+    The method arms used to load Phase 1's core unconditionally, the
+    `warm_start: full` recipe D90 measured not to learn, while the shipped
+    model has started from the priors since D91 (D109).
+    """
+    warm = cfg.phase2.warm_start
+    if warm == phase2.NONE:
+        return {"warm_start": warm}
+    fresh = (
+        {name: t.detach().clone() for name, t in model.state_dict().items()}
+        if warm == phase2.PERTURBATION_ONLY
+        else None
+    )
+    load_core(
+        run_paths.core_checkpoint(phase1.PHASE), model,
+        layout_hash=features.layout_hash(), strict=False,
+    )
+    transfer: dict[str, Any] = {"warm_start": warm}
+    if warm == phase2.WITHOUT_DELTA:
+        transfer["delta_tensors_reset"] = phase2.reset_delta(model)
+    elif warm == phase2.PERTURBATION_ONLY:
+        transfer.update(phase2.keep_only_perturbation(model, fresh))
+    return transfer
+
+
 def train_phase2_arm(
     cfg, model, contexts, gene_index, device: str, steps: int, label: str
 ):
-    """Phase 2's objective, under whatever restriction the caller applied."""
+    """Phase 2's objective, under whatever restriction the caller applied,
+    with the shipped Phase 2's trainable set."""
     from ..train.freeze import set_trainable
 
     model.use_adapters([phase2.ADAPTER])
     set_trainable(
         model, label, core=cfg.phase2.unfreeze_core, adapters=[phase2.ADAPTER],
-        delta=True, projections=False, heads=True,
+        delta=True, projections=cfg.phase2.train_projections, heads=True,
     )
+    log.info("    %s: Phase 2 for %d steps on %s", label, steps, ", ".join(sorted(contexts)))
     return run_training(
         model,
         phase2.make_step(model, contexts, cfg, device, gene_index),
@@ -123,6 +163,94 @@ def train_phase2_arm(
         rng=np.random.default_rng(cfg.seed),
         device=device,
     )
+
+
+@dataclass
+class HeldOutModel:
+    """Phase 2 trained without one screen, before and after adapting on its
+    controls — which is Phase 3's whole procedure, run where the answers are
+    known.
+
+    Variants 1 and 2 share it. Variant 1 used to fit its own method from
+    Phase 1's core, which never saw Replogle, and so measured "adapters
+    trained on controls on top of an untrained mapping" rather than what
+    Phase 3 does: adapt a trained Phase 2 on a new context's controls
+    (DECISIONS.md D109). The states are kept on the CPU.
+    """
+
+    context: str
+    learned_from: list[str]
+    features: Any
+    unadapted: dict[str, torch.Tensor]
+    adapted: dict[str, torch.Tensor]
+    adaptation: dict[str, Any]
+    warm_start: dict[str, Any]
+    scope: Any
+
+    def model(self, cfg, device: str, *, adapted: bool):
+        model = build_and_load(cfg, self.features, device)
+        model.add_adapter(adapt.context_adapter(self.context))
+        model.load_state_dict(self.adapted if adapted else self.unadapted, strict=False)
+        model.use_adapters(
+            adapt.inference_adapters(self.context, cfg)
+            if adapted
+            else [a for a in adapt.inference_adapters(self.context, cfg)
+                  if a != adapt.context_adapter(self.context)]
+        )
+        return model
+
+
+def _cpu_state(model) -> dict[str, torch.Tensor]:
+    return {name: t.detach().to("cpu", copy=True) for name, t in model.state_dict().items()}
+
+
+def fit_held_out_model(
+    cfg, features, contexts, held_out: str, targets: list[str], gene_index,
+    device: str, run_paths, label: str,
+) -> tuple[HeldOutModel, Any]:
+    """Train Phase 2 on every screen but `held_out`, the way the shipped Phase 2
+    trains, then adapt it on `held_out`'s controls. Returns the record and
+    the live adapted model."""
+    others = [n for n in sorted(contexts) if n != held_out]
+    # Priors rebuilt without the held-out screen's responses; its control
+    # cells stay visible, which is what "adapt using only its controls"
+    # means (DECISIONS.md D21).
+    scope = cross_context_scope(held_out, targets)
+    # Rebuilt in the run's own layout, so the columns keep their meaning
+    # and the Phase 1 core stays loadable; what the scope hides shows up
+    # as a set missing flag rather than as a shift (`conform_results`).
+    scoped_features = build_priors(cfg, scope, reference_layouts=features.layouts)
+    if scoped_features.layout_hash() != features.layout_hash():
+        raise RuntimeError(
+            "the scoped priors did not land in the run's layout: "
+            f"{scoped_features.layout_hash()} vs {features.layout_hash()}"
+        )
+
+    model = build_and_load(cfg, scoped_features, device)
+    warm = start_like_phase2(cfg, model, scoped_features, run_paths)
+    if others:
+        train_phase2_arm(
+            cfg, model, {n: contexts[n] for n in others}, gene_index, device,
+            rehearsal_phase2_steps(cfg), label,
+        )
+    else:
+        log.info("    %s: no other screen to learn from; the mapping is untrained", label)
+    unadapted = _cpu_state(model)
+    adaptation = adapt.adapt_on_controls(
+        model, contexts[held_out], cfg, steps=cfg.rehearsal.adapt_steps,
+        device=device, rng=np.random.default_rng(cfg.seed), phase="rehearsal",
+    )
+    record = HeldOutModel(
+        context=held_out,
+        learned_from=others,
+        features=scoped_features,
+        unadapted=unadapted,
+        adapted=_cpu_state(model),
+        adaptation=adaptation.as_dict(),
+        warm_start=warm,
+        scope=scope,
+    )
+    return record, model
 
 
 def held_out_targets(tensors: phase2.ContextTensors, cfg, pool: list[str] | None = None) -> list[str]:
@@ -356,12 +484,27 @@ def leaderboard_scale(
 # --------------------------------------------------------------------------- #
 # variant 1 — controls-only mapping
 # --------------------------------------------------------------------------- #
+#: Variant 1's method before it adapted on the held-out screen's controls:
+#: the arm the Phase 3 policy compares the adapted one with.
+METHOD_UNADAPTED = "method_unadapted"
+
+
 def run_controls_only(
-    cfg, features, contexts, gene_index, device: str, run_paths
+    cfg, features, contexts, gene_index, device: str, run_paths,
+    held_out_models: dict[str, HeldOutModel] | None = None,
 ) -> list[VariantResult]:
-    """Fit the mapping on controls alone, feed the true perturbed panel."""
+    """Adapt the mapping on a screen's controls alone, feed the true perturbed
+    panel, score the rest genes.
+
+    The method is Phase 3's procedure: Phase 2 trained without this screen,
+    then adapted on its controls. It is taken from `held_out_models` when
+    variant 2 already trained it, and trained here otherwise. The same model
+    before adapting is scored beside it, because whether adapting helps is
+    the question the Phase 3 policy asks (D109).
+    """
     variant = "controls_only"
     results = []
+    held_out_models = held_out_models if held_out_models is not None else {}
 
     for name, tensors in contexts.items():
         targets = held_out_targets(tensors, cfg)
@@ -376,15 +519,17 @@ def run_controls_only(
         control_counts = control_counts_for(tensors, cfg, rng)
         real_counts, real_labels, cells_per_target = real_cells_for(tensors, targets, cfg, rng)
 
-        # The method: a mapping that has only ever seen control cells. Warm
-        # started from Phase 1, which never saw Replogle at all.
-        method_model = build_and_load(
-            cfg, features, device, run_paths.core_checkpoint(phase1.PHASE)
-        )
-        adaptation = adapt.adapt_on_controls(
-            method_model, tensors, cfg, steps=cfg.rehearsal.adapt_steps,
-            device=device, rng=np.random.default_rng(cfg.seed), phase="rehearsal",
-        )
+        # The method: Phase 2 without this screen, adapted on its controls.
+        record = held_out_models.get(name)
+        if record is None:
+            record, live = fit_held_out_model(
+                cfg, features, contexts, name, targets, gene_index, device,
+                run_paths, f"rehearsal:{variant}:{name}",
+            )
+            del live
+            held_out_models[name] = record
+        method_model = record.model(cfg, device, adapted=True)
+        unadapted_model = record.model(cfg, device, adapted=False)
         # The upper bound: the mapping that also trained on perturbed cells.
         bound_model = build_and_load(
             cfg, features, device, run_paths.core_checkpoint(phase2.PHASE)
@@ -394,7 +539,9 @@ def run_controls_only(
         predictions: dict[str, dict[str, common.TargetPrediction]] = {
             common.METHOD: {}, common.UPPER_BOUND: {}, common.FLOOR: {},
         }
-        per_gene: dict[str, list] = {common.METHOD: [], common.UPPER_BOUND: [], common.FLOOR: []}
+        per_gene: dict[str, list] = {
+            common.METHOD: [], METHOD_UNADAPTED: [], common.UPPER_BOUND: [], common.FLOOR: [],
+        }
 
         for target in targets:
             # The *true* perturbed panel, which is what this variant supplies.
@@ -406,16 +553,20 @@ def run_controls_only(
             panel_mean = panel_truth.mean(dim=0, keepdim=True)
             rest_mean = rest_truth.mean(dim=0).cpu().numpy()
 
-            for arm, model, adapters in (
-                (common.METHOD, method_model, [adapt.context_adapter(name)]),
-                (common.UPPER_BOUND, bound_model, [phase2.ADAPTER]),
+            for arm, model in (
+                (common.METHOD, method_model),
+                (METHOD_UNADAPTED, unadapted_model),
+                (common.UPPER_BOUND, bound_model),
             ):
-                model.use_adapters(adapters)
                 model.eval()
                 with torch.no_grad():
                     predicted_rest = adapt.map_panel_to_rest(model, tensors, panel_mean)
                 predicted = predicted_rest.squeeze(0).cpu().numpy()
                 per_gene[arm].append((predicted, rest_mean))
+                if arm == METHOD_UNADAPTED:
+                    # Scored on the rest genes only: it is a reference for the
+                    # policy, not a prediction anyone would submit.
+                    continue
 
                 full = np.zeros(len(gene_names), dtype=np.float32)
                 full[panel_positions] = panel_truth.mean(dim=0).cpu().numpy()
@@ -441,7 +592,7 @@ def run_controls_only(
         for arm, pairs in per_gene.items():
             predicted = np.stack([p for p, _ in pairs])
             truth = np.stack([t for _, t in pairs])
-            arms[arm]["rest_genes"] = common.per_gene_scores(predicted, truth)
+            arms.setdefault(arm, {})["rest_genes"] = common.per_gene_scores(predicted, truth)
 
         results.append(
             VariantResult(
@@ -451,7 +602,10 @@ def run_controls_only(
                 detail={
                     "n_targets": len(targets),
                     "n_rest_genes": int(rest_positions.size),
-                    "adaptation": adaptation.as_dict(),
+                    "learned_from": record.learned_from,
+                    "warm_start": record.warm_start,
+                    "phase2_steps": rehearsal_phase2_steps(cfg),
+                    "adaptation": record.adaptation,
                     "note": "the panel values fed in are the truth, so the official "
                     "metrics here are panel-assisted and are not end-to-end "
                     "performance; `rest_genes` is the reading that is about the model",
@@ -465,9 +619,13 @@ def run_controls_only(
 # variant 2 — cross-context
 # --------------------------------------------------------------------------- #
 def run_cross_context(
-    cfg, features, contexts, gene_index, device: str, run_paths, paths
+    cfg, features, contexts, gene_index, device: str, run_paths, paths,
+    held_out_models: dict[str, HeldOutModel] | None = None,
 ) -> list[VariantResult]:
-    """Learn in one screen, adapt to the other on its controls alone."""
+    """Learn in one screen, adapt to the other on its controls alone.
+
+    Each held-out model is recorded in `held_out_models`, when given, for
+    variant 1 to reuse."""
     variant = "cross_context"
     results = []
     names = sorted(contexts)
@@ -497,33 +655,13 @@ def run_cross_context(
             "  %s/%s: %d targets shared with %s", variant, held_out, len(targets), ", ".join(others)
         )
 
-        # Priors rebuilt without the held-out screen's responses; its control
-        # cells stay visible, which is what "adapt using only its controls"
-        # means (DECISIONS.md D21).
-        scope = cross_context_scope(held_out, targets)
-        # Rebuilt in the run's own layout, so the columns keep their meaning
-        # and the Phase 1 core stays loadable; what the scope hides shows up
-        # as a set missing flag rather than as a shift (`conform_results`).
-        scoped_features = build_priors(cfg, scope, reference_layouts=features.layouts)
-        if scoped_features.layout_hash() != features.layout_hash():
-            raise RuntimeError(
-                "the scoped priors did not land in the run's layout: "
-                f"{scoped_features.layout_hash()} vs {features.layout_hash()}"
-            )
-
-        method_model = build_and_load(cfg, scoped_features, device)
-        load_core(
-            run_paths.core_checkpoint(phase1.PHASE), method_model,
-            layout_hash=scoped_features.layout_hash(), strict=False,
+        record, method_model = fit_held_out_model(
+            cfg, features, contexts, held_out, targets, gene_index, device,
+            run_paths, f"rehearsal:{variant}:{held_out}",
         )
-        train_phase2_arm(
-            cfg, method_model, {n: contexts[n] for n in others}, gene_index, device,
-            cfg.rehearsal.phase2_steps, f"rehearsal:{variant}:{held_out}",
-        )
-        adaptation = adapt.adapt_on_controls(
-            method_model, tensors, cfg, steps=cfg.rehearsal.adapt_steps,
-            device=device, rng=np.random.default_rng(cfg.seed), phase="rehearsal",
-        )
+        if held_out_models is not None:
+            held_out_models[held_out] = record
+        scope = record.scope
 
         # The upper bound saw the held-out screen's perturbed cells.
         bound_model = build_and_load(cfg, features, device, run_paths.core_checkpoint(phase2.PHASE))
@@ -545,7 +683,7 @@ def run_cross_context(
         # mode Phase 3 is configured for, so the A/B compares the models
         # rather than two prediction routines.
         for arm, model in ((common.METHOD, method_model), (common.UPPER_BOUND, bound_model)):
-            model.use_adapters([adapt.context_adapter(held_out)])
+            model.use_adapters(adapt.inference_adapters(held_out, cfg))
             predictions[arm] = predict_targets(
                 cfg, model, tensors, targets, gene_index, device,
                 arm=arm, variant=variant, control_counts=control_counts,
@@ -570,7 +708,9 @@ def run_cross_context(
                     "n_targets": len(targets),
                     "learned_from": others,
                     "leaderboard_scale": scale_reference.as_dict(),
-                    "adaptation": adaptation.as_dict(),
+                    "adaptation": record.adaptation,
+                    "warm_start": record.warm_start,
+                    "phase2_steps": rehearsal_phase2_steps(cfg),
                     "prior_scope": scope.describe(),
                     # A per-cell prediction is stored as its mean over cells:
                     # what §5's predicted-vs-true scatter plots, and what the
@@ -638,15 +778,12 @@ def run_unseen_genes(
             )
 
         method_model = build_and_load(cfg, scoped_features, device)
-        load_core(
-            run_paths.core_checkpoint(phase1.PHASE), method_model,
-            layout_hash=scoped_features.layout_hash(), strict=False,
-        )
+        warm = start_like_phase2(cfg, method_model, scoped_features, run_paths)
         # Hidden from training: removed from every screen's output genes.
         restricted = {n: restrict_genes(t, hidden_idx) for n, t in contexts.items()}
         train_phase2_arm(
             cfg, method_model, restricted, gene_index, device,
-            cfg.rehearsal.phase2_steps, f"rehearsal:{variant}:{name}",
+            rehearsal_phase2_steps(cfg), f"rehearsal:{variant}:{name}",
         )
         # The controls of this screen *do* see them — that is the exception.
         adaptation = adapt.adapt_on_controls(
@@ -674,7 +811,7 @@ def run_unseen_genes(
             rest_mean = rest_truth.mean(dim=0).cpu().numpy()
 
             for arm, model, adapters in (
-                (common.METHOD, method_model, [adapt.context_adapter(name)]),
+                (common.METHOD, method_model, adapt.inference_adapters(name, cfg)),
                 (common.UPPER_BOUND, bound_model, [phase2.ADAPTER]),
             ):
                 model.use_adapters(adapters)
@@ -721,6 +858,8 @@ def run_unseen_genes(
                     "n_targets": len(targets),
                     "n_hidden_genes": len(hidden_idx),
                     "hidden_gene_fraction_of_rest": round(len(hidden_idx) / rest.size, 4),
+                    "warm_start": warm,
+                    "phase2_steps": rehearsal_phase2_steps(cfg),
                     "adaptation": adaptation.as_dict(),
                     "prior_scope": scope.describe(),
                     "note": "`hidden_genes` is the reading that is about the model; "
@@ -800,19 +939,16 @@ def run_mode_sweep(
             log.info("    %s: training and scoring", arm)
 
             model = build_and_load(arm_cfg, scoped_features, device)
-            load_core(
-                run_paths.core_checkpoint(phase1.PHASE), model,
-                layout_hash=scoped_features.layout_hash(), strict=False,
-            )
+            start_like_phase2(arm_cfg, model, scoped_features, run_paths)
             training = train_phase2_arm(
                 arm_cfg, model, {n: contexts[n] for n in others}, gene_index, device,
-                arm_cfg.rehearsal.phase2_steps, f"rehearsal:{variant}:{held_out}:{arm}",
+                rehearsal_phase2_steps(arm_cfg), f"rehearsal:{variant}:{held_out}:{arm}",
             )
             adaptation = adapt.adapt_on_controls(
                 model, tensors, arm_cfg, steps=arm_cfg.rehearsal.adapt_steps,
                 device=device, rng=np.random.default_rng(arm_cfg.seed), phase="rehearsal",
             )
-            model.use_adapters([adapt.context_adapter(held_out)])
+            model.use_adapters(adapt.inference_adapters(held_out, cfg))
             predictions = predict_targets(
                 arm_cfg, model, tensors, targets, gene_index, device,
                 arm=arm, variant=variant, control_counts=control_counts,
@@ -1015,7 +1151,7 @@ def run_cross_assay(
             (common.UPPER_BOUND, bound_model, cfg.phase2.pert_type),
         )
         for arm, model, modality in plan:
-            model.use_adapters([adapt.context_adapter(held_out)])
+            model.use_adapters(adapt.inference_adapters(held_out, cfg))
             arm_cfg = dataclasses.replace(
                 cfg, phase2=dataclasses.replace(cfg.phase2, pert_type=modality)
             )

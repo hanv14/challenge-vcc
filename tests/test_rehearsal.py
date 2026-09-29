@@ -320,3 +320,102 @@ def test_a_tie_with_the_baseline_still_lets_phase3_adapt():
     assert _adapt_policy(
         _controls_only({"a": CONTROLS_ONLY_TOLERANCE + 0.01})
     )["context_adapters"] is False
+
+
+def _paired(adapted, unadapted):
+    from vccp.rehearsal import common
+    from vccp.rehearsal.variants import METHOD_UNADAPTED, VariantResult
+
+    return [
+        VariantResult(
+            variant="controls_only",
+            context=name,
+            arms={
+                common.METHOD: {"rest_genes": {"mse_ratio_to_no_change": adapted[name]}},
+                METHOD_UNADAPTED: {"rest_genes": {"mse_ratio_to_no_change": unadapted[name]}},
+            },
+        )
+        for name in adapted
+    ]
+
+
+def test_the_policy_compares_adapting_with_not_adapting_the_same_mapping():
+    """Phase 3's choice is between a trained mapping adapted on the new
+    context's controls and the same mapping left alone, so that is the
+    comparison the policy reads when variant 1 measured both (D109) — not
+    the adapted mapping against the floor."""
+    from vccp.rehearsal.stage import _adapt_policy
+
+    # Both above the floor, but adapting helps: permitted.
+    helps = _adapt_policy(_paired({"a": 1.10, "b": 1.20}, {"a": 1.30, "b": 1.40}))
+    assert helps["context_adapters"] is True and helps["delta"] is True
+    assert helps["unadapted_ratio_median"] == pytest.approx(1.35)
+
+    # Both below the floor, but adapting hurts: refused.
+    hurts = _adapt_policy(_paired({"a": 0.98, "b": 0.97}, {"a": 0.95, "b": 0.94}))
+    assert hurts["context_adapters"] is False and hurts["delta"] is False
+    assert "worse" in hurts["reason"]
+
+
+def test_the_rehearsal_trains_phase2_for_phase2s_own_budget_by_default(m4_cfg):
+    """It was a fixed 300 while the shipped Phase 2 grew to 12,000, so the
+    rehearsal scored a model that had learned nothing (D109)."""
+    from vccp.rehearsal.variants import rehearsal_phase2_steps
+
+    default = dataclasses.replace(
+        m4_cfg, rehearsal=dataclasses.replace(m4_cfg.rehearsal, phase2_steps=0)
+    )
+    assert rehearsal_phase2_steps(default) == default.phase2.steps
+    explicit = dataclasses.replace(
+        m4_cfg, rehearsal=dataclasses.replace(m4_cfg.rehearsal, phase2_steps=7)
+    )
+    assert rehearsal_phase2_steps(explicit) == 7
+
+
+def test_a_method_arm_starts_the_way_the_shipped_phase2_does(m4_cfg, m4_run):
+    """Under `warm_start: none` the rehearsal's method must not load Phase 1's
+    core — it did, unconditionally, which is the recipe D90 measured not to
+    learn (D109)."""
+    import torch
+
+    from vccp.phases import phase2
+    from vccp.priors.build import PriorFeatures
+    from vccp.rehearsal.variants import build_and_load, start_like_phase2
+
+    run_paths = RunPaths(m4_cfg)
+    features = PriorFeatures.load(run_paths.prior_features)
+    cold = dataclasses.replace(
+        m4_cfg, phase2=dataclasses.replace(m4_cfg.phase2, warm_start=phase2.NONE)
+    )
+    warm = dataclasses.replace(
+        m4_cfg, phase2=dataclasses.replace(m4_cfg.phase2, warm_start=phase2.FULL)
+    )
+
+    def weights(cfg):
+        model = build_and_load(cfg, features, "cpu")
+        record = start_like_phase2(cfg, model, features, run_paths)
+        return record, {k: v.clone() for k, v in model.state_dict().items()}
+
+    fresh = {k: v.clone() for k, v in build_and_load(cold, features, "cpu").state_dict().items()}
+    cold_record, cold_weights = weights(cold)
+    warm_record, warm_weights = weights(warm)
+
+    assert cold_record["warm_start"] == phase2.NONE
+    assert all(torch.equal(fresh[k], cold_weights[k]) for k in fresh)
+    assert warm_record["warm_start"] == phase2.FULL
+    assert any(not torch.equal(fresh[k], warm_weights[k]) for k in fresh)
+
+
+def test_prediction_keeps_phase2s_adapter_under_the_context_adapter(m4_cfg):
+    """Phase 2 trains and validates its core *with* its adapter. Prediction
+    used to activate the context adapter alone, so the submitted network was
+    one nobody had measured (D110)."""
+    from vccp.phases import adapt, phase2
+
+    stacked = adapt.inference_adapters("A", m4_cfg)
+    assert stacked == [phase2.ADAPTER, adapt.context_adapter("A")]
+
+    old = dataclasses.replace(
+        m4_cfg, phase3=dataclasses.replace(m4_cfg.phase3, stack_phase2_adapter=False)
+    )
+    assert adapt.inference_adapters("A", old) == [adapt.context_adapter("A")]
