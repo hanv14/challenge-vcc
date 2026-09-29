@@ -419,3 +419,68 @@ def test_prediction_keeps_phase2s_adapter_under_the_context_adapter(m4_cfg):
         m4_cfg, phase3=dataclasses.replace(m4_cfg.phase3, stack_phase2_adapter=False)
     )
     assert adapt.inference_adapters("A", old) == [adapt.context_adapter("A")]
+
+
+def _point(threshold, scale, objective, board):
+    from vccp.rehearsal.calibrate import CalibrationPoint
+
+    return CalibrationPoint(
+        threshold=threshold, scale=scale, objective=objective, leaderboard=board
+    )
+
+
+def test_calibration_maximizes_the_leaderboard_not_the_no_change_objective():
+    """The corner that predicts almost nothing scored best on the no-change
+    objective (+0.080) and cost 1.34 on DE direction fidelity on the
+    leaderboard, whose 0 is a mean-response baseline that does call genes
+    (D113). With the leaderboard scale available, it decides."""
+    from vccp.rehearsal.calibrate import LEADERBOARD, combine
+
+    timid = (0.25, 0.25)
+    bold = (0.0, 1.0)
+    grids = {
+        screen: [_point(*timid, 0.08, -0.30), _point(*bold, 0.05, board)]
+        for screen, board in (("a", 0.04), ("b", -0.10), ("c", 0.02))
+    }
+    chosen = combine(grids)
+    assert chosen.objective_used == LEADERBOARD
+    assert (chosen.settings.confidence_threshold, chosen.settings.effect_scale) == bold
+    row = next(r for r in chosen.combined if (r["confidence_threshold"], r["effect_scale"]) == bold)
+    assert row["mean"] == pytest.approx((0.04 - 0.10 + 0.02) / 3)
+
+
+def test_calibration_uses_every_screen_not_the_largest_one():
+    """One setting goes to the challenge, so it is chosen by its mean over
+    screens: a point that wins on one screen and loses badly on another does
+    not win."""
+    from vccp.rehearsal.calibrate import combine
+
+    grids = {
+        "k562": [_point(0.0, 1.0, 0.0, 0.10), _point(0.1, 0.5, 0.0, 0.05)],
+        "rpe1": [_point(0.0, 1.0, 0.0, -0.40), _point(0.1, 0.5, 0.0, 0.00)],
+    }
+    chosen = combine(grids)
+    assert (chosen.settings.confidence_threshold, chosen.settings.effect_scale) == (0.1, 0.5)
+    assert chosen.per_dataset["others"]["k562"]["effect_scale"] == 1.0
+
+
+def test_calibration_falls_back_to_no_change_without_a_leaderboard_scale():
+    from vccp.rehearsal.calibrate import NO_CHANGE, combine
+
+    grids = {"a": [_point(0.0, 1.0, 0.02, None), _point(0.1, 0.5, 0.05, None)]}
+    chosen = combine(grids)
+    assert chosen.objective_used == NO_CHANGE
+    assert chosen.settings.effect_scale == 0.5
+
+
+def test_a_screen_the_scorer_failed_on_does_not_veto_every_setting():
+    from vccp.rehearsal.calibrate import combine
+
+    grids = {
+        "good": [_point(0.0, 1.0, 0.01, 0.03), _point(0.1, 0.5, 0.02, 0.01)],
+        "failed": [_point(0.0, 1.0, float("-inf"), None), _point(0.1, 0.5, float("-inf"), None)],
+    }
+    chosen = combine(grids)
+    assert chosen.best is not None
+    assert chosen.settings.effect_scale == 1.0
+    assert chosen.context == "good"

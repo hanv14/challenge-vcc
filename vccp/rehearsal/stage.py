@@ -140,56 +140,24 @@ def run_rehearsal(cfg: Config) -> dict[str, Any]:
 
 
 def _calibrate(cfg, cross, contexts, gene_index, device, log):
-    """Fit the generator on variant 2, which is the one scored end to end."""
-    usable = [
-        result
-        for result in cross
-        if common.METHOD in result.arms
-        and "error" not in result.arms[common.METHOD].get(common.END_TO_END, {})
-    ]
-    if not usable:
+    """Fit the generator on variant 2, which is the one scored end to end:
+    one setting, chosen by its mean over every cross-context screen, on the
+    leaderboard's scale where it could be built (D113)."""
+    grids = {}
+    for result in cross:
+        entries = result.detail.get("calibration_grid") or []
+        if common.METHOD in result.arms and entries:
+            grids[result.context] = [
+                calibration_module.CalibrationPoint.from_dict(e) for e in entries
+            ]
+    if not grids:
         return calibration_module.default_calibration(
-            "the cross-context variant produced no scorable arm, so the generator keeps "
+            "the cross-context variant produced no scorable grid, so the generator keeps "
             "its default settings"
         )
 
-    # The context with the most targets gives the steadiest objective.
-    chosen = max(usable, key=lambda r: r.detail.get("n_targets", 0))
-    tensors = contexts[chosen.context]
-    log.info("calibrating the generator on cross_context/%s", chosen.context)
-
-    rng = np.random.default_rng(cfg.seed)
-    gene_names, ctrl_mean, ctrl_std = variants.gene_axis(tensors)
-    control_counts = variants.control_counts_for(tensors, cfg, rng)
-
-    targets = list(chosen.detail.get("predictions", {}))
-    stored = chosen.detail.get("predictions", {})
-    if not stored:
-        return calibration_module.default_calibration(
-            "the cross-context variant stored no per-target predictions to calibrate on "
-            "(raise rehearsal.n_saved_predictions)"
-        )
-
-    real_counts, real_labels, cells_per_target = variants.real_cells_for(
-        tensors, targets, cfg, rng
-    )
-    predictions = {
-        target: common.TargetPrediction(
-            target, np.asarray(values, dtype=np.float32), {"arm": common.METHOD}
-        )
-        for target, values in stored.items()
-        if target in cells_per_target
-    }
-    if len(predictions) < 2:
-        return calibration_module.default_calibration(
-            "fewer than two cross-context targets have both a stored prediction and "
-            "real cells to score against"
-        )
-
-    calibration = calibration_module.calibrate(
-        cfg, predictions, control_counts, real_counts, real_labels, cells_per_target,
-        gene_names, "cross_context", "non-targeting",
-    )
+    log.info("calibrating the generator over cross_context/%s", "+".join(sorted(grids)))
+    calibration = calibration_module.combine(grids)
     # Where the settings came from and where they are going. The modalities
     # usually match, since Replogle and the challenge are both CRISPR
     # interference — which is why `carried_across_assays` is recorded
@@ -198,77 +166,11 @@ def _calibrate(cfg, cross, contexts, gene_index, device, log):
     # depth that nothing in the model represents (PLAN_PERCELL.md §7.5).
     calibration.fitted_assay = cfg.phase2.pert_type
     calibration.applied_assay = cfg.phase3.pert_type
-    calibration.per_dataset = _per_dataset_calibration(
-        cfg, usable, chosen, contexts, device, log
-    )
-    calibration.per_dataset["spread"] = _settings_spread(
-        chosen.context, calibration.settings, calibration.per_dataset
-    )
+    if calibration.best is not None:
+        calibration.per_dataset["spread"] = _settings_spread(
+            "combined", calibration.settings, {"others": calibration.per_dataset.get("others", {})}
+        )
     return calibration
-
-
-def _per_dataset_calibration(cfg, usable, chosen, contexts, device, log) -> dict[str, Any]:
-    """The same fit on the other screens, when it was asked for.
-
-    One global setting fitted on one screen and applied to the challenge is
-    an assumption; fitting it on every screen says whether the assumption
-    holds. Screens that agree are evidence the transfer is safe, screens that
-    disagree are evidence it is not, and either reading is worth having before
-    a submission rests on it.
-
-    Off by default because each screen costs a full grid of official
-    scorings, which is the slow part of the rehearsal.
-    """
-    others = [r for r in usable if r.context != chosen.context]
-    if not cfg.rehearsal.calibrate_per_dataset:
-        return {
-            "ran": False,
-            "reason": "rehearsal.calibrate_per_dataset is off",
-            "would_have_fitted": [r.context for r in others],
-        }
-    if not others:
-        return {"ran": False, "reason": "only one screen produced a scorable arm"}
-
-    fits = {}
-    for result in others:
-        tensors = contexts[result.context]
-        stored = result.detail.get("predictions", {})
-        if not stored:
-            fits[result.context] = {"error": "no stored predictions"}
-            continue
-        rng = np.random.default_rng(cfg.seed)
-        gene_names, _, _ = variants.gene_axis(tensors)
-        control_counts = variants.control_counts_for(tensors, cfg, rng)
-        targets = list(stored)
-        real_counts, real_labels, cells_per_target = variants.real_cells_for(
-            tensors, targets, cfg, rng
-        )
-        predictions = {
-            target: common.TargetPrediction(
-                target, np.asarray(values, dtype=np.float32), {"arm": common.METHOD}
-            )
-            for target, values in stored.items()
-            if target in cells_per_target
-        }
-        if len(predictions) < 2:
-            fits[result.context] = {"error": "fewer than two scorable targets"}
-            continue
-        log.info("  calibrating again on cross_context/%s, for the spread", result.context)
-        fit = calibration_module.calibrate(
-            cfg, predictions, control_counts, real_counts, real_labels,
-            cells_per_target, gene_names, "cross_context", "non-targeting",
-        )
-        fits[result.context] = fit.settings.as_dict()
-
-    return {
-        "ran": True,
-        "fitted_on": chosen.context,
-        "others": fits,
-        "reading": (
-            "settings that agree across screens are evidence the transfer to the "
-            "challenge is safe; settings that disagree are evidence it is not"
-        ),
-    }
 
 
 def _settings_spread(chosen_context: str, chosen, per_dataset: dict[str, Any]) -> dict[str, Any]:
@@ -683,6 +585,10 @@ def summarize(report: dict[str, Any]) -> str:
 
     calibration = report["calibration"]
     lines.append("Generator calibration (fitted on the cross-context variant)")
+    lines.append(
+        f"  objective            : {calibration.get('objective_used', 'no_change')}"
+        f" (over {calibration.get('fitted_on') or '?'})"
+    )
     lines.append("-" * 58)
     lines.append(f"  confidence_threshold : {calibration['settings']['confidence_threshold']}")
     lines.append(f"  effect_scale         : {calibration['settings']['effect_scale']}")

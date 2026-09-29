@@ -698,6 +698,18 @@ def run_cross_context(
             cells_per_target, gene_names, settings, "non-targeting", common.END_TO_END,
             scale_reference=scale_reference,
         )
+        # The generator's grid, on every target this screen scored and on the
+        # leaderboard's scale. It used to run afterwards on the handful of
+        # targets whose predictions the report keeps (five), on one screen,
+        # maximizing the no-change objective (D113).
+        from . import calibrate as calibration_module
+
+        log.info("    calibration grid on %s, %d targets", held_out, len(targets))
+        grid = calibration_module.calibrate(
+            cfg, predictions[common.METHOD], control_counts, real_counts, real_labels,
+            cells_per_target, gene_names, variant, "non-targeting",
+            scale_reference=scale_reference,
+        )
 
         results.append(
             VariantResult(
@@ -706,6 +718,7 @@ def run_cross_context(
                 arms=arms,
                 detail={
                     "n_targets": len(targets),
+                    "calibration_grid": [point.as_dict() for point in grid.grid],
                     "learned_from": others,
                     "leaderboard_scale": scale_reference.as_dict(),
                     "adaptation": record.adaptation,

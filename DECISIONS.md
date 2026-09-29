@@ -3002,3 +3002,62 @@ the upper bound is a reference point, not a ceiling.
 our validator and `vcc prep --dry-run`, and it is the first submission whose
 rehearsal measured the model that made it. Only the leaderboard can say
 whether reading 2 holds for the challenge's cell lines.
+
+### D113. The calibration chose "predict almost nothing", and the leaderboard punished it
+
+**Measured.** Three uploads, leaderboard scale (0 = the organizers'
+mean-response baseline):
+
+| upload | run | generator | overall | pds | mse | nmae | fid | reach | jac |
+|---|---|---|---|---|---|---|---|---|---|
+| v4 | `server` | as that run calibrated | **−0.014** | −0.006 | 0 | −0.037 | −0.015 | −0.002 | −0.027 |
+| v5 | `server_12k` | threshold 0, scale 1 | −0.083 | −0.004 | 0 | **−0.504** | +0.009 | +0.004 | −0.001 |
+| v6 | `server_fix` | threshold 0.25, scale 0.25 | −0.242 | −0.016 | 0 | +0.002 | **−1.340** | −0.019 | −0.078 |
+
+The rehearsal ranked them in the opposite order. v6's loss is almost all DE
+direction fidelity: −1.34 on a scale where the baseline is 0.
+
+**Why.** Two faults in how the calibration was fitted, both older than this
+cycle:
+
+1. **It maximized the wrong objective.** The objective maps each metric so
+   that *predicting no change* scores 0 (D5). The leaderboard maps it so that
+   the *mean-response baseline* scores 0, and that baseline calls genes, in
+   mostly the right direction. So a prediction that moves almost nothing
+   costs nothing on the calibration's objective and a great deal on the
+   leaderboard. The grid shows it: the chosen point had fidelity **0.0** raw
+   and an objective of +0.080, the best in the grid. Threshold 0 at scale 1.0
+   had fidelity 0.30 and reach 0.22, and scored lower (+0.055). The mode
+   sweep's docstring had already recorded that the two scales disagree. The
+   calibration was never moved onto the one the leaderboard uses, although
+   the rehearsal builds that scale for every cross-context screen.
+2. **It was fitted on five targets of one screen.** It re-scored the stored
+   per-target predictions (`n_saved_predictions: 5`), on K562_essential only
+   (the screen with the most targets). The pds values in the grid (0.75,
+   0.70, 0.65, 0.55) are multiples of 0.05 because they are means of five
+   ranks. Sixteen settings compared on five targets is noise.
+
+**Decision.** The cross-context variant runs the grid itself, on **every**
+target it scored (100 per screen), with the screen's leaderboard scale.
+`calibrate.combine` picks the one setting with the best **mean over all
+cross-context screens** on the leaderboard scale. It falls back to the
+no-change objective only where no screen could be placed on that scale. A
+screen whose scorer failed everywhere is left out rather than vetoing every
+point. The per-screen optimum and the per-screen value of every point are
+kept in the report (`per_dataset.others`, `combined`), so the spread is
+visible. `rehearsal.calibrate_per_dataset` is no longer read.
+
+**Cost.** Sixteen scorings of 100 targets on each of three screens, about
+2.3 minutes each: roughly 1.8 hours added to the rehearsal.
+
+**What it does not fix.** Reading 2 of D112 stands. The model transfers
+within K562 and not yet to rpe1, and the challenge contexts are new cell
+lines. Averaging rpe1 into the calibration means the setting chosen is one
+that does not lose on the screen most like the challenge. It does not make
+rpe1's predictions better.
+
+**Unexplained, recorded.** v4 (`runs/server`) scored −0.014 on this upload.
+The earlier uploads recorded at −0.1313 came from the same directory. Either
+that run was redone in between, or the leaderboard's anchors changed (the
+upload reports anchor set `...-r4`). The two cannot be compared until we know
+which.

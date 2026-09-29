@@ -701,12 +701,9 @@ class Rehearsal:
     #: Grid searched for the generator's two calibration settings (§4.7).
     calibration_thresholds: tuple[float, ...] = (0.0, 0.05, 0.1, 0.25)
     calibration_scales: tuple[float, ...] = (0.25, 0.5, 1.0, 1.5)
-    #: Fit the generator's two settings on **every** scorable screen rather
-    #: than only the one with the most targets, and report the spread
-    #: (PLAN_PERCELL.md §7.5). One screen's fit carried to the challenge is a
-    #: cross-assay assumption; fitting it on several says whether it holds.
-    #: Off by default because each screen costs a full grid of official
-    #: scorings, which is the slow part of the rehearsal.
+    #: No longer read: every cross-context screen is now calibrated, on all
+    #: its targets, and the setting is chosen by the mean over screens
+    #: (DECISIONS.md D113). Kept so older configs still load.
     calibrate_per_dataset: bool = False
     #: Learn what a perturbation does from LINCS alone, adapt to a Replogle
     #: screen through its control cells, and score (PLAN_PERCELL.md §7.7).
