@@ -37,6 +37,11 @@ rehearsal:
   max_targets: 20
   adapt_steps: 40
   phase2_steps: 60
+  # The grid now runs on every cross-context screen (D113); four points
+  # instead of sixteen keep `all` inside the 15-minute CPU budget of §0 while
+  # still exercising the choice between settings.
+  calibration_thresholds: [0.0, 0.25]
+  calibration_scales: [0.5, 1.0]
 
 phase3:
   adapt_steps: 60
