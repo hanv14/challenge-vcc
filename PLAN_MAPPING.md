@@ -421,3 +421,10 @@ steps. Two reasons, both fixed:
 Every rehearsal-derived statement from before this section (§1 facts 3 and
 5 in particular) describes the rehearsal's untrained arm, not the shipped
 model.
+
+**Measured after the fixes** (D111, D112). The adapter drop cost 0.0003.
+With the rehearsal scoring the shipped recipe, cross-context moves from −0.106
+to −0.050 on the leaderboard scale. The method is above baseline on both
+K562 screens (+0.035, +0.073) and at the floor on rpe1 (−0.258 against
+−0.263), the only held-out screen from a new cell type. Cross-cell-type
+transfer is now the gap, and rpe1 is its measurement.

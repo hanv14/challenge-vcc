@@ -2061,6 +2061,11 @@ than manufacturing a number for it.
 
 ### D94. Phase 3 adapts only if the rehearsal measured that adapting helps
 
+**Superseded by D109/D112.** The arm this policy was read from started from
+Phase 1's core, not from a trained Phase 2. Measured on the shipped recipe,
+adapting is neutral (0.985 against 0.986 unadapted), and the policy lets
+Phase 3 adapt again. The mechanism, a policy read off the rehearsal, stands.
+
 **Decision.** `phase3_policy.json`'s `adapt` block is read off rehearsal
 variant 1 instead of being written in. When the controls-only mapping scores
 worse than predicting no change (median above `CONTROLS_ONLY_TOLERANCE`,
@@ -2880,6 +2885,11 @@ The method has to be the shipped *recipe* applied without that screen, and
 
 ### D110. Prediction switched off Phase 2's adapter
 
+**Measured since (D111): it cost nothing.** On `server_12k`'s checkpoint the
+adapter moves `pert_mse_ratio_to_no_change` by 0.0003 (0.7577 on, 0.7581
+off). The fix stays, because it makes the predicting network the validated
+one, but it explains none of the score.
+
 **Found, not yet measured on the server.** Phase 2 trains its core and its
 LoRA adapter (`phase2`) together, and validates them together: every Phase 2
 number in this file is with the adapter on. Phase 3's adaptation
@@ -2910,3 +2920,85 @@ trains on top of a frozen, active Phase 2 adapter.
 of Phase 2. Equivalent in function, but it changes what the checkpoint
 holds, and the frozen-parameter check would need to know about it. Stacking
 is one list.
+
+### D111. Switching the Phase 2 adapter off cost 0.0003
+
+**Measured.** `scripts/adapter_check.py` on `server_12k`'s Phase 2
+checkpoint, same cells and targets, adapter on / off:
+
+| | on | off |
+|---|---|---|
+| `pert_mse_ratio_to_no_change` | 0.7577 | 0.7581 |
+| `pert_train_mse_ratio_to_no_change` | 0.7622 | 0.7634 |
+| `map_control_ratio_to_no_change` | 0.9861 | 0.9863 |
+| `map_perturbed_ratio_to_no_change` | 0.9742 | 0.9748 |
+| `map_delta_ratio_to_no_change` | 0.7893 | 0.7944 |
+
+The "on" column reproduces the run's recorded validation exactly. With the
+core unfrozen, the core carries everything Phase 2 learns, and the rank-limited
+adapter trained beside it carries almost nothing. D110's bug was real and is
+fixed. It cost the earlier submissions nothing measurable, and it is not why
+they scored where they did.
+
+### D112. The rehearsal of the shipped recipe: +0.056 on the leaderboard scale, and all of it within K562
+
+**Measured.** `server_fix`, seed 2, the first `all` with D109 and D110
+(10.6 hours end to end; rehearsal 5.9 h). The cross-context variant, now a
+Phase 2 trained for 7,500 steps without the held-out screen, default
+generator settings:
+
+| leaderboard scale | method | floor | upper bound | before D109 |
+|---|---|---|---|---|
+| K562_essential | **+0.0352** | −0.0405 | +0.0548 | −0.0470 |
+| K562_gwps | **+0.0727** | −0.0587 | +0.0597 | −0.0134 |
+| rpe1 | −0.2583 | −0.2628 | −0.0203 | −0.2581 |
+| **mean** | **−0.0501** | −0.1207 | +0.0314 | −0.1062 |
+
+**Readings.**
+
+1. **The model does something once the rehearsal measures it.** On both K562
+   screens the method is above the organizers' mean-response baseline (0 on
+   this scale). On K562_essential it captures 79% of the distance from the
+   floor to the upper bound. On K562_gwps it exceeds the upper bound. Before
+   D109 the same column was at the floor.
+2. **But that is transfer within one cell line.** A held-out K562 screen is
+   predicted from a model that trained on the *other* K562 screen. rpe1 is
+   predicted from K562 alone, which is a new cell type, and there the method
+   is at the floor (+0.005 above it) while the upper bound is 0.24 above it.
+   The challenge contexts are new cell types too, so **rpe1 is the variant
+   that predicts the leaderboard.** It says perturbation knowledge learned in
+   K562 does not yet reach a different cell line through the control-only
+   adaptation.
+3. **The failure mode at default settings is too much change.** On the K562
+   screens DE fidelity rises from 0 to 0.46–0.57, and nmae falls below the
+   floor. But the expression metric gets much worse (1.85 against 1.13 on
+   K562_essential, 8.56 against 1.22 on K562_gwps), Jaccard drops (0.016
+   against 0.150), and sanity check 7 counts 8.1× as many significant genes
+   as the reference. Calibration answered with the most conservative corner
+   of its grid: threshold 0.25, scale 0.25, objective +0.080 against −0.016
+   at the defaults. That is fitted and scored on K562_essential alone, so it
+   is in-sample. The corner also means the grid may be too narrow.
+4. **Adapting on controls is neutral, not harmful.** Variant 1, same model
+   before and after: 0.986 → 0.985 (K562_essential), 1.322 → 1.323
+   (K562_gwps), 0.926 → 0.919 (rpe1). The policy now permits adapting, and
+   Phase 3 adapted. The challenge contexts moved by about 0.001 (A 0.7701 →
+   0.7691). D94's "adapting makes it 1.5–3× worse" was the untrained arm.
+5. **The predicted targets are no longer one profile.** Sanity's median
+   between-target correlation of predicted changes fell from 0.895, 0.880
+   and 0.916 (`server_12k`) to 0.032, 0.036 and 0.029. The adapter made no
+   difference (D111) and adapting moved almost nothing. What changed is the
+   calibration: a 0.25 threshold zeroes small changes. D108 suspected a
+   shared offset in the mapping's absolute output, and this is consistent
+   with the threshold removing it. It is consistent, not a proof.
+
+**Open, and flagged rather than resolved.** The "upper bound" is not always
+above the method: 1.50 against 0.985 in variant 1 on K562_essential, and
+below the method in cross-context K562_gwps. It is the main Phase 2
+checkpoint, which saw the held-out screen. Why a model that saw the screen
+maps its rest genes worse than one that did not is unexplained. Until it is,
+the upper bound is a reference point, not a ceiling.
+
+**What it does not change.** `server_fix/submission/prediction.vcc` passed
+our validator and `vcc prep --dry-run`, and it is the first submission whose
+rehearsal measured the model that made it. Only the leaderboard can say
+whether reading 2 holds for the challenge's cell lines.
