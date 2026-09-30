@@ -70,8 +70,14 @@ rehearsal:
   # the cost: four arms of about 45 minutes. 0 would use phase2.steps.
   phase2_steps: 7500
   adapt_steps: 150
-  calibration_thresholds: [0.0, 0.05, 0.1, 0.25]
-  calibration_scales: [0.25, 0.5, 1.0, 1.5]
+  calibration_thresholds: [0.0, 0.05, 0.1]
+  calibration_scales: [0.5, 1.0, 1.5, 2.0, 3.0]
+  # Chosen on rpe1 alone: the one held-out screen from a cell line the model
+  # never trained on, as every challenge context is. Its rehearsal score
+  # matched four uploads within 0.013; the mean over all three screens was
+  # optimistic by 0.06-0.15 (D116). Scales above 1.5 because rpe1 was still
+  # improving at the top of the old grid.
+  calibration_screens: [rpe1]
 
 phase3:
   adapt_steps: 300

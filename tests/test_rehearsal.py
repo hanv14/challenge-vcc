@@ -484,3 +484,37 @@ def test_a_screen_the_scorer_failed_on_does_not_veto_every_setting():
     assert chosen.best is not None
     assert chosen.settings.effect_scale == 1.0
     assert chosen.context == "good"
+
+
+def test_the_setting_can_be_chosen_on_named_screens_only(m4_cfg):
+    """rpe1's rehearsal score matched four uploads; the mean over every screen
+    did not (D116). A name no screen has is an error."""
+    from vccp.logging_utils import get_logger
+    from vccp.rehearsal import common
+    from vccp.rehearsal.stage import _calibrate
+    from vccp.rehearsal.variants import VariantResult
+
+    def screen(name, best_scale):
+        grid = [
+            _point(0.0, scale, 0.0, 0.1 if scale == best_scale else -0.1).as_dict()
+            for scale in (0.5, 1.5)
+        ]
+        return VariantResult(
+            variant="cross_context", context=name,
+            arms={common.METHOD: {}}, detail={"calibration_grid": grid},
+        )
+
+    cross = [screen("k562", 0.5), screen("k562b", 0.5), screen("rpe1", 1.5)]
+    only = dataclasses.replace(
+        m4_cfg, rehearsal=dataclasses.replace(m4_cfg.rehearsal, calibration_screens=("rpe1",))
+    )
+    assert _calibrate(only, cross, {}, {}, "cpu", get_logger()).settings.effect_scale == 1.5
+    every = dataclasses.replace(
+        m4_cfg, rehearsal=dataclasses.replace(m4_cfg.rehearsal, calibration_screens=())
+    )
+    assert _calibrate(every, cross, {}, {}, "cpu", get_logger()).settings.effect_scale == 0.5
+    missing = dataclasses.replace(
+        m4_cfg, rehearsal=dataclasses.replace(m4_cfg.rehearsal, calibration_screens=("nope",))
+    )
+    with pytest.raises(ValueError, match="nope"):
+        _calibrate(missing, cross, {}, {}, "cpu", get_logger())

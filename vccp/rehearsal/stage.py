@@ -155,6 +155,15 @@ def _calibrate(cfg, cross, contexts, gene_index, device, log):
             "the cross-context variant produced no scorable grid, so the generator keeps "
             "its default settings"
         )
+    wanted = tuple(cfg.rehearsal.calibration_screens)
+    if wanted:
+        unknown = sorted(set(wanted) - set(grids))
+        if unknown:
+            raise ValueError(
+                f"rehearsal.calibration_screens names {unknown}, but the cross-context "
+                f"variant produced grids for {sorted(grids)}"
+            )
+        grids = {name: grids[name] for name in wanted}
 
     log.info("calibrating the generator over cross_context/%s", "+".join(sorted(grids)))
     calibration = calibration_module.combine(grids)

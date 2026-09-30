@@ -3177,3 +3177,60 @@ at its own 1.5, next to it, gives the same model at two scales.
 answers the same question on the rehearsal rather than the leaderboard, at
 about ten hours instead of thirty minutes, and the leaderboard is the
 instrument in question.
+
+### D116. The rehearsal's rpe1 column predicts the leaderboard; the three-screen mean does not; and v4's lead is its model
+
+**Measured.** Two uploads of one model (`server_cal`), differing only in the
+generator setting (`predict.override_*`, D115):
+
+| upload | model | threshold / scale | leaderboard | rehearsal rpe1 | rehearsal 3-screen mean |
+|---|---|---|---|---|---|
+| v7 | `server_cal` | 0.05 / 1.5 | **−0.067** | −0.080 | −0.010 |
+| v8 | `server_cal` | 0.1 / 0.5 | −0.153 | −0.163 | −0.050 |
+| v5 | `server_12k` | 0.0 / 1.0 | −0.083 | −0.093 | −0.011 |
+| v6 | `server_fix` | 0.25 / 0.25 | −0.242 | −0.243 | −0.091 |
+| v4 | `server` (6,000 steps) | 0.1 / 0.5 | **−0.014** | — | — |
+
+(The rehearsal columns are `server_cal`'s grid at each upload's setting.)
+
+Also: `prior_feature` and `prior_target` differ between `server_12k` and
+`server_fix` by up to 38.6, which confirms D114's nondeterminism on the real
+data.
+
+**Readings.**
+
+1. **The rpe1 column matches the leaderboard on all four uploads it covers,
+   within 0.013** (rehearsal slightly pessimistic, by about +0.01). It even
+   matches v5 and v6, which came from other checkpoints. The three-screen
+   mean, which chose D113's setting, is optimistic by 0.06 to 0.15. The two
+   K562 screens are transfer within one cell line (D112), and the challenge
+   is not that. Four points from one rehearsal are strong evidence, not
+   proof.
+2. **On the same model, scale 1.5 beats 0.5 by 0.086 on the leaderboard,**
+   in the direction and by close to the amount rpe1 predicted (0.083).
+   Almost all of it is direction fidelity: −0.25 against −0.83. At 0.5 the
+   current model calls too few genes.
+3. **v4 leads because of its model, not its setting.** At v4's exact
+   setting the current model scores −0.153 against v4's −0.014: a gap of
+   0.14, larger than anything the generator setting moves. v4's model is the
+   old `server` run: 6,000 non-deterministic steps, its own prior draw, the
+   adapter switched off, no Phase 3 adaptation. Its direction fidelity at
+   scale 0.5 is −0.015, where the current model's is −0.83. So it called
+   enough genes, in the right direction, where the current model does not.
+
+**The working hypothesis for reading 3, untested.** The leaderboard's 0 is a
+mean-response baseline. A prediction dominated by one profile shared by
+every target sits near 0 by construction, if that profile points the right
+way. Earlier runs' predicted changes correlated 0.88–0.92 between targets
+(`server_12k`'s sanity check 4, D112). `server_fix`'s fell to 0.03 after its
+0.25 threshold. `scripts/compare_predictions.py` splits each run's applied
+fold changes into the shared part (mean over targets) and the
+target-specific rest. v4 and v8 used the same generator setting, so the
+comparison isolates the model.
+
+**Decision.** `rehearsal.calibration_screens` names the screens the setting
+is chosen on. It is empty (all) by default and `[rpe1]` in
+`configs/server.yaml`. The server grid moves to thresholds (0, 0.05, 0.1),
+because 0.25 was worst everywhere, and scales (0.5, 1.0, 1.5, 2.0, 3.0),
+because rpe1 was still improving at 1.5. The setting shipped until a rerun is
+v7's (0.05 / 1.5), the best of the current model on the leaderboard.

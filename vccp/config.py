@@ -712,6 +712,14 @@ class Rehearsal:
     #: its targets, and the setting is chosen by the mean over screens
     #: (DECISIONS.md D113). Kept so older configs still load.
     calibrate_per_dataset: bool = False
+    #: The cross-context screens the generator's setting is chosen on, by
+    #: name; empty means all of them. On the server this is the screen held
+    #: out from a *different cell line* than every screen it learned from:
+    #: its rehearsal score matched four leaderboard uploads within 0.013,
+    #: where the mean over all screens was optimistic by 0.06 to 0.15
+    #: (DECISIONS.md D116). A name that no screen has is an error, not a
+    #: silent fallback.
+    calibration_screens: tuple[str, ...] = ()
     #: Learn what a perturbation does from LINCS alone, adapt to a Replogle
     #: screen through its control cells, and score (PLAN_PERCELL.md §7.7).
     #: Variant 2 is cross-*context*, the same assay in a different cell line;
