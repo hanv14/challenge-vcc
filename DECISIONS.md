@@ -3234,3 +3234,63 @@ is chosen on. It is empty (all) by default and `[rpe1]` in
 because 0.25 was worst everywhere, and scales (0.5, 1.0, 1.5, 2.0, 3.0),
 because rpe1 was still improving at 1.5. The setting shipped until a rerun is
 v7's (0.05 / 1.5), the best of the current model on the leaderboard.
+
+### D117. The best upload was a mean-response prediction; the generator now scales the shared part on its own
+
+**Measured.** `scripts/compare_predictions.py runs/server runs/server_cal_s05`.
+Both runs used the same generator setting (0.1 / 0.5), so what differs is the
+model:
+
+| run (upload) | ctx | rms, all | rms, shared | rms, target-specific | shared share | genes shared > 0.1 | targets correlate |
+|---|---|---|---|---|---|---|---|
+| `server` (v4, −0.014) | A | 0.148 | 0.146 | 0.024 | **0.97** | 4,033 | **0.98** |
+| | B | 0.200 | 0.198 | 0.028 | **0.98** | 4,366 | **0.99** |
+| | C | 0.199 | 0.197 | 0.028 | **0.98** | 4,335 | **0.99** |
+| `server_cal_s05` (v8, −0.153) | A | 0.064 | 0.042 | 0.049 | 0.42 | 530 | 0.57 |
+| | B | 0.076 | 0.050 | 0.058 | 0.42 | 678 | 0.61 |
+| | C | 0.072 | 0.045 | 0.056 | 0.40 | 672 | 0.56 |
+
+Between the two: the shared parts correlate **+0.66** in every context. The
+target-specific parts correlate +0.25 to +0.36.
+
+**Readings.**
+
+1. **v4 was, in effect, a mean-response prediction.** 97–98% of what it
+   predicted was one profile common to every target, across 4,000 genes. The
+   leaderboard's 0 is a mean-response baseline, and v4 scored −0.014: close
+   to that baseline, as a prediction of that kind should.
+2. **The current model predicts the same shared direction, four times
+   weaker.** The shared parts agree (r = 0.66). The current model's is 0.04–0.05
+   rms against v4's 0.15–0.20, spread over 530–680 genes instead of 4,000.
+   Its target-specific part is twice v4's, and on a new cell line
+   (rehearsal rpe1, D116) that part costs more than it earns.
+3. **Where v4's shared part came from is probably D108's offset.** The
+   mapping's absolute output, common to every target, was what the old
+   pipeline submitted. It happened to point where the mean response points.
+   That was not designed, but it was measured to work, and the current
+   model still carries the same direction.
+
+**Decision.** The generator gets a third setting, `shared_scale`. In each
+context the prediction stage predicts every target first, takes their mean
+(the shared part; targets without a token are excluded and left unchanged,
+D31), and builds each target from `effect_scale × (own − shared) +
+shared_scale × shared`. A negative value means one global scale, §4.7 as
+written, and is the default everywhere. The rehearsal grid tries it
+(`rehearsal.calibration_shared_scales`, where the shared part is the mean
+over the arm's targets). The grid runs only on `calibration_screens`, so
+rpe1's twenty points cost about 45 minutes instead of the three screens'
+two hours. `predict.override_shared_scale` sets it by hand. Pooled mode only;
+per-cell mode refuses it.
+
+**This is a deviation from §4.7**, which names two settings. When a run uses
+the third, checklist item 12 reports `deviation` with the values used.
+Reason: the shared part is the model's own estimate of what every
+knockdown in the context does, which is real biology (a common
+stress/knockdown response). The leaderboard scores against exactly that
+reference, and the one upload that got near 0 got there on it.
+
+**Alternative.** Take v4's shared profile and paste it into every
+prediction. Rejected: it is a quirk of one old run, its prior draw was not
+reproducible (D114), and nothing would carry to the final round's new
+contexts. The model's own shared part, scaled on the rehearsal screen that
+predicts the leaderboard, does carry.

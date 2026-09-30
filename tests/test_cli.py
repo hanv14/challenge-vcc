@@ -289,3 +289,20 @@ def test_a_bad_override_fails_before_anything_runs(tmp_path):
     for bad in ("train.lr", "nope.lr=1", "train.nope=1", "train.evals_per_run=0"):
         code, _ = run("check-data", ["--set", bad], tmp_path=tmp_path)
         assert code == 2, bad
+
+
+def test_a_separate_shared_scale_is_reported_as_a_deviation(tmp_path):
+    """§4.7 names one global effect scale; a run that used a separate one for
+    the shared part says so in the checklist (D117)."""
+    import json as _json
+    from types import SimpleNamespace
+
+    from vccp import checklist
+
+    index = tmp_path / "index.json"
+    run_paths = SimpleNamespace(prediction_index=index)
+    index.write_text(_json.dumps({"generator": {"effect_scale": 1.0, "shared_scale": -1.0}}))
+    assert checklist._generator_status(run_paths)()[0] == checklist.DONE
+    index.write_text(_json.dumps({"generator": {"effect_scale": 1.0, "shared_scale": 4.0}}))
+    status, reason = checklist._generator_status(run_paths)()
+    assert status == checklist.DEVIATION and "D117" in reason

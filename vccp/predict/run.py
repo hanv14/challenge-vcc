@@ -210,6 +210,8 @@ def override_settings(cfg: Config, settings):
         changes["confidence_threshold"] = float(cfg.predict.override_threshold)
     if cfg.predict.override_scale >= 0:
         changes["effect_scale"] = float(cfg.predict.override_scale)
+    if cfg.predict.override_shared_scale >= 0:
+        changes["shared_scale"] = float(cfg.predict.override_shared_scale)
     if changes:
         get_logger().warning(
             "predict: generator settings overridden by the config (%s); the rehearsal "
@@ -323,6 +325,36 @@ def run_predict(cfg: Config) -> dict[str, Any]:
             float(np.median(control_counts.sum(axis=1))),
         )
 
+        # Pooled mode predicts every target first, so the part they all share
+        # can be taken as their mean and given its own scale (D117). Only
+        # targets the model has a token for count; one it does not know gets
+        # no change and no shared part either (D31).
+        cached: dict[str, tuple[np.ndarray, bool]] = {}
+        shared = None
+        if not per_cell:
+            for target in plan[name]:
+                position = gene_index.get(target)
+                cached[target] = predicted_log2fc(
+                    model, context,
+                    as_index([position], device) if position is not None else None,
+                    n_genes, cfg.predict.cpm_floor, cfg.phase3.pert_type,
+                )
+            if settings.splits_shared:
+                known = [lfc for lfc, used in cached.values() if used]
+                shared = generator_mod.shared_component(known) if known else None
+                if shared is not None:
+                    log.info(
+                        "  %s: shared part over %d targets, rms %.4f, scaled %.3g "
+                        "(target-specific parts %.3g)",
+                        name, len(known), float(np.sqrt(np.mean(shared**2))),
+                        settings.shared_scale, settings.effect_scale,
+                    )
+        elif settings.splits_shared:
+            raise ValueError(
+                "a separate shared_scale is implemented for perturbation_mode "
+                "'pooled' only; set predict.override_shared_scale to -1 or use pooled"
+            )
+
         knockdown_records = []
         applied_changes = []
         for target in plan[name]:
@@ -356,14 +388,11 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                     cfg.predict.cells_per_forward,
                 )
             else:
-                log2fc, used_token = predicted_log2fc(
-                    model,
-                    context,
-                    target_idx,
-                    n_genes,
-                    cfg.predict.cpm_floor,
-                    cfg.phase3.pert_type,
-                )
+                log2fc, used_token = cached.pop(target)
+                if used_token:
+                    # Before the knockdown prior, which then overwrites the
+                    # target's own gene with its measured value.
+                    log2fc = generator_mod.with_shared_scale(log2fc, shared, settings)
 
             # The target's own gene, once the prior has spoken, is a measured
             # quantity and is exempt from the generator's two settings.

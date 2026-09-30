@@ -116,14 +116,25 @@ def build_cells(
     so every arm scoring this variant draws the *same* cells and the
     comparison between them is about the fold changes alone.
     """
+    from ..predict.generator import shared_component, with_shared_scale
+
     blocks, labels = [], []
+    # The shared part is the mean over this arm's targets, exactly as the
+    # prediction stage takes it over a context's targets (D117).
+    shared = (
+        shared_component([_per_gene_mean(p.log2_fold_change) for p in predictions.values()])
+        if settings.splits_shared and predictions
+        else None
+    )
     for target in sorted(predictions):
         n_cells = cells_per_target[target]
         rng = np.random.default_rng(arm_seed(variant, target, base_seed))
         rows = sample_control_cells(
             control_counts.shape[0], n_cells, rng, allow_replacement=settings.allow_replacement
         )
-        applied = apply_settings(predictions[target].log2_fold_change, settings)
+        applied = apply_settings(
+            with_shared_scale(predictions[target].log2_fold_change, shared, settings), settings
+        )
         blocks.append(generate_counts(control_counts[rows], applied, rng))
         labels.extend([target] * n_cells)
     return np.vstack(blocks), labels
@@ -228,3 +239,9 @@ def zero_prediction(target: str, n_genes: int) -> TargetPrediction:
 
 def as_tensor(values: np.ndarray, device: str) -> torch.Tensor:
     return torch.as_tensor(np.asarray(values, dtype=np.float32), device=device)
+
+
+def _per_gene_mean(log2_fold_change) -> np.ndarray:
+    """One profile per target: a per-cell block is summarized by its mean."""
+    values = np.asarray(log2_fold_change, dtype=np.float32)
+    return values.mean(axis=0) if values.ndim == 2 else values

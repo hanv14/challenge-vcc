@@ -704,12 +704,19 @@ def run_cross_context(
         # maximizing the no-change objective (D113).
         from . import calibrate as calibration_module
 
-        log.info("    calibration grid on %s, %d targets", held_out, len(targets))
-        grid = calibration_module.calibrate(
-            cfg, predictions[common.METHOD], control_counts, real_counts, real_labels,
-            cells_per_target, gene_names, variant, "non-targeting",
-            scale_reference=scale_reference,
-        )
+        # Only on the screens the setting is chosen on, when those are named:
+        # a grid is one official scoring per point, and one nobody reads is
+        # an hour of the rehearsal spent for nothing (D117).
+        wanted = tuple(cfg.rehearsal.calibration_screens)
+        if not wanted or held_out in wanted:
+            log.info("    calibration grid on %s, %d targets", held_out, len(targets))
+            grid_points = calibration_module.calibrate(
+                cfg, predictions[common.METHOD], control_counts, real_counts, real_labels,
+                cells_per_target, gene_names, variant, "non-targeting",
+                scale_reference=scale_reference,
+            ).grid
+        else:
+            grid_points = []
 
         results.append(
             VariantResult(
@@ -718,7 +725,7 @@ def run_cross_context(
                 arms=arms,
                 detail={
                     "n_targets": len(targets),
-                    "calibration_grid": [point.as_dict() for point in grid.grid],
+                    "calibration_grid": [point.as_dict() for point in grid_points],
                     "learned_from": others,
                     "leaderboard_scale": scale_reference.as_dict(),
                     "adaptation": record.adaptation,

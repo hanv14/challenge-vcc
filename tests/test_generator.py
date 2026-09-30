@@ -367,3 +367,54 @@ def test_the_config_can_override_the_policys_generator_settings(mini_cfg):
     )
     chosen = override_settings(cfg, policy)
     assert (chosen.confidence_threshold, chosen.effect_scale) == (0.1, 0.5)
+
+
+def test_the_shared_part_gets_its_own_scale():
+    """`effect_scale` for each target's deviation from the context's mean,
+    `shared_scale` for the mean itself (D117)."""
+    from vccp.predict.generator import (
+        GeneratorSettings, apply_settings, shared_component, with_shared_scale,
+    )
+
+    profiles = [np.array([1.0, 0.0, -0.5]), np.array([0.6, 0.4, -0.5])]
+    shared = shared_component(profiles)
+    assert np.allclose(shared, [0.8, 0.2, -0.5])
+
+    settings = GeneratorSettings(confidence_threshold=0.0, effect_scale=0.5, shared_scale=2.0)
+    for own in profiles:
+        applied = apply_settings(with_shared_scale(own, shared, settings), settings)
+        assert np.allclose(applied, 0.5 * (own - shared) + 2.0 * shared, atol=1e-6)
+
+
+def test_a_negative_shared_scale_is_section_4_7s_single_scale():
+    from vccp.predict.generator import GeneratorSettings, with_shared_scale
+
+    own = np.array([0.3, -0.2], dtype=np.float32)
+    settings = GeneratorSettings(effect_scale=0.5)
+    assert settings.shared_scale < 0 and not settings.splits_shared
+    assert with_shared_scale(own, np.ones(2, dtype=np.float32), settings) is own
+    # And it round-trips through the policy file.
+    assert GeneratorSettings.from_dict(settings.as_dict()) == settings
+    assert GeneratorSettings.from_dict({"effect_scale": 1.0}).shared_scale == -1.0
+
+
+def test_the_config_can_override_the_shared_scale(mini_cfg):
+    import dataclasses
+
+    from vccp.predict.generator import GeneratorSettings
+    from vccp.predict.run import override_settings
+
+    cfg = dataclasses.replace(
+        mini_cfg, predict=dataclasses.replace(mini_cfg.predict, override_shared_scale=4.0)
+    )
+    assert override_settings(cfg, GeneratorSettings()).shared_scale == 4.0
+
+
+def test_the_shared_scales_grid_accepts_only_minus_one_or_non_negative(mini_cfg):
+    import dataclasses
+
+    from vccp.config import ConfigError
+
+    dataclasses.replace(mini_cfg.rehearsal, calibration_shared_scales=(-1.0, 0.0, 4.0)).validate()
+    with pytest.raises(ConfigError, match="calibration_shared_scales"):
+        dataclasses.replace(mini_cfg.rehearsal, calibration_shared_scales=(-2.0,)).validate()

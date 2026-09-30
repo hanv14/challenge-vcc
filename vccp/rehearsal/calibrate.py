@@ -37,6 +37,8 @@ class CalibrationPoint:
     threshold: float
     scale: float
     objective: float
+    #: The generator's `shared_scale` at this point; -1 is §4.7's single scale.
+    shared_scale: float = -1.0
     metrics: dict[str, float] = field(default_factory=dict)
     n_genes_moved: float = 0.0
     error: str | None = None
@@ -51,6 +53,7 @@ class CalibrationPoint:
         return {
             "confidence_threshold": self.threshold,
             "effect_scale": self.scale,
+            "shared_scale": self.shared_scale,
             "objective": self.objective,
             "leaderboard": self.leaderboard,
             "leaderboard_metrics": self.leaderboard_metrics,
@@ -64,6 +67,7 @@ class CalibrationPoint:
         return cls(
             threshold=float(entry["confidence_threshold"]),
             scale=float(entry["effect_scale"]),
+            shared_scale=float(entry.get("shared_scale", -1.0)),
             objective=float(entry["objective"]),
             metrics=dict(entry.get("metrics") or {}),
             n_genes_moved=float(entry.get("mean_genes_moved") or 0.0),
@@ -172,58 +176,65 @@ def calibrate(
     truth_labels = list(real_labels) + [control_label] * control_counts.shape[0]
 
     grid: list[CalibrationPoint] = []
-    for threshold in cfg.rehearsal.calibration_thresholds:
-        for scale in cfg.rehearsal.calibration_scales:
-            settings = GeneratorSettings(
-                confidence_threshold=float(threshold), effect_scale=float(scale)
-            )
-            moved = float(
-                np.mean(
-                    [
-                        (
-                            np.abs(
-                                np.asarray(p.log2_fold_change)[
-                                    np.abs(np.asarray(p.log2_fold_change)) >= threshold
-                                ]
-                            ).size
-                        )
-                        for p in predictions.values()
-                    ]
-                )
-            )
-            try:
-                counts, labels = common.build_cells(
-                    predictions, control_counts, cells_per_target, settings, variant, cfg.seed
-                )
-                scored = common.score_arm(
-                    cfg, counts, labels, truth_counts, truth_labels, gene_names,
-                    "target_gene", control_label, scale_reference=scale_reference,
-                )
-                metrics = scored["scored"]
-                board = scored.get("leaderboard") or {}
-                grid.append(
-                    CalibrationPoint(
-                        threshold=float(threshold),
-                        scale=float(scale),
-                        objective=nochange.objective(metrics),
-                        metrics=metrics,
-                        n_genes_moved=moved,
-                        leaderboard=(
-                            float(board["avg_score"])
-                            if board.get("available") and board.get("avg_score") is not None
-                            else None
-                        ),
-                        leaderboard_metrics=dict(board.get("from_baseline") or {}),
+    points = [
+        (float(t), float(sc), float(sh))
+        for t in cfg.rehearsal.calibration_thresholds
+        for sc in cfg.rehearsal.calibration_scales
+        for sh in cfg.rehearsal.calibration_shared_scales
+    ]
+    for threshold, scale, shared_scale in points:
+        settings = GeneratorSettings(
+            confidence_threshold=threshold, effect_scale=scale, shared_scale=shared_scale
+        )
+        moved = float(
+            np.mean(
+                [
+                    (
+                        np.abs(
+                            np.asarray(p.log2_fold_change)[
+                                np.abs(np.asarray(p.log2_fold_change)) >= threshold
+                            ]
+                        ).size
                     )
+                    for p in predictions.values()
+                ]
+            )
+        )
+        try:
+            counts, labels = common.build_cells(
+                predictions, control_counts, cells_per_target, settings, variant, cfg.seed
+            )
+            scored = common.score_arm(
+                cfg, counts, labels, truth_counts, truth_labels, gene_names,
+                "target_gene", control_label, scale_reference=scale_reference,
+            )
+            metrics = scored["scored"]
+            board = scored.get("leaderboard") or {}
+            grid.append(
+                CalibrationPoint(
+                    threshold=float(threshold),
+                    scale=float(scale),
+                    shared_scale=shared_scale,
+                    objective=nochange.objective(metrics),
+                    metrics=metrics,
+                    n_genes_moved=moved,
+                    leaderboard=(
+                        float(board["avg_score"])
+                        if board.get("available") and board.get("avg_score") is not None
+                        else None
+                    ),
+                    leaderboard_metrics=dict(board.get("from_baseline") or {}),
                 )
-            except Exception as exc:  # noqa: BLE001 — a failed point is a result
-                grid.append(
-                    CalibrationPoint(
-                        threshold=float(threshold), scale=float(scale),
-                        objective=float("-inf"), n_genes_moved=moved,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
+            )
+        except Exception as exc:  # noqa: BLE001 — a failed point is a result
+            grid.append(
+                CalibrationPoint(
+                    threshold=float(threshold), scale=float(scale),
+                    shared_scale=shared_scale,
+                    objective=float("-inf"), n_genes_moved=moved,
+                    error=f"{type(exc).__name__}: {exc}",
                 )
+            )
 
     usable = [p for p in grid if np.isfinite(p.objective)]
     if not usable:
@@ -246,7 +257,8 @@ def calibrate(
     )
     return Calibration(
         settings=GeneratorSettings(
-            confidence_threshold=best.threshold, effect_scale=best.scale
+            confidence_threshold=best.threshold, effect_scale=best.scale,
+            shared_scale=best.shared_scale,
         ),
         best=best,
         grid=grid,
@@ -277,10 +289,12 @@ def combine(grids: dict[str, list[CalibrationPoint]]) -> Calibration:
     """
     log = get_logger()
     screens = sorted(grids)
-    keyed: dict[tuple[float, float], dict[str, CalibrationPoint]] = {}
+    keyed: dict[tuple[float, float, float], dict[str, CalibrationPoint]] = {}
     for screen in screens:
         for point in grids[screen]:
-            keyed.setdefault((point.threshold, point.scale), {})[screen] = point
+            keyed.setdefault(
+                (point.threshold, point.scale, point.shared_scale), {}
+            )[screen] = point
 
     def finite(point, attr) -> bool:
         value = getattr(point, attr, None) if point is not None else None
@@ -310,6 +324,7 @@ def combine(grids: dict[str, list[CalibrationPoint]]) -> Calibration:
         combined.append({
             "confidence_threshold": key[0],
             "effect_scale": key[1],
+            "shared_scale": key[2],
             "per_screen": {s: v for s, v in zip(screens, values)},
             "mean": mean if ok else None,
         })
@@ -334,17 +349,21 @@ def combine(grids: dict[str, list[CalibrationPoint]]) -> Calibration:
             top = max(usable, key=lambda p: getattr(p, attr))
             per_screen_best[screen] = {
                 "confidence_threshold": top.threshold, "effect_scale": top.scale,
+                "shared_scale": top.shared_scale,
                 attr: getattr(top, attr),
             }
 
     representative = max(keyed[best_key].values(), key=lambda p: getattr(p, attr) or -np.inf)
     log.info(
-        "  calibration over %s: threshold %.3g, scale %.3g  ->  mean %s %+.4f",
-        ", ".join(screens), best_key[0], best_key[1],
+        "  calibration over %s: threshold %.3g, scale %.3g, shared scale %.3g  ->  "
+        "mean %s %+.4f",
+        ", ".join(screens), best_key[0], best_key[1], best_key[2],
         "leaderboard score" if use_board else "no-change objective", best_value,
     )
     return Calibration(
-        settings=GeneratorSettings(confidence_threshold=best_key[0], effect_scale=best_key[1]),
+        settings=GeneratorSettings(
+            confidence_threshold=best_key[0], effect_scale=best_key[1], shared_scale=best_key[2]
+        ),
         best=representative,
         grid=[p for s in sorted(grids) for p in grids[s]],
         context="+".join(screens),

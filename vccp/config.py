@@ -538,6 +538,8 @@ class Predict:
     #: rerunning the rehearsal (DECISIONS.md D115).
     override_threshold: float = -1.0
     override_scale: float = -1.0
+    #: The same for the shared part's scale (D117); negative = the policy's.
+    override_shared_scale: float = -1.0
 
     def validate(self) -> None:
         if self.cells_per_forward < 1:
@@ -720,6 +722,10 @@ class Rehearsal:
     #: (DECISIONS.md D116). A name that no screen has is an error, not a
     #: silent fallback.
     calibration_screens: tuple[str, ...] = ()
+    #: Values of the generator's `shared_scale` the grid tries (D117). -1 is
+    #: "the same as effect_scale", i.e. §4.7's single global scale, and is
+    #: the only value by default, so the grid is §4.7's unless asked.
+    calibration_shared_scales: tuple[float, ...] = (-1.0,)
     #: Learn what a perturbation does from LINCS alone, adapt to a Replogle
     #: screen through its control cells, and score (PLAN_PERCELL.md §7.7).
     #: Variant 2 is cross-*context*, the same assay in a different cell line;
@@ -764,6 +770,13 @@ class Rehearsal:
             raise ConfigError("rehearsal.calibration_thresholds must not be negative")
         if any(s <= 0 for s in self.calibration_scales):
             raise ConfigError("rehearsal.calibration_scales must be positive")
+        if not self.calibration_shared_scales or any(
+            s < 0 and s != -1.0 for s in self.calibration_shared_scales
+        ):
+            raise ConfigError(
+                "rehearsal.calibration_shared_scales must be -1 (one global scale) "
+                "or non-negative values"
+            )
         if not self.mode_sweep_epsilons:
             raise ConfigError("rehearsal.mode_sweep_epsilons must not be empty")
         if any(e is not None and not e > 0 for e in self.mode_sweep_epsilons):

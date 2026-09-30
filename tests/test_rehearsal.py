@@ -518,3 +518,77 @@ def test_the_setting_can_be_chosen_on_named_screens_only(m4_cfg):
     )
     with pytest.raises(ValueError, match="nope"):
         _calibrate(missing, cross, {}, {}, "cpu", get_logger())
+
+
+def test_the_rehearsal_cells_carry_the_shared_scale():
+    """The calibration scores exactly what the prediction stage will build:
+    the shared part is the mean over the arm's targets (D117)."""
+    from vccp.predict.generator import GeneratorSettings
+
+    rng = np.random.default_rng(0)
+    control = rng.poisson(20, size=(200, 6)).astype(np.int64)
+    predictions = {
+        t: common.TargetPrediction(t, np.array(v, dtype=np.float32), {})
+        for t, v in (("a", [1.0, 0, 0, 0, 0, 0]), ("b", [1.0, 0, 0, 0, 0, 0.5]))
+    }
+    cells = {"a": 200, "b": 200}
+    flat = GeneratorSettings(confidence_threshold=0.0, effect_scale=1.0)
+    boosted = GeneratorSettings(confidence_threshold=0.0, effect_scale=1.0, shared_scale=2.0)
+    base, _ = common.build_cells(predictions, control, cells, flat, "x", 0)
+    more, _ = common.build_cells(predictions, control, cells, boosted, "x", 0)
+    # Gene 0 is fully shared (log2 fold change 1): doubled it becomes 4x, not 2x.
+    assert more[:, 0].mean() / base[:, 0].mean() == pytest.approx(2.0, rel=0.1)
+
+
+def test_calibration_keeps_shared_scales_apart():
+    from vccp.rehearsal.calibrate import CalibrationPoint, combine
+
+    grids = {"rpe1": [
+        CalibrationPoint(threshold=0.05, scale=1.0, objective=0.0, shared_scale=-1.0,
+                         leaderboard=-0.09),
+        CalibrationPoint(threshold=0.05, scale=1.0, objective=0.0, shared_scale=4.0,
+                         leaderboard=-0.02),
+    ]}
+    chosen = combine(grids)
+    assert chosen.settings.shared_scale == 4.0
+    assert {row["shared_scale"] for row in chosen.combined} == {-1.0, 4.0}
+
+
+def test_predict_gives_the_shared_part_its_own_scale(m4_cfg, m4_run):
+    """The predict stage end to end with `shared_scale` set: every target is
+    predicted first, their mean is scaled on its own, and the index records
+    the setting used (D117). Run on a copy, so the shared run is untouched."""
+    import shutil
+
+    from vccp.predict.run import run_predict
+
+    copy_cfg = dataclasses.replace(
+        m4_cfg,
+        run_name=f"{m4_cfg.run_name}_shared",
+        predict=dataclasses.replace(m4_cfg.predict, override_scale=1.0, override_shared_scale=3.0),
+    )
+    copy_paths = RunPaths(copy_cfg)
+    shutil.rmtree(copy_paths.root, ignore_errors=True)
+    shutil.copytree(m4_run.root, copy_paths.root)
+    shutil.rmtree(copy_paths.predictions_dir)
+
+    base_cfg = dataclasses.replace(
+        copy_cfg,
+        predict=dataclasses.replace(m4_cfg.predict, override_scale=1.0, override_shared_scale=-1.0),
+    )
+
+    def shared_rms(cfg):
+        run_predict(cfg)
+        index = json.loads(RunPaths(cfg).prediction_index.read_text())
+        rms = []
+        for context in index["contexts"]:
+            data = np.load(RunPaths(cfg).fold_changes(context), allow_pickle=True)
+            rms.append(float(np.sqrt((data["log2_fold_change"].mean(axis=0) ** 2).mean())))
+        return index["generator"], float(np.mean(rms))
+
+    base_generator, base_rms = shared_rms(base_cfg)
+    generator, rms = shared_rms(copy_cfg)
+    assert base_generator["shared_scale"] == -1.0
+    assert generator["shared_scale"] == 3.0
+    if base_rms > 0:
+        assert rms > 2.0 * base_rms

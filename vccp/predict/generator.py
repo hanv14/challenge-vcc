@@ -51,12 +51,25 @@ class GeneratorSettings:
     #: Resample control cells with replacement when a context has fewer
     #: control cells than the submission needs per target.
     allow_replacement: bool = True
+    #: A separate scale for the part of a context's predictions that every
+    #: target shares (their mean over targets), with `effect_scale` then
+    #: applying to each target's deviation from it. Negative means "the same
+    #: as `effect_scale`": one global scale, which is §4.7 as written. The
+    #: leaderboard's 0 is a mean-response baseline, and the best upload was
+    #: 98% one shared profile, four times larger than the current model's
+    #: (DECISIONS.md D117).
+    shared_scale: float = -1.0
+
+    @property
+    def splits_shared(self) -> bool:
+        return self.shared_scale >= 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "confidence_threshold": self.confidence_threshold,
             "effect_scale": self.effect_scale,
             "allow_replacement": self.allow_replacement,
+            "shared_scale": self.shared_scale,
         }
 
     @classmethod
@@ -65,7 +78,34 @@ class GeneratorSettings:
             confidence_threshold=float(spec.get("confidence_threshold", 0.05)),
             effect_scale=float(spec.get("effect_scale", 1.0)),
             allow_replacement=bool(spec.get("allow_replacement", True)),
+            shared_scale=float(spec.get("shared_scale", -1.0)),
         )
+
+
+def shared_component(profiles) -> np.ndarray:
+    """What every target in a context is predicted to do: the mean over
+    targets of their predicted log2 fold changes (non-finite read as 0)."""
+    stacked = np.stack([np.asarray(p, dtype=np.float32) for p in profiles])
+    stacked[~np.isfinite(stacked)] = 0.0
+    return stacked.mean(axis=0)
+
+
+def with_shared_scale(
+    log2_fold_change: np.ndarray, shared: np.ndarray | None, settings: GeneratorSettings
+) -> np.ndarray:
+    """Give the shared part its own scale, ahead of `apply_settings`.
+
+    `apply_settings` multiplies everything by `effect_scale`, so adding
+    `(shared_scale / effect_scale - 1) * shared` here leaves each target at
+    `effect_scale * (own - shared) + shared_scale * shared` wherever the
+    threshold keeps it. A no-op when the setting is off.
+    """
+    if shared is None or not settings.splits_shared:
+        return log2_fold_change
+    if settings.effect_scale <= 0:
+        raise ValueError("a separate shared_scale needs a positive effect_scale")
+    boost = np.float32(settings.shared_scale / settings.effect_scale - 1.0) * shared
+    return np.asarray(log2_fold_change, dtype=np.float32) + boost
 
 
 def apply_settings(

@@ -70,8 +70,13 @@ rehearsal:
   # the cost: four arms of about 45 minutes. 0 would use phase2.steps.
   phase2_steps: 7500
   adapt_steps: 150
-  calibration_thresholds: [0.0, 0.05, 0.1]
-  calibration_scales: [0.5, 1.0, 1.5, 2.0, 3.0]
+  # Threshold barely mattered (D114), so one value; the effect scale and the
+  # shared part's own scale are what the grid spends its points on (D117).
+  # -1 is "the same as effect_scale", §4.7's single scale, kept as the
+  # control. 4 x 5 = 20 points, on rpe1 only: about 45 minutes.
+  calibration_thresholds: [0.05]
+  calibration_scales: [0.5, 1.0, 1.5, 2.0]
+  calibration_shared_scales: [-1, 1.0, 2.0, 4.0, 8.0]
   # Chosen on rpe1 alone: the one held-out screen from a cell line the model
   # never trained on, as every challenge context is. Its rehearsal score
   # matched four uploads within 0.013; the mean over all three screens was

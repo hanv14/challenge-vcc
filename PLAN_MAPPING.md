@@ -428,3 +428,15 @@ to −0.050 on the leaderboard scale. The method is above baseline on both
 K562 screens (+0.035, +0.073) and at the floor on rpe1 (−0.258 against
 −0.263), the only held-out screen from a new cell type. Cross-cell-type
 transfer is now the gap, and rpe1 is its measurement.
+
+---
+
+## 9. What the leaderboard taught (D113–D117)
+
+* The calibration was fitted on five targets by an objective that is not the
+  leaderboard's (D113). Now: every target, the leaderboard's scale.
+* The rehearsal's rpe1 screen, the one held-out screen from a different cell
+  line, predicted four uploads within 0.013. The three-screen mean did not
+  (D116). Calibration is chosen on rpe1 alone.
+* The best upload, v4, was 98% a shared, mean-response profile (D117). The
+  generator now gives the shared part its own scale, calibrated on rpe1.

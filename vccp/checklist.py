@@ -79,7 +79,7 @@ def build(cfg, run_paths) -> dict[str, Any]:
          [run_paths.phase_metrics("phase3")]
          + [run_paths.phase3_adapt(c) for c in _contexts_from(run_paths)], None),
         (12, "Phase 3 prediction — panel, rest, knockdown prior, distinct cells", "4.7",
-         [run_paths.prediction_index], None),
+         [run_paths.prediction_index], _generator_status(run_paths)),
         (13, "Submission and validation, `vcc prep` where available", "8",
          [run_paths.submission, run_paths.validate_report], _vcc_status(run_paths)),
         (14, "Sanity checks — all seven", "6.1", [run_paths.sanity_report], None),
@@ -218,6 +218,32 @@ def _shared_core_status(cfg):
             "the training targets as well (DECISIONS.md D90, D91). Phase 1 is "
             "still trained and still reaches Phase 2 through the three gene-"
             "vocabulary prior blocks built from phase1_lincs.h5ad.",
+        )
+
+    return status
+
+
+def _generator_status(run_paths):
+    """§4.7 names two generator settings, a threshold and one global effect
+    scale. A run that gave the part every target shares its own scale used a
+    third, and says so (D117)."""
+    def status() -> tuple[str, str | None]:
+        try:
+            index = json.loads(run_paths.prediction_index.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            return DEVIATION, f"the prediction index could not be read: {exc}"
+        generator = index.get("generator") or {}
+        shared = float(generator.get("shared_scale", -1.0))
+        if shared < 0:
+            return DONE, None
+        return (
+            DEVIATION,
+            f"the generator scaled the part of each context's predictions that every "
+            f"target shares by {shared:g} and each target's own deviation from it by "
+            f"{float(generator.get('effect_scale', 1.0)):g}, where §4.7 describes one "
+            "global effect scale. Chosen on the rehearsal screen that predicts the "
+            "leaderboard: the best upload was 98% one shared profile, four times the "
+            "size of the current model's (DECISIONS.md D117).",
         )
 
     return status
