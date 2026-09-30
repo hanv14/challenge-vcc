@@ -348,3 +348,22 @@ def test_the_fold_change_is_taken_against_the_cell_that_carries_it():
     # the cell-to-cell variation the drawn cells brought with them.
     shifted = sd_units_to_log2fc(cells + 0.4, ctrl_mean, ctrl_std, 0.01, baseline_sd=cells)
     assert (shifted > 0).all()
+
+
+def test_the_config_can_override_the_policys_generator_settings(mini_cfg):
+    """The same model at two settings is one upload each, without rerunning
+    the rehearsal (D115). Negative means "use the policy"."""
+    import dataclasses
+
+    from vccp.predict.generator import GeneratorSettings
+    from vccp.predict.run import override_settings
+
+    policy = GeneratorSettings(confidence_threshold=0.05, effect_scale=1.5)
+    assert override_settings(mini_cfg, policy) == policy
+
+    cfg = dataclasses.replace(
+        mini_cfg,
+        predict=dataclasses.replace(mini_cfg.predict, override_threshold=0.1, override_scale=0.5),
+    )
+    chosen = override_settings(cfg, policy)
+    assert (chosen.confidence_threshold, chosen.effect_scale) == (0.1, 0.5)

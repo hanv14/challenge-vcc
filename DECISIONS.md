@@ -3135,3 +3135,45 @@ but the mean it maximizes sits at −0.010 on the rehearsal and, by reading 3,
 nearer −0.07 on the leaderboard. Upload v4 (−0.014) is still the best, and
 why is not known. That run's generator settings are the first thing to look
 up.
+
+### D115. Three uploads, three models, three settings: the next upload separates them
+
+**Measured.** The generator settings each uploaded run used, read from its
+`phase3_policy.json`:
+
+| upload | run | Phase 2 | threshold | scale | leaderboard |
+|---|---|---|---|---|---|
+| v4 | `server` | 6,000 steps, non-deterministic | 0.1 | **0.5** | **−0.014** |
+| v5 | `server_12k` | 12,000 steps | 0.0 | 1.0 | −0.083 |
+| v6 | `server_fix` | 12,000 steps | 0.25 | 0.25 | −0.242 |
+| — | `server_cal` | as `server_fix` | 0.05 | 1.5 | not uploaded |
+
+**Readings.**
+
+1. **Every pair differs in both model and setting**, so the leaderboard alone
+   cannot say whether v4 leads because of its scale or its model.
+2. **The leaderboard's per-metric losses fit a middle scale.** v5 at scale
+   1.0 lost 0.50 on DE log-FC accuracy (errors on the reference's significant
+   genes grow with the size of the predicted change). v6 at 0.25, with a 0.25
+   threshold, lost 1.34 on direction fidelity (too few calls). v4 at 0.5 lost
+   little on either.
+3. **The rehearsal's rpe1 column matched both 12,000-step uploads.** At v5's
+   settings rpe1 is −0.093 (leaderboard −0.083), and at v6's it is −0.243
+   (leaderboard −0.242). At v4's settings, on the current model, it is −0.163,
+   far below v4's −0.014, but v4 is a different model. Either rpe1 stops
+   predicting the leaderboard at scale 0.5, or the 6,000-step model is the
+   better one for a new cell line. D107 is consistent with the second: after
+   7,500 steps, the training-target metric kept falling while the held-out
+   one stayed flat.
+
+**Decision.** `predict.override_threshold` and `predict.override_scale`
+(negative = use the policy) let the `predict` stage use settings other than
+the policy's. The run logs a warning and records the settings actually used,
+so the current model can be uploaded at v4's settings without rerunning the
+rehearsal. That upload, next to v4, separates model from setting. `server_cal`
+at its own 1.5, next to it, gives the same model at two scales.
+
+**Alternative.** Rerun the 6,000-step model through the new rehearsal. That
+answers the same question on the rehearsal rather than the leaderboard, at
+about ten hours instead of thirty minutes, and the leaderboard is the
+instrument in question.

@@ -197,6 +197,29 @@ def save_block(path, counts: np.ndarray) -> int:
     return int(matrix.nnz)
 
 
+def override_settings(cfg: Config, settings):
+    """The policy's generator settings, with `predict.override_*` applied.
+
+    Says so in the log when it replaces anything, because a submission made
+    under an override is not the one the rehearsal chose (D115).
+    """
+    import dataclasses
+
+    changes = {}
+    if cfg.predict.override_threshold >= 0:
+        changes["confidence_threshold"] = float(cfg.predict.override_threshold)
+    if cfg.predict.override_scale >= 0:
+        changes["effect_scale"] = float(cfg.predict.override_scale)
+    if changes:
+        get_logger().warning(
+            "predict: generator settings overridden by the config (%s); the rehearsal "
+            "chose threshold %.3g, scale %.3g",
+            ", ".join(f"{k} {v:.3g}" for k, v in changes.items()),
+            settings.confidence_threshold, settings.effect_scale,
+        )
+    return dataclasses.replace(settings, **changes)
+
+
 def run_predict(cfg: Config) -> dict[str, Any]:
     """The `predict` stage (checklist item 12)."""
     from ..models.checkpoint import load_core
@@ -217,7 +240,7 @@ def run_predict(cfg: Config) -> dict[str, Any]:
     pert_counts = reference.load_pert_counts(paths.pert_counts, manifest.pert_col)
     targets_frame = challenge_data.load_targets(paths.phase3_targets)
     policy = load_policy(run_paths.phase3_policy)
-    settings = policy_settings(policy)
+    settings = override_settings(cfg, policy_settings(policy))
     generate = generator_mod.get_generator(policy["generator"]["name"])
     # Which question the model is asked of each cell, resolved once: it is
     # read after the context loop too, and a round with no contexts would

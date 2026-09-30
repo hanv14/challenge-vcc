@@ -531,6 +531,13 @@ class Predict:
     #: prediction. One count in a 20,000-UMI cell is 0.5 CP10K, so this is
     #: fifty times below anything a single cell can show.
     cpm_floor: float = 0.01
+    #: Generator settings that replace the ones `phase3_policy.json` chose,
+    #: when set (a negative value means "use the policy"). §4.7 wants the
+    #: generator's settings in the config. The use is an A/B on the
+    #: leaderboard: the same model at two settings, one upload each, without
+    #: rerunning the rehearsal (DECISIONS.md D115).
+    override_threshold: float = -1.0
+    override_scale: float = -1.0
 
     def validate(self) -> None:
         if self.cells_per_forward < 1:
