@@ -243,3 +243,23 @@ def test_weighted_basis_rejects_mismatched_weights():
 
     with pytest.raises(ValueError, match="one entry per row"):
         weighted_direction_basis(np.zeros((5, 3), np.float32), 2, np.ones(4))
+
+
+def test_the_sparse_svd_does_not_depend_on_the_global_random_state():
+    """ARPACK starts from a random vector unless given one, and a multi-hot
+    membership matrix has many tied singular values: the HGNC block came out
+    rotated differently from run to run, so the same seed built a different
+    prior and trained a different model (D114)."""
+    import numpy as np
+    import scipy.sparse as sp
+
+    from vccp.priors.decompose import sparse_svd
+
+    matrix = sp.random(
+        400, 120, density=0.03, random_state=4, data_rvs=lambda n: np.ones(n)
+    ).tocsr()
+    runs = []
+    for seed in (1, 2, 3):
+        np.random.seed(seed)
+        runs.append(sparse_svd(matrix, 16)[0])
+    assert all(np.array_equal(runs[0], other) for other in runs[1:])

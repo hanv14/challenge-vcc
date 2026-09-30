@@ -3061,3 +3061,77 @@ The earlier uploads recorded at −0.1313 came from the same directory. Either
 that run was redone in between, or the leaderboard's anchors changed (the
 upload reports anchor set `...-r4`). The two cannot be compared until we know
 which.
+
+### D114. The leaderboard-scale grid: effect scale is what matters, and one rehearsal run is noisy
+
+**Measured.** `server_cal`: `server_fix`'s Phase 2 with the rehearsal and
+everything after it rerun under D113. The grid, as the mean leaderboard
+score over the three cross-context screens (100 targets each):
+
+| threshold \ scale | 0.25 | 0.5 | 1.0 | 1.5 |
+|---|---|---|---|---|
+| 0.0 | −0.087 | −0.047 | −0.011 | −0.014 |
+| 0.05 | −0.091 | −0.047 | −0.011 | **−0.010** |
+| 0.1 | −0.090 | −0.050 | −0.013 | −0.014 |
+| 0.25 | −0.091 | −0.053 | −0.020 | −0.026 |
+
+Chosen: threshold 0.05, scale 1.5.
+
+**Readings.**
+
+1. **Scale decides, threshold barely matters.** Every row climbs from about
+   −0.09 at scale 0.25 to a plateau of −0.010 to −0.014 at 1.0–1.5. Across
+   thresholds 0 to 0.1 the spread within a column is under 0.004. The
+   chosen point and threshold 0 / scale 1.0 differ by 0.0015, which is no
+   difference. D113's no-change objective picked 0.25 / 0.25, which is
+   −0.091 here, in the worst row of the worst column. That agrees with what
+   the leaderboard did to v6.
+2. **The screens want different scales.** K562_essential rises to 1.5
+   (+0.053). K562_gwps peaks at 0.5 (+0.044) and is negative by 1.5. rpe1
+   improves all the way to 1.5 (−0.241 → −0.080). The mean hides a real
+   disagreement, and the top of the grid is at its edge again for two of
+   three screens.
+3. **rpe1 at threshold 0 / scale 1.0 is −0.093. Upload v5, with the same
+   settings on a different model, scored −0.083.** One point, but it is the
+   first place where a rehearsal number and a leaderboard number line up. It
+   is consistent with D112's reading that the screen from a new cell type is
+   the one that predicts the challenge, and it says the K562 screens (+0.024,
+   +0.036 at those settings) are optimistic by about 0.1.
+4. **The same recipe and seed gave very different rehearsals.** Method at
+   default settings, `server_fix` → `server_cal`: K562_essential +0.035 →
+   +0.023, K562_gwps +0.073 → +0.033, **rpe1 −0.258 → −0.090**. On rpe1
+   the direction-fidelity score went from 0.016 to 0.492. The Phase 2
+   checkpoint was the same file. The held-out models were retrained, and
+   their priors rebuilt.
+
+**Why reading 4: the priors were not deterministic.** `sparse_svd`, which
+builds the HGNC gene-group block, called `scipy.sparse.linalg.svds` with no
+starting vector. ARPACK then draws one at random, and a multi-hot membership
+matrix has many tied singular values. The vectors it returns depend on the
+random state, and not only by sign. On a synthetic membership matrix, three
+global seeds gave outputs differing by up to 2.75. So every fresh `priors`
+stage, and every rehearsal variant that rebuilds its scoped priors, could
+start from a different W. It also explains why Phase 1 differed at step 100
+between `server_12k` and `server_fix` (`sig_mse` 0.4592 against 0.4594), where
+D103's bit-exact runs had shared one copied `priors/` directory.
+
+**Consequences.**
+* D103's error bar holds for Phase 2 runs sharing one prior. It is **not** the
+  spread of a full `all` run or of a rehearsal, which also carry the prior
+  draw. For the rehearsal that spread has now been seen at 0.17 on rpe1.
+* D112's "rpe1 is at the floor" was one draw. This draw is 0.17 above the
+  floor. Neither is the answer by itself.
+* Comparisons *within* one rehearsal, like this grid (same predictions, only
+  the generator setting changed), are paired and unaffected.
+
+**Decision.** `sparse_svd` passes a fixed `v0` (seed 0) and fixes each
+column's sign so its largest entry is positive. A test checks that three
+global random states give identical output. This changes the HGNC block from
+one arbitrary draw to one fixed one. Every run from here builds the same
+priors from the same data.
+
+**What it leaves.** The generator setting is now chosen on the right scale,
+but the mean it maximizes sits at −0.010 on the rehearsal and, by reading 3,
+nearer −0.07 on the leaderboard. Upload v4 (−0.014) is still the best, and
+why is not known. That run's generator settings are the first thing to look
+up.

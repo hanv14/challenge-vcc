@@ -244,9 +244,19 @@ def sparse_svd(matrix, k: int) -> tuple[np.ndarray, np.ndarray]:
     if k_effective < 1:
         raise ValueError(f"matrix too small for an SVD: shape {matrix.shape}")
 
-    u, singular, _ = svds(matrix, k=k_effective)
+    # A fixed starting vector. ARPACK otherwise starts from a random one, and a
+    # multi-hot membership matrix has many tied singular values, so the
+    # vectors it returns could be rotated or sign-flipped from run to run —
+    # a different prior, a different W, a different model, from the same seed
+    # (DECISIONS.md D114).
+    v0 = np.random.default_rng(0).standard_normal(min(matrix.shape)).astype(np.float64)
+    u, singular, _ = svds(matrix.astype(np.float64), k=k_effective, v0=v0)
     order = np.argsort(singular)[::-1]  # svds returns ascending
     u, singular = u[:, order], singular[order]
+    # And a fixed sign: each column's largest entry is positive.
+    pivot = np.abs(u).argmax(axis=0)
+    signs = np.sign(u[pivot, np.arange(u.shape[1])])
+    u = u * np.where(signs == 0, 1.0, signs)
 
     total = float((singular**2).sum())
     ratio = (singular**2 / total) if total > 0 else np.zeros(k_effective)
