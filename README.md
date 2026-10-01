@@ -504,6 +504,9 @@ python -m vccp predict --config configs/server.yaml --run-name <run> --force \
     --set predict.lookup_scale=0.5 --set predict.lookup_shrinkage=gene
 ```
 
+For a whole paired probe (copy a finished parent run, change one setting,
+rebuild the submission), use `scripts/probe.sh`; its header has the usage.
+
 The table is built once per run directory into `sources/lookup.npz`, with
 `sources/lookup.json` beside it (coverage, reliability, how many genes the
 per-gene shrinkage keeps), and reused while its inputs are unchanged.
