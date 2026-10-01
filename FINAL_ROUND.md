@@ -83,7 +83,7 @@ validation-round data intact. Run from the repository checkout:
 ```bash
 source scripts/server_env.sh
 cd /data/han/projects/VCC
-git pull origin claude/sleepy-pasteur-mdd865
+git checkout main && git pull origin main
 
 mkdir -p $DATA_FINAL/ref
 cp /data/han/projects/VCC/data/ref/hgnc_complete_set.txt $DATA_FINAL/ref/

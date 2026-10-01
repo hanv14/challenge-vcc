@@ -3180,6 +3180,12 @@ instrument in question.
 
 ### D116. The rehearsal's rpe1 column predicts the leaderboard; the three-screen mean does not; and v4's lead is its model
 
+**Superseded in part by D120–D121.** Every "rehearsal" number below is
+cell-eval2's `from_baseline` average, not the leaderboard's `from_replicate`.
+On the right column rpe1 does not track the uploads, metric by metric or
+overall (D121). Reading 1 is withdrawn. Reading 3 (v4's lead is its model)
+rests on uploads alone and stands.
+
 **Measured.** Two uploads of one model (`server_cal`), differing only in the
 generator setting (`predict.override_*`, D115):
 
@@ -3297,6 +3303,11 @@ predicts the leaderboard, does carry.
 
 ### D118. Splitting the shared part is worth 0.032 on the leaderboard: −0.032, the current model's best
 
+**Superseded in part by D121.** The two uploads and their difference stand.
+Reading 2 ("rpe1 remains the instrument, to within about 0.02") does not:
+the rpe1 column was `from_baseline`, and on `from_replicate` the chosen
+setting reads −0.126 against the leaderboard's −0.032.
+
 **Measured.** `server_shared`: `server_cal`'s Phase 2 with the rehearsal
 rerun under D117. Its grid ran on rpe1 only, with priors now deterministic
 (D114). The top of the grid, rpe1 leaderboard scale:
@@ -3375,3 +3386,152 @@ would erase the data every validation-round number was measured on.
 string where the code expects a `Path`, so `data_root / "ref"` would have
 failed. It is now resolved like the file's own paths. The fire drill in
 `FINAL_ROUND.md` §0 uses it.
+
+## The redesign: measurements
+
+### D120. The leaderboard score is the `from_replicate` average; `from_baseline` is a diagnostic
+
+**Decision.** `eval/scale.py` reports the mean of the six members'
+`from_replicate` values as `avg_score`, the leaderboard's number. The
+`from_baseline` values and their average are kept beside it as diagnostics
+(`from_baseline`, `from_baseline_avg_score`), with `column` and `enrolled`
+saying which is which. The calibration grid stores `from_replicate` per
+member and records `leaderboard_column` in `phase3_policy.json`. Loading a
+policy whose calibration predates this logs a warning; it still loads, so
+`predict.override_*` keeps working on old runs.
+`tests/test_scale_column.py` covers it.
+
+**Reason.** A bug, present since D34. `score_metrics(..., real_bundle=...)`
+returns two scaled columns, and both put 0 at the organizers' mean-response
+baseline. `from_baseline` puts 1 at each metric's constant perfection anchor
+(1 for pds, 0 for nmae); `from_replicate` puts 1 at the measured split-half
+replicate. A competition bundle enrols `from_replicate`, and nulls the
+`from_baseline` average (docs/metrics.md §6c-bis, §6c-ter; cell-eval2
+`score.py`). Our bundles are diagnostic, so both averages stood, and
+`rescale` read the wrong one. Same sign, different stretch per metric: on
+rpe1's bundle the factor is (a − b)/(r − b) = 1.44 for pds, 4.5 for nmae,
+1.98 for fid, 1.20 for reach and 4.3 for Jaccard.
+
+Why our bundles are diagnostic: every one reports the same
+`rule_mismatches`: the metric list carries `de_wilcoxon_nsig_counts_*` on top
+of the `vcc2026` profile (sanity check 7 reads them). That is the only
+mismatch. So our scoring config differs from the competition's in nothing
+that moves a scored value.
+
+**Consequence.** Every rehearsal leaderboard number in D112–D118, and every
+calibration choice made on them (D113, D114, D116, D118), was on
+`from_baseline`. D121 re-reads them.
+
+**Alternative.** Build the bundle with exactly the `vcc2026` profile, so it
+enrols and `from_baseline`'s average comes back null. Not taken: it needs
+the nsig diagnostics from a second scoring pass, and reading the right
+column gives the same number.
+
+### D121. On the leaderboard's column, the rpe1 rehearsal does not track the uploads
+
+**Measured.** `scripts/measure/rehearsal_on_replicate_scale.py` on
+`runs/server_shared` (`server_cal` stopped at a `KeyError` on its older grid
+format, since fixed). The rpe1 cross-context grid, same predictions, two
+columns, against the uploads:
+
+| setting (effect / shared) | from_baseline (reported) | from_replicate | leaderboard |
+|---|---|---|---|
+| 1.0 / 2.0 (chosen) | −0.0395 | −0.1256 | −0.0318 |
+| 2.0 / −1 | −0.0431 | −0.1332 | −0.0641 |
+| 1.5 / −1 | −0.0533 | −0.1167 | — (v7, another model: −0.0673) |
+| 1.0 / −1 | −0.0837 | −0.1614 | — (v5, another model: −0.083) |
+
+Per member at the chosen setting, rpe1 `from_replicate` against the
+leaderboard:
+
+| | pds | expr | nmae | fid | reach | jac |
+|---|---|---|---|---|---|---|
+| rpe1 | −0.015 | 0 | **−1.112** | **+0.729** | **−0.439** | +0.084 |
+| leaderboard | −0.006 | 0 | −0.091 | −0.059 | −0.009 | −0.026 |
+
+The two scales' ends on rpe1 (0 = baseline / 1 = replicate): pds 0.510 /
+0.850, expr 0.642 / 0.070, nmae 0.856 / 0.666, fid 0.357 / 0.681, reach
+0.467 / 0.912, jac 0.043 / 0.264. On val A (docs/metrics.md) the baseline
+reads fid ≈ 0.5, reach 0.042, jac 0.033, nmae ≈ 0.96, and the replicate
+reach 0.904, jac 0.43, nmae ≈ 0.35.
+
+**Readings.**
+
+1. **The agreement in D116 and D118 was cancellation on the wrong
+   column.** On `from_replicate` the chosen setting reads −0.126 against
+   −0.032, and four of six members disagree in size or sign: rpe1 rewards
+   fidelity by +0.73 where the leaderboard charges −0.06, and charges nmae
+   −1.11 where the leaderboard charges −0.09. "rpe1 is the instrument" is
+   withdrawn.
+2. **rpe1 is a different regime.** Its targets are common-essential genes
+   with strong responses (Anderson–Darling median 428; D122), 72 cells per
+   target against the challenge's 461, and 2,000 controls against 18,400.
+   Its baseline already ranks genes well (reach 0.467 against 0.042), and
+   its nmae span is 0.19 against about 0.6, so every nmae error is stretched
+   about threefold.
+3. **The two K562 screens' scales are degenerate in places.** The baseline
+   calls almost nothing there (fid 0.018 and 0.053), and the expression
+   replicate is negative (−0.086, −0.411).
+4. **What survives.** The direction of D118's split: on `from_replicate`
+   rpe1 still puts shared 2 / specific 1 above single scale 2 (by 0.008;
+   the leaderboard by 0.032). Not the margin, and not the top of the grid.
+
+**Decision.** Nothing in the shipped config changes on this alone. Choosing
+the generator setting needs an instrument that reproduces the leaderboard
+per member, and the rehearsal is not yet one. That is the first item of the
+redesign.
+
+### D122. The challenge's targets are not essential genes, and no training cell line resembles its contexts
+
+**Measured.** `scripts/measure/data_inventory.py` on the server's
+validation-round data.
+
+* **Truth size.** Each context: 300 targets, 138,400 real perturbed cells
+  (**461 per target**), 18,400 controls, 46 control guides. We submit 400 per
+  target.
+* **Coverage.** K562 genome-wide covers 272/300 targets. K562 essential and
+  RPE1 cover **0/300**: the challenge's targets were chosen outside the
+  common-essential set those two screens target. In K562 genome-wide the
+  challenge targets' Anderson–Darling count has median 5 (all targets: 2;
+  62nd percentile) and `fold_expr` median 0.134: weak to moderate responses
+  in K562.
+* **Shared targets between screens:** genome-wide ∩ RPE1 2,390, essential ∩
+  RPE1 2,055, essential ∩ genome-wide 2,053.
+* **LINCS.** 27 lines, 5,156 targets, 55,267 rows. Ten lines carry about
+  5,100 targets each (A549, ES2, A375, U251MG, AGS, HT29, BICR6, PC3, YAPC,
+  MCF7 with 4,273), nine about 530, the rest under 70. 5,141 targets are in
+  at least 3 lines and 4,349 in at least 10. **82 of 300** challenge
+  targets are in LINCS, all in at least 3 lines.
+* **Control profiles** (mean log1p CP10K, 6,700 genes measured everywhere,
+  Pearson): A–B 0.655, B–C 0.675, A–C 0.483. Against K562 and RPE1
+  0.32–0.42, where K562↔RPE1 is 0.83. Relative to the across-context mean,
+  every challenge context is anti-correlated with every Replogle line, and
+  against the LINCS lines on the landmark genes no Spearman exceeds 0.06.
+
+**Readings.** (1) Training data that looks like the challenge's targets is
+K562 genome-wide alone, in one cell line; the two screens that give a
+second cell line hold the wrong kind of target. (2) No training line is
+measurably "near" A, B or C, so nothing licenses treating any context as
+K562-like. (3) The low between-context correlations are unusual for one
+platform; the inventory now also prints each context's split-half
+self-correlation, to tell biology from a units problem.
+
+### D123. The leaderboard's anchors are a revision our scorer does not know
+
+**Measured.** Every upload reports anchor set
+`vcc2026-valA-r4+vcc2026-valB-r4+vcc2026-valC-r4`. Our scorer is
+cell-eval2 0.16.0, the only release on PyPI. Its `competition.py` carries
+`rule_version = 3` and records that the official val bundles were built as
+`-r3`, at 0.15.0.
+
+**Reading.** The leaderboard was rebuilt at least once after the scorer we
+run. Either `-r4` is a rebuild under rule version 3 (new data or anchors,
+same semantics), or it comes with rule version 4 from an unreleased
+cell-eval2, whose metric semantics we cannot run. That rebuild is the most
+likely explanation of D113's open item (`runs/server` scored −0.131 earlier
+and −0.014 later): the leaderboard re-scores old uploads against new
+anchors. A hypothesis, not a measurement.
+
+**Consequence.** A local score is comparable with the leaderboard only up
+to this gap. Uploads are the only measurement of it.
+

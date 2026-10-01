@@ -483,6 +483,17 @@ python scripts/capacity_check.py --config configs/server.yaml --targets 8 --step
 python scripts/coupling_check.py --config configs/server.yaml
 ```
 
+**Measurements for the redesign** live in `scripts/measure/`. They are
+read-only and CPU only, change no pipeline state, and each writes its report
+under `<output_root>/<run-name>/measure/` (run name `measure` by default):
+
+| script | measures | DECISIONS |
+|---|---|---|
+| `rehearsal_on_replicate_scale.py <run> ...` | a finished rehearsal re-read on the leaderboard's own column | D120, D121 |
+| `data_inventory.py <data_root> <vcc_root>` | truth size, target coverage and strength, LINCS coverage, context similarity | D122 |
+| `oracle_ladder.py --config ... --held-out X --source Y` | no-model predictions from real data (no change, own mean, transferred mean, lookup, oracle) on one held-out screen's 0–1 scale, with target-bootstrap error bars | — |
+| `transfer_structure.py --config ...` | how much of a target's response is shared and how much transfers across cell lines (Replogle pairs, LINCS lines) | — |
+
 There is also a fourth **rehearsal variant**, off by default, that measures
 the one boundary the other three never test:
 
