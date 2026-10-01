@@ -281,10 +281,11 @@ about evidence, not budget.
    member, is the leaderboard's own noise for our submissions. A change is
    adopted only if it beats the parent by more than **twice** that.
 3. **Changes must hold per context.** A gain can be an artefact of A, B and C.
-   Where a change is adopted on a margin under 0.02, it is re-uploaded on one
-   context at a time: that context changed, the other two kept as the parent.
-   The three differences show whether the gain is general. If the leaderboard
-   shows per-context scores, this costs nothing.
+   The leaderboard shows per-context scores, so every upload gives three
+   paired differences at no extra cost. A change is adopted only if its mean
+   gain beats twice the noise **and** it gains in at least two of the three
+   contexts. The spread of a setting's score across A, B and C is also the
+   first estimate of how far it can miss on D, E and F.
 4. **Prefer rules to constants.** A scale that is right for A/B/C may not be
    right for D/E/F. Settings are expressed relative to quantities the new
    context provides (the model's own shared estimate, the controls'
@@ -393,18 +394,18 @@ deviations.
 
 ### 6.2 Milestones
 
-**T** is the test-set release: about two weeks from now by your last message,
-2026-10-22 by an earlier one. Please confirm the date, and the test-phase
-deadline.
+**T** is the test-set release, **2026-10-22**: three weeks from today. The
+test-phase deadline is not yet known; the last row runs to it.
 
 | when | what | output |
 |---|---|---|
-| days 0–2 | P0–P4 uploads (§5.3); measurements 3 and 4 on the server | the noise floor, `a_m`, whether the model's specific part goes; D124+ |
-| days 1–4 | Code: the source/composer split; the K562 lookup source; the per-gene sign-confidence and per-target strength factors (ranks 2–4) | tests; mini `all` passing |
-| days 4–8 | Paired uploads for ranks 2, 3, 4; per-context checks for any adoption under 0.02 | the validation-best recipe, with per-member evidence |
-| days 8–12 | Final-round path: `configs/server_final.yaml`, a fast `all` with the rehearsal off the critical path (≈ 5–6 h); **a full rehearsal on the validation release reproducing the validation-best upload bit for bit**; `FINAL_ROUND.md` rewritten | a tested procedure |
-| T, day 0 | data prep (a few hours) and the run; **safe upload** = the validation-best recipe | the first test upload within about 24 h of the release |
-| T + 1 … deadline | the paired protocol on the test-phase leaderboard, choosing between settings already supported on validation; noise re-measured once | the final submission |
+| Oct 1–3 | P0–P4 uploads (§5.3); measurements 3 and 4 on the server | the noise floor, `a_m`, whether the model's specific part goes; D124+ |
+| Oct 2–6 | Code: the source/composer split; the K562 lookup source; the per-gene sign-confidence and per-target strength factors (ranks 2–4) | tests; mini `all` passing |
+| Oct 6–13 | Paired uploads for ranks 2, 3, 4, then 5–7 if measurement 4 earns them; per-context reading of every upload | the validation-best recipe, with per-member, per-context evidence |
+| Oct 13–19 | Final-round path: `configs/server_final.yaml`, a fast `all` with the rehearsal off the critical path (≈ 5–6 h); **a full rehearsal on the validation release reproducing the validation-best upload bit for bit**; `FINAL_ROUND.md` rewritten | a tested procedure |
+| Oct 19–21 | Buffer; the validation-best recipe frozen and tagged | — |
+| Oct 22 (T) | data prep (a few hours) and the run; **safe upload** = the validation-best recipe | the first test upload within about 24 h of the release |
+| Oct 23 … deadline | the paired protocol on the test-phase leaderboard, choosing between settings already supported on validation; noise re-measured once | the final submission |
 
 The estimate of about 5–6 h for the final run is unmeasured. It is the sum of:
 * data prep (a few hours, D119);
@@ -413,7 +414,7 @@ The estimate of about 5–6 h for the final run is unmeasured. It is the sum of:
 * the sources' tables (minutes to an hour, reading K562 cells);
 * predict, sanity, validate and package (about 1–2 h).
 
-It is measured during the full rehearsal in days 8–12.
+It is measured during the full rehearsal, Oct 13–19.
 
 ---
 
@@ -455,8 +456,8 @@ deviation (DECISIONS.md and `checklist.json`).
 1. Approval of the direction: sources plus composer, the validation
    leaderboard as the instrument, the rehearsal off the critical path. Or what
    to change.
-2. The test-set release date and the test-phase deadline.
-3. Whether the leaderboard shows per-context scores (rule 3 is free if it
-   does).
+2. The test-phase deadline (the release is 2026-10-22).
+3. The per-context scores of the past uploads, if the leaderboard still shows
+   them, for `UPLOADS.md`: they give a first cross-context spread for free.
 4. Run P0–P4 and measurements 3–4. The commands are in the session message
    that accompanies this file.
