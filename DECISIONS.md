@@ -3352,3 +3352,26 @@ and shared scales (−1, 1.5, 2.0, 2.5, 3.0), centred on what the
 leaderboard confirmed. The rehearsal still chooses, on rpe1. Checklist item
 12 reports the split as a §4.7 deviation in every run that uses it, as D117
 set up.
+
+### D119. The final round has a written procedure and its own config, locked to the server's
+
+**Decision.** `FINAL_ROUND.md` is the final round's checklist. It covers
+rebuilding the processed data with `data_prep/` into a **new** `data_root`,
+the checks before training, the run, and a table of what every report should
+read against its validation-round reference, with the value at which to
+stop. It also covers packaging, the fallbacks and what to record.
+`configs/server_final.yaml` is `server.yaml` with only `data_root`, `vcc_root`
+and `run_name` changed. A test fails if the two differ anywhere else, so the
+final round cannot quietly run a different method from the one the
+validation round measured.
+
+**Why a new `data_root` rather than rebuilding in place.**
+`harmonize_data.py` maps Replogle and LINCS target labels using the round's
+target list, and `phase_data.py` flags each round's targets and writes
+`targets.csv`. So the processed tree belongs to a round. Rebuilding in place
+would erase the data every validation-round number was measured on.
+
+**Fixed on the way.** `--set` on a top-level path (`data_root=...`) produced a
+string where the code expects a `Path`, so `data_root / "ref"` would have
+failed. It is now resolved like the file's own paths. The fire drill in
+`FINAL_ROUND.md` §0 uses it.

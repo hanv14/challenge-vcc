@@ -198,3 +198,27 @@ def test_every_config_in_the_repo_loads(repo_root):
     assert configs, "no configs found"
     for path in configs:
         load_config(path).validate()
+
+
+def test_the_final_round_config_differs_from_the_server_config_only_in_its_paths(repo_root):
+    """The final round is the same method on new data. A setting tuned in
+    `server.yaml` and forgotten in `server_final.yaml` would submit a
+    different method than the one the validation round measured."""
+    import yaml
+
+    server = yaml.safe_load((repo_root / "configs" / "server.yaml").read_text())
+    final = yaml.safe_load((repo_root / "configs" / "server_final.yaml").read_text())
+    allowed = {"data_root", "vcc_root", "run_name"}
+    differing = {k for k in set(server) | set(final) if server.get(k) != final.get(k)}
+    assert differing <= allowed, f"server_final.yaml differs in {sorted(differing - allowed)}"
+    assert final["vcc_root"] != server["vcc_root"]
+    assert final["run_name"] != server["run_name"]
+
+
+def test_a_path_set_on_the_command_line_is_a_path(mini_cfg):
+    from pathlib import Path
+
+    from vccp.config import apply_overrides
+
+    cfg = apply_overrides(mini_cfg, ["vcc_root=/somewhere/else"])
+    assert isinstance(cfg.vcc_root, Path) and cfg.vcc_root == Path("/somewhere/else")

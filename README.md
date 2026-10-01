@@ -590,12 +590,15 @@ If the GPU runs out of memory, lower `train.output_genes_per_step`, then
 
 ## Switching to the final test round (from 2026-10-22)
 
+**The full procedure, with every command and what each check should read, is
+[`FINAL_ROUND.md`](FINAL_ROUND.md).** This section is the short version.
+
 The round is data, not code. New contexts (D, E, F) and a different
 perturbation list need **only a config change**:
 
 ```yaml
-# configs/server_final.yaml
-data_root: /data/han/projects/VCC/data      # the processed phases, rebuilt for the round
+# configs/server_final.yaml (in the repository; identical to server.yaml but for these)
+data_root: /data/han/projects/VCC/data_final # the processed phases, rebuilt for the round
 vcc_root: /data/share/han/VCC_final         # the new release: manifest.json,
                                             # gene_names.csv, pert_counts.csv,
                                             # context_D.h5ad, context_E.h5ad, ...

@@ -1,0 +1,113 @@
+# Final test round (released 2026-10-22). IDENTICAL to configs/server.yaml
+# except data_root, vcc_root and run_name; tests/test_config.py fails if any
+# other setting differs, so a change to one file must be made to both.
+# Edit the two paths below to wherever the new release and its rebuilt
+# processed data actually live (FINAL_ROUND.md, steps 1-2).
+# Server config. Run from the repository root, after:
+#     source scripts/server_env.sh
+
+data_root: /data/han/projects/VCC/data_final
+vcc_root: /data/share/han/VCC_final
+output_root: /data/han/projects/VCC/runs
+device: auto
+
+run_name: final
+seed: 0
+
+resources:
+  cpu_threads: 4
+  num_workers: 2
+  gpu_memory_fraction: 0.5
+  max_ram_gb: 64
+
+# Everything below is the schema's own default, written out because these are
+# the knobs to reach for first. `python -m vccp <stage> --config ...` reads
+# them; `vccp/config.py` documents each one.
+
+train:
+  # Two runs of the same checkpoint, with the same seeds, produce the same
+  # predictions. Seeds alone do not give you that: a CUDA matmul reduces in
+  # whatever order it likes and TF32 drops mantissa bits, which moved
+  # thousands of genes across the generator's threshold between two runs of
+  # the same submission. Costs some speed; set false if you need it back.
+  deterministic: true
+  # Output genes decoded per training step. The loss is a mean over genes, so
+  # a subsample is an unbiased estimate of it and the decoder's cost is linear
+  # in this. Lower it first if the GPU runs out of memory.
+  output_genes_per_step: 2048
+  # A second Phase 2 arm with the core frozen, so `unfreeze_core` rests on a
+  # measurement. Costs one extra Phase 2 training run; set to false to skip.
+  core_freeze_ablation: true
+  # Written out because it is unsettled. The `core_unfrozen` arm was unstable
+  # at 1e-3 *and* at this value — it swung to 2.46x its best mid-run — so
+  # lowering it did not fix the instability and 3e-4 is not established as
+  # better. `configs/server_isolate.yaml` should say more: if the L2-SP
+  # anchor was holding that arm together, removing it will make the swing
+  # worse rather than better.
+  lr: 0.0003
+
+phase1:
+  steps: 400
+  batch_size: 32
+
+phase2:
+  # 600 was too small to say anything, and 6,000 was still improving on
+  # every seed. One deterministic 12,000-step run of seed 2 (D107): 0.7915
+  # at 6,000, 0.7474 at 7,500, then flat — best 0.7435 at 10,500, last
+  # 0.7439. The gain, 0.048, is over three times the seed-to-seed sd of
+  # 0.0146 (D103), and the run did not collapse. 12,000 steps took 72
+  # minutes per arm; with the core-freeze ablation that is about 2.4 hours
+  # of Phase 2, inside the ~12-hour budget of §0.
+  steps: 12000
+  batch_size: 32
+  cells_per_draw: 16
+
+rehearsal:
+  # The three knobs that dominate the rehearsal's wall clock: every scoring
+  # call runs a Wilcoxon DE over this many targets, and the calibration grid
+  # is one scoring per point.
+  max_targets: 100
+  # The rehearsal retrains Phase 2 once per held-out screen (three screens,
+  # plus one for the unseen-genes variant), the way the shipped Phase 2
+  # trains, so that it scores the model that ships (D109). It was 300 while
+  # Phase 2 trained for 12,000. 7,500 is where a 12,000-step run had reached
+  # 0.7474 against its best of 0.7435, within the error bar (D107), at 62% of
+  # the cost: four arms of about 45 minutes. 0 would use phase2.steps.
+  phase2_steps: 7500
+  adapt_steps: 150
+  # Threshold barely mattered (D114), so one value; the effect scale and the
+  # shared part's own scale are what the grid spends its points on (D117).
+  # -1 is "the same as effect_scale", §4.7's single scale, kept as the
+  # control. 4 x 5 = 20 points, on rpe1 only: about 45 minutes.
+  calibration_thresholds: [0.05]
+  # Narrowed around what the leaderboard confirmed (D118): shared 2.0 with
+  # target-specific 1.0 scored -0.032, and 4 and 8 were worse than every top
+  # point on rpe1. Smaller target-specific scales are now in the grid because
+  # that part is what does not transfer to a new cell line.
+  calibration_scales: [0.25, 0.5, 1.0, 1.5]
+  calibration_shared_scales: [-1, 1.5, 2.0, 2.5, 3.0]
+  # Chosen on rpe1 alone: the one held-out screen from a cell line the model
+  # never trained on, as every challenge context is. Its rehearsal score
+  # matched four uploads within 0.013; the mean over all three screens was
+  # optimistic by 0.06-0.15 (D116). Scales above 1.5 because rpe1 was still
+  # improving at the top of the old grid.
+  calibration_screens: [rpe1]
+
+phase3:
+  adapt_steps: 300
+  batch_size: 32
+
+eval:
+  # Pinned: the vcc2026 preset ships `auto`, and which DE engine a host
+  # happens to have would otherwise change the numbers.
+  de_backend: pdex
+  # Build the leaderboard's 0 = baseline / 1 = replicate scale on the
+  # rehearsal's cross-context data. Costs six extra scoring calls per
+  # dataset; set to false if the rehearsal is taking too long.
+  build_scale: true
+
+sanity:
+  # Left off deliberately: on the real data a warning is worth stopping for.
+  # `--allow-warnings` accepts them for one invocation, after you have read
+  # sanity/summary.txt.
+  accept_warnings: false

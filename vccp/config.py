@@ -1058,6 +1058,11 @@ def apply_overrides(cfg: "Config", settings: Iterable[str]) -> "Config":
             )
             if inner is not None:
                 value = tuple(_coerce_number(section, field, v, inner) for v in value)
+        elif str(spec.type).startswith("Path") and value is not None:
+            # A path from the command line is resolved the way the file's
+            # would be; left as a string, `data_root / "ref"` fails far from
+            # the `--set` that caused it.
+            value = _resolve(str(value), Path(__file__).resolve().parent.parent)
         else:
             value = _coerce_number(section or "config", field, value, _field_type(spec))
 
