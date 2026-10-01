@@ -46,8 +46,15 @@ class CalibrationPoint:
     #: mean-response baseline, 1 = a split-half replicate), when the
     #: rehearsal could build that scale for this screen. This, not
     #: `objective`, is what the calibration maximizes when it is there (D113).
+    #: It is cell-eval2's `from_replicate` column; before D120 it was
+    #: `from_baseline`, which ends at a constant perfection anchor instead.
     leaderboard: float | None = None
     leaderboard_metrics: dict[str, float] = field(default_factory=dict)
+    #: The `from_baseline` average, kept as a diagnostic (D120).
+    leaderboard_from_baseline: float | None = None
+    #: Which column `leaderboard` was read from. None on a point read back
+    #: from a report written before D120, whose `leaderboard` is `from_baseline`.
+    leaderboard_column: str | None = "from_replicate"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -56,7 +63,9 @@ class CalibrationPoint:
             "shared_scale": self.shared_scale,
             "objective": self.objective,
             "leaderboard": self.leaderboard,
+            "leaderboard_column": self.leaderboard_column,
             "leaderboard_metrics": self.leaderboard_metrics,
+            "leaderboard_from_baseline": self.leaderboard_from_baseline,
             "metrics": self.metrics,
             "mean_genes_moved": self.n_genes_moved,
             "error": self.error,
@@ -74,6 +83,8 @@ class CalibrationPoint:
             error=entry.get("error"),
             leaderboard=entry.get("leaderboard"),
             leaderboard_metrics=dict(entry.get("leaderboard_metrics") or {}),
+            leaderboard_from_baseline=entry.get("leaderboard_from_baseline"),
+            leaderboard_column=entry.get("leaderboard_column"),
         )
 
 
@@ -109,10 +120,12 @@ class Calibration:
         return {
             "settings": self.settings.as_dict(),
             "objective_used": self.objective_used,
+            "leaderboard_column": "from_replicate" if self.objective_used == LEADERBOARD else None,
             "objective_definition": (
                 "mean over the cross-context screens of the leaderboard score "
                 "(0 = the organizers' mean-response baseline, 1 = a split-half "
-                "replicate), as cell-eval2 computes it (D113)"
+                "replicate), as cell-eval2 computes it: the mean of the six "
+                "members' from_replicate values (D113, D120)"
                 if self.objective_used == LEADERBOARD
                 else nochange.summarize({})["objective_definition"]
             ),
@@ -223,7 +236,8 @@ def calibrate(
                         if board.get("available") and board.get("avg_score") is not None
                         else None
                     ),
-                    leaderboard_metrics=dict(board.get("from_baseline") or {}),
+                    leaderboard_metrics=dict(board.get("from_replicate") or {}),
+                    leaderboard_from_baseline=board.get("from_baseline_avg_score"),
                 )
             )
         except Exception as exc:  # noqa: BLE001 — a failed point is a result

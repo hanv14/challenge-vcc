@@ -423,6 +423,17 @@ def load_policy(path) -> dict[str, Any]:
             f"{path} is a version {policy.get('version')} policy but this build writes "
             f"version {POLICY_VERSION}; rerun the rehearsal stage"
         )
+    calibration = policy.get("calibration") or {}
+    if (
+        calibration.get("objective_used") == "leaderboard"
+        and calibration.get("leaderboard_column") != "from_replicate"
+    ):
+        get_logger().warning(
+            "%s chose its generator setting on cell-eval2's from_baseline average, not the "
+            "leaderboard's from_replicate one (D120). It still loads; rerun the rehearsal "
+            "stage, or set predict.override_*, to use a setting chosen on the right column",
+            path,
+        )
     return policy
 
 

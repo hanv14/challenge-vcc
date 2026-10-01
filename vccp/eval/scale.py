@@ -15,11 +15,19 @@ Here they are built together as a **real bundle**, which is the packaging
 `cell-eval2` gives the pair, and a scored run is then placed on that scale
 with `score_metrics(..., real_bundle=...)`.
 
+**Which column is the leaderboard's.** `score_metrics` returns two:
+`from_baseline` puts 1 at each metric's constant perfection anchor, and
+`from_replicate` puts 1 at the measured replicate. The leaderboard enrols
+`from_replicate` (docs/metrics.md §6c-bis, §6c-ter), so that average is the
+score here. `from_baseline` is kept as a diagnostic. Until D120 this module
+reported the `from_baseline` average, which shares the 0 but stretches each
+metric by a different factor.
+
 Two rules from §6, both enforced by this module doing nothing else:
 
 * these are **reference points of the scorer**. Never predictions, never
-  submitted, never used to train or to choose the model — the calibration
-  maximizes the no-change objective (`eval/nochange.py`), not this;
+  submitted, never used to train the model; the rehearsal's calibration
+  grid chooses the generator setting on them (D113);
 * where the pair **cannot** be built, the six raw values are reported alone
   and the reason is recorded. On small data the baseline leg is often
   degenerate (a metric whose 0 and 1 ends coincide), and `cell-eval2` refuses
@@ -150,22 +158,53 @@ def rescale(score, reference: ScaleReference) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
-    rows = {str(row["metric"]): row for row in frame.iter_rows(named=True)}
-    scaled = {
-        metric: float(row[FROM_BASELINE])
-        for metric, row in rows.items()
-        if row.get(FROM_BASELINE) is not None and metric != AVERAGE
-    }
-    average = rows.get(AVERAGE, {}).get(FROM_BASELINE)
-    replicate = {
-        metric: float(row[FROM_REPLICATE])
-        for metric, row in rows.items()
-        if row.get(FROM_REPLICATE) is not None and metric != AVERAGE
-    }
+    return placement({str(row["metric"]): row for row in frame.iter_rows(named=True)},
+                     reference.bundle_id)
+
+
+def placement(rows: dict[str, dict[str, Any]], bundle_id: str | None) -> dict[str, Any]:
+    """Read one `score_metrics` frame, keyed by metric, as the leaderboard does.
+
+    `avg_score` is the mean of the six scored members' `from_replicate`
+    values: the leaderboard's number. It is computed here from the six rather
+    than read off the frame's average row, so a member missing from the
+    replicate column makes the placement unavailable instead of an average
+    over fewer members. The frame's own average is kept beside it for audit.
+    """
+    from .official import SCORED
+
+    def column(name: str) -> dict[str, float]:
+        return {
+            metric: float(row[name])
+            for metric, row in rows.items()
+            if row.get(name) is not None and metric != AVERAGE
+        }
+
+    replicate, baseline = column(FROM_REPLICATE), column(FROM_BASELINE)
+    missing = [metric for metric in SCORED if metric not in replicate]
+    if missing:
+        return {
+            "available": False,
+            "reason": f"the {FROM_REPLICATE} column has no value for {', '.join(missing)}",
+            "from_baseline": baseline,
+        }
+    frame_average = rows.get(AVERAGE, {}).get(FROM_REPLICATE)
+    baseline_average = rows.get(AVERAGE, {}).get(FROM_BASELINE)
     return {
         "available": True,
-        "from_baseline": scaled,
-        "from_replicate": replicate,
-        "avg_score": float(average) if average is not None else None,
-        "bundle_id": reference.bundle_id,
+        "column": FROM_REPLICATE,
+        "avg_score": float(sum(replicate[m] for m in SCORED) / len(SCORED)),
+        "from_replicate": {m: replicate[m] for m in SCORED},
+        "frame_avg_score": float(frame_average) if frame_average is not None else None,
+        # Diagnostic only: 0 = baseline, 1 = each metric's constant perfection
+        # anchor. What this module reported as the score before D120.
+        "from_baseline": baseline,
+        "from_baseline_avg_score": (
+            float(baseline_average) if baseline_average is not None else None
+        ),
+        # A competition bundle nulls the from_baseline average; a diagnostic
+        # one (ours, whenever the metric list carries extra diagnostics)
+        # keeps both. Either way avg_score above is the from_replicate mean.
+        "enrolled": baseline_average is None,
+        "bundle_id": bundle_id,
     }
