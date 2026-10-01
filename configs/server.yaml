@@ -75,8 +75,12 @@ rehearsal:
   # -1 is "the same as effect_scale", §4.7's single scale, kept as the
   # control. 4 x 5 = 20 points, on rpe1 only: about 45 minutes.
   calibration_thresholds: [0.05]
-  calibration_scales: [0.5, 1.0, 1.5, 2.0]
-  calibration_shared_scales: [-1, 1.0, 2.0, 4.0, 8.0]
+  # Narrowed around what the leaderboard confirmed (D118): shared 2.0 with
+  # target-specific 1.0 scored -0.032, and 4 and 8 were worse than every top
+  # point on rpe1. Smaller target-specific scales are now in the grid because
+  # that part is what does not transfer to a new cell line.
+  calibration_scales: [0.25, 0.5, 1.0, 1.5]
+  calibration_shared_scales: [-1, 1.5, 2.0, 2.5, 3.0]
   # Chosen on rpe1 alone: the one held-out screen from a cell line the model
   # never trained on, as every challenge context is. Its rehearsal score
   # matched four uploads within 0.013; the mean over all three screens was

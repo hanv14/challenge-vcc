@@ -3294,3 +3294,61 @@ prediction. Rejected: it is a quirk of one old run, its prior draw was not
 reproducible (D114), and nothing would carry to the final round's new
 contexts. The model's own shared part, scaled on the rehearsal screen that
 predicts the leaderboard, does carry.
+
+### D118. Splitting the shared part is worth 0.032 on the leaderboard: −0.032, the current model's best
+
+**Measured.** `server_shared`: `server_cal`'s Phase 2 with the rehearsal
+rerun under D117. Its grid ran on rpe1 only, with priors now deterministic
+(D114). The top of the grid, rpe1 leaderboard scale:
+
+| effect scale | shared scale | rpe1 |
+|---|---|---|
+| 1.0 | 2.0 | **−0.0395** (chosen) |
+| 2.0 | 2.0 | −0.0431 |
+| 2.0 | −1 (= 2.0) | −0.0431 |
+| 0.5 | 2.0 | −0.0454 |
+| 1.5 | 2.0 | −0.0478 |
+| 1.5 | −1 (= 1.5) | −0.0533 |
+| 0.5 | 1.0 | −0.0821 |
+| 1.0 | −1 (= 1.0) | −0.0837 |
+
+No shared scale of 4 or 8 is in the top eight. "2.0 / −1" and "2.0 / 2.0" are
+the same prediction and score the same, which checks the implementation.
+
+Two uploads of that model:
+
+| upload | effect / shared | leaderboard | rehearsal rpe1 | nmae | fid |
+|---|---|---|---|---|---|
+| "shared 2, specific 1" | 1.0 / 2.0 | **−0.0318** | −0.0395 | −0.091 | −0.059 |
+| "single scale 2" | 2.0 / −1 | −0.0641 | −0.0431 | −0.160 | −0.167 |
+
+**Readings.**
+
+1. **The split is real, and larger on the leaderboard than in the
+   rehearsal.** The rehearsal put the two 0.004 apart. The leaderboard puts
+   them 0.032 apart, almost all of it from DE log-FC accuracy and direction
+   fidelity. Scaling the target-specific part up to 2.0 adds wrong-signed and
+   oversized calls on a new cell line. Scaling only the shared part up
+   doesn't. This is the measurement D117 lacked, and it justifies the
+   deviation from §4.7.
+2. **rpe1 remains the instrument, to within about 0.02.** Six uploads now:
+   v5, v6, v7, v8 and the split all within 0.013 (the split by 0.008). Single
+   scale 2.0 is off by 0.021, in the pessimistic direction for the rehearsal.
+   It ranked the split first, which was right, but understated the margin.
+3. **−0.032 is the current pipeline's best**, from −0.153 at v4's old
+   setting (v8) and −0.067 at D113's (v7). v4 (−0.014) is still ahead by
+   0.018. That gap is now within the range rpe1 has missed by. So the
+   current pipeline is level with a mean-response prediction, as v4 was,
+   not ahead of it.
+4. **What would move it further is target-specific signal that transfers
+   to a new cell line.** At every setting tried, that part costs on rpe1
+   and on the leaderboard. A smaller effect scale (0.5 with shared 2.0:
+   −0.045) did not help either, so the part is not simply too large. It is
+   not yet right for a new cell line. That is a modelling question, not a
+   generator setting.
+
+**Decision.** The server grid narrows to effect scales (0.25, 0.5, 1.0, 1.5)
+and shared scales (−1, 1.5, 2.0, 2.5, 3.0), centred on what the
+leaderboard confirmed. The rehearsal still chooses, on rpe1. Checklist item
+12 reports the split as a §4.7 deviation in every run that uses it, as D117
+set up.
