@@ -3535,3 +3535,70 @@ anchors. A hypothesis, not a measurement.
 **Consequence.** A local score is comparable with the leaderboard only up
 to this gap. Uploads are the only measurement of it.
 
+
+### D124. The K562 lookup: a target-specific change measured in a Replogle screen, off by default
+
+**Decision.** `vccp/predict/lookup.py` builds, once per run, a table over the
+challenge gene axis for every round target a Replogle screen measured. Each
+row is the target's change in that screen (log2 of the ratio of mean CP10K
+over the screen's controls, floored at `predict.cpm_floor`) minus the
+screen's mean change over the round's covered targets. The `predict` stage
+adds it to each covered target at its own scale:
+
+    applied = threshold/scale(model's change) + lookup_scale x weight x factor_g x residual
+
+`generator.with_addition` puts it in divided by `effect_scale`, so the model's
+effect scale never multiplies it. The table is cached in
+`sources/lookup.npz`, with `lookup.json` beside it, keyed by everything it
+depends on. Every block's record and `predictions/model/index.json` say what
+was added. Checklist item 12 reports the lookup as a §4.7 deviation whenever
+it is on.
+
+Configuration, all under `predict`:
+* `lookup_scale`: 0 is off, the pipeline as it was;
+* `lookup_screens`: empty means all screens; each target is read from the
+  screen with the most cells for it;
+* `lookup_weighting`: `none` or `reliability`, the target's split-half
+  reliability;
+* `lookup_shrinkage`: `gene` (default) or `none`;
+* `lookup_max_cells` (1,000), `lookup_control_cells` (5,000) and
+  `lookup_min_control_cp10k` (0.5): genes the screen's controls barely
+  express get 0.
+
+A gene no screen measures gets 0, and so does the target's own gene, which
+the knockdown prior sets.
+
+**Reason.** REDESIGN.md §4, rank 2. The leaderboard's 0 already holds the
+true mean response, so only target-specific changes can score above it, and
+the model's own target-specific part costs points (D118). K562 genome-wide
+measured 272 of the 300 validation targets (D122). The paired upload
+"shared part" against "shared part + lookup" is the most direct test there
+is of whether target-specific knowledge from one cell line helps in the
+challenge's.
+
+**Why per-gene shrinkage is on by default.** Built on `mini_data` (K562 at a
+median of 60 cells per target), the raw residuals have rms 0.30 log2 over
+about 57% of genes, against a median split-half reliability of 0.08. Added
+as is, that is mostly sampling noise, and it would make the DE test call
+noise: a lookup that failed that way would say nothing about transfer.
+The James–Stein factor per gene, max(0, 1 − noise / power), with the noise
+of a full-depth change estimated from two halves of each target's cells,
+cuts it to rms 0.066 on 480 genes there. The server's 172 cells per
+challenge target (D122) will keep more; `sources/lookup.json` reports how
+much (`genes_kept_by_shrinkage`, `median_reliability`). `none` stays
+available for the paired comparison.
+
+**Not done here.** The rehearsal does not use the lookup: it is off the
+critical path (REDESIGN.md §6.1), and a held-out screen would need its own
+leakage scope. Per-cell mode refuses it, as it refuses the shared scale.
+
+**Tests.** `tests/test_lookup.py`, 13 tests:
+* the table's shape and coverage;
+* centring on each screen's mean;
+* no unmeasured or own-gene changes;
+* reliabilities and factors within [0, 1];
+* determinism, and the cache reused or rebuilt as its key says;
+* config refusals;
+* `with_addition` reaching the cells at its own size at every effect scale;
+* a re-run of `predict` on a finished mini pipeline, where covered targets
+  move, uncovered ones do not, and item 12 reports the deviation.

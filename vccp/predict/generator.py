@@ -108,6 +108,26 @@ def with_shared_scale(
     return np.asarray(log2_fold_change, dtype=np.float32) + boost
 
 
+def with_addition(
+    log2_fold_change: np.ndarray, addition: np.ndarray | None, settings: GeneratorSettings
+) -> np.ndarray:
+    """Add a change that must reach the cells at its own size (D124).
+
+    `apply_settings` multiplies everything by `effect_scale`, so the addition
+    goes in divided by it: wherever the threshold keeps a gene, the applied
+    change is then `effect_scale x (model's change) + addition`. The lookup
+    carries its own scale (`predict.lookup_scale`), which is why it must not
+    be multiplied by the model's. A no-op when there is nothing to add.
+    """
+    if addition is None:
+        return log2_fold_change
+    if settings.effect_scale <= 0:
+        raise ValueError("adding a change at its own size needs a positive effect_scale")
+    return np.asarray(log2_fold_change, dtype=np.float32) + (
+        np.asarray(addition, dtype=np.float32) / np.float32(settings.effect_scale)
+    )
+
+
 def apply_settings(
     log2_fold_change: np.ndarray,
     settings: GeneratorSettings,

@@ -540,6 +540,28 @@ class Predict:
     override_scale: float = -1.0
     #: The same for the shared part's scale (D117); negative = the policy's.
     override_shared_scale: float = -1.0
+    #: The lookup (REDESIGN.md §4, rank 2): each target's own change measured
+    #: in a Replogle screen, minus that screen's mean change over the round's
+    #: targets, added to the prediction times this scale. 0 turns it off,
+    #: which is the pipeline as it was (D124).
+    lookup_scale: float = 0.0
+    #: The screens the lookup may read; empty means every screen found. A
+    #: target measured in several is read from the one with the most cells.
+    lookup_screens: tuple[str, ...] = ()
+    #: How each target's lookup change is weighted: `none` (1), or
+    #: `reliability`, its split-half reliability in the screen, in [0, 1].
+    lookup_weighting: str = "none"
+    #: `gene` multiplies each gene's lookup changes by its James–Stein factor,
+    #: the share of their power that is not sampling noise; `none` adds them
+    #: raw. At a few hundred cells per target, raw is mostly noise (D124).
+    lookup_shrinkage: str = "gene"
+    #: Cells read per target, and control cells per screen.
+    lookup_max_cells: int = 1000
+    lookup_control_cells: int = 5000
+    #: A gene enters a target's lookup change only where the screen's controls
+    #: express it at least this much (CP10K). Below it a fold change measured
+    #: on a few hundred cells is mostly the floor and the sampling.
+    lookup_min_control_cp10k: float = 0.5
 
     def validate(self) -> None:
         if self.cells_per_forward < 1:
@@ -548,6 +570,30 @@ class Predict:
             raise ConfigError("predict.target_chunk must be at least 1")
         if self.cpm_floor <= 0:
             raise ConfigError("predict.cpm_floor must be positive")
+        if self.lookup_scale < 0:
+            raise ConfigError("predict.lookup_scale must not be negative (0 turns it off)")
+        if self.lookup_weighting not in LOOKUP_WEIGHTINGS:
+            raise ConfigError(
+                f"predict.lookup_weighting must be one of {sorted(LOOKUP_WEIGHTINGS)} "
+                f"(got {self.lookup_weighting!r})"
+            )
+        if self.lookup_shrinkage not in LOOKUP_SHRINKAGES:
+            raise ConfigError(
+                f"predict.lookup_shrinkage must be one of {sorted(LOOKUP_SHRINKAGES)} "
+                f"(got {self.lookup_shrinkage!r})"
+            )
+        if self.lookup_max_cells < 2 or self.lookup_control_cells < 2:
+            raise ConfigError(
+                "predict.lookup_max_cells and predict.lookup_control_cells must be at least 2"
+            )
+        if self.lookup_min_control_cp10k < 0:
+            raise ConfigError("predict.lookup_min_control_cp10k must not be negative")
+
+
+#: How a target's lookup change can be weighted (`predict.lookup_weighting`).
+LOOKUP_WEIGHTINGS = frozenset({"none", "reliability"})
+#: How a target's lookup change can be shrunk (`predict.lookup_shrinkage`).
+LOOKUP_SHRINKAGES = frozenset({"none", "gene"})
 
 
 @dataclass(frozen=True)

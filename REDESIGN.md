@@ -5,7 +5,7 @@ measurements of D120–D123. Every number is cited to a D-entry, to
 `docs/metrics.md`, or to an upload you reported. Where a number cannot be
 known yet, the section says so and names the measurement that will give it.
 
-**Status: a proposal. Nothing in the pipeline changes until you approve it.**
+**Status: approved 2026-10-01.** Built so far: the K562 lookup (rank 2, D124), off by default.
 `CLAUDE.md` stays the specification; §7 lists the changes I recommend to it.
 
 ---

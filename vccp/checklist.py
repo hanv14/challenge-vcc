@@ -225,26 +225,36 @@ def _shared_core_status(cfg):
 
 def _generator_status(run_paths):
     """§4.7 names two generator settings, a threshold and one global effect
-    scale. A run that gave the part every target shares its own scale used a
-    third, and says so (D117)."""
+    scale, applied to the model's prediction. A run that gave the part every
+    target shares its own scale used a third (D117), and a run that added the
+    lookup used a second source (D124). Each says so."""
     def status() -> tuple[str, str | None]:
         try:
             index = json.loads(run_paths.prediction_index.read_text())
         except (OSError, json.JSONDecodeError) as exc:
             return DEVIATION, f"the prediction index could not be read: {exc}"
         generator = index.get("generator") or {}
+        reasons = []
         shared = float(generator.get("shared_scale", -1.0))
-        if shared < 0:
+        if shared >= 0:
+            reasons.append(
+                f"the generator scaled the part of each context's predictions that every "
+                f"target shares by {shared:g} and each target's own deviation from it by "
+                f"{float(generator.get('effect_scale', 1.0)):g}, where §4.7 describes one "
+                "global effect scale. The split is worth 0.032 on the validation "
+                "leaderboard (DECISIONS.md D117, D118)."
+            )
+        lookup = index.get("lookup")
+        if lookup:
+            reasons.append(
+                f"each covered target's change measured in a Replogle screen, minus that "
+                f"screen's mean change, was added at scale {float(lookup['scale']):g} "
+                f"({lookup['weighting']} weighting, {lookup.get('shrinkage', 'none')} shrinkage) to {lookup['n_covered']} targets; §4.7 "
+                "predicts from the model alone (REDESIGN.md §4, DECISIONS.md D124)."
+            )
+        if not reasons:
             return DONE, None
-        return (
-            DEVIATION,
-            f"the generator scaled the part of each context's predictions that every "
-            f"target shares by {shared:g} and each target's own deviation from it by "
-            f"{float(generator.get('effect_scale', 1.0)):g}, where §4.7 describes one "
-            "global effect scale. Chosen on the rehearsal screen that predicts the "
-            "leaderboard: the best upload was 98% one shared profile, four times the "
-            "size of the current model's (DECISIONS.md D117).",
-        )
+        return DEVIATION, " ".join(reasons)
 
     return status
 

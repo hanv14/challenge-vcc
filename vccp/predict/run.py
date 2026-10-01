@@ -39,6 +39,7 @@ from ..rehearsal import common
 from . import generator as generator_mod
 from . import percell
 from . import knockdown as knockdown_mod
+from . import lookup as lookup_mod
 
 #: Fraction of `resources.max_ram_gb` a context's control-count block may take
 #: when `predict.max_control_cells` is left at 0 (= "as many as fit").
@@ -252,6 +253,20 @@ def run_predict(cfg: Config) -> dict[str, Any]:
 
     wanted = _required_pairs(manifest, pert_counts)
     plan = _prediction_plan(targets_frame, manifest, pert_counts, wanted)
+    # The lookup's table does not depend on the model or the context, so it
+    # is built (or read from its cache) once, before either is touched (D124).
+    lookup = lookup_mod.load_or_build(cfg, paths, run_paths, sorted(pert_counts.targets), axis)
+    if lookup is not None and per_cell:
+        raise ValueError(
+            "predict.lookup_scale is implemented for perturbation_mode 'pooled' only; "
+            "set it to 0 or use pooled"
+        )
+    if lookup is not None:
+        log.info(
+            "predict: lookup on, scale %.3g, weighting %s, shrinkage %s, %d of %d targets covered",
+            cfg.predict.lookup_scale, cfg.predict.lookup_weighting, cfg.predict.lookup_shrinkage,
+            len(lookup.targets), len(pert_counts.targets),
+        )
 
     features = PriorFeatures.load(run_paths.prior_features)
     model = build_model(cfg, features).to(device)
@@ -393,6 +408,16 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                     # Before the knockdown prior, which then overwrites the
                     # target's own gene with its measured value.
                     log2fc = generator_mod.with_shared_scale(log2fc, shared, settings)
+                if lookup is not None:
+                    # At its own scale, whatever the model's effect scale is.
+                    log2fc = generator_mod.with_addition(
+                        log2fc,
+                        lookup.change(
+                            target, cfg.predict.lookup_scale, cfg.predict.lookup_weighting,
+                            cfg.predict.lookup_shrinkage,
+                        ),
+                        settings,
+                    )
 
             # The target's own gene, once the prior has spoken, is a measured
             # quantity and is exempt from the generator's two settings.
@@ -451,6 +476,13 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                     perturbation_token=used_token,
                     total_counts_median=float(np.median(counts.sum(axis=1))),
                     stored_entries=stored,
+                    detail=(
+                        {"lookup": lookup.describe(
+                            target, cfg.predict.lookup_scale, cfg.predict.lookup_weighting,
+                            cfg.predict.lookup_shrinkage,
+                        )}
+                        if lookup is not None else {}
+                    ),
                 )
             )
             del counts
@@ -508,6 +540,17 @@ def run_predict(cfg: Config) -> dict[str, Any]:
         "total_cells": sum(b.n_cells for b in blocks),
         "total_stored_entries": sum(b.stored_entries for b in blocks),
         "knockdown_prior": prior.as_dict(),
+        # What the lookup added (D124); null when predict.lookup_scale is 0.
+        "lookup": (
+            {
+                "scale": cfg.predict.lookup_scale,
+                "weighting": cfg.predict.lookup_weighting,
+                "shrinkage": cfg.predict.lookup_shrinkage,
+                "screens": list(cfg.predict.lookup_screens) or "all found",
+                **lookup.summary(),
+            }
+            if lookup is not None else None
+        ),
         "blocks": [b.as_dict() for b in blocks],
     }
     run_paths.predictions_dir.mkdir(parents=True, exist_ok=True)

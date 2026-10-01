@@ -494,6 +494,20 @@ under `<output_root>/<run-name>/measure/` (run name `measure` by default):
 | `oracle_ladder.py --config ... --held-out X --source Y` | no-model predictions from real data (no change, own mean, transferred mean, lookup, oracle) on one held-out screen's 0–1 scale, with target-bootstrap error bars | — |
 | `transfer_structure.py --config ...` | how much of a target's response is shared and how much transfers across cell lines (Replogle pairs, LINCS lines) | — |
 
+**The K562 lookup** (D124, REDESIGN.md §4) adds to each target a Replogle
+screen measured its change there, minus that screen's mean change, at
+`predict.lookup_scale` (0 = off, the default). It is meant for paired
+leaderboard uploads, through `--set` on the `predict` stage:
+
+```bash
+python -m vccp predict --config configs/server.yaml --run-name <run> --force \
+    --set predict.lookup_scale=0.5 --set predict.lookup_shrinkage=gene
+```
+
+The table is built once per run directory into `sources/lookup.npz`, with
+`sources/lookup.json` beside it (coverage, reliability, how many genes the
+per-gene shrinkage keeps), and reused while its inputs are unchanged.
+
 There is also a fourth **rehearsal variant**, off by default, that measures
 the one boundary the other three never test:
 
