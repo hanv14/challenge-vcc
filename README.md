@@ -493,6 +493,7 @@ under `<output_root>/<run-name>/measure/` (run name `measure` by default):
 | `data_inventory.py <data_root> <vcc_root>` | truth size, target coverage and strength, LINCS coverage, context similarity | D122 |
 | `oracle_ladder.py --config ... --held-out X --source Y` | no-model predictions from real data (no change, own mean, transferred mean, lookup, oracle) on one held-out screen's 0–1 scale, with target-bootstrap error bars | — |
 | `transfer_structure.py --config ...` | how much of a target's response is shared and how much transfers across cell lines (Replogle pairs, LINCS lines) | — |
+| `lookup_proxy.py --config ... --targets all` | the lookup's denoisers scored inside K562: half A denoised against half B, pds-, nmae- and reach-like, with a validation gate (raw must beat the per-gene shrinkage, as L4 beat L2) | D128 |
 
 **The K562 lookup** (D124, REDESIGN.md §4) adds to each target a Replogle
 screen measured its change there, minus that screen's mean change, at
@@ -505,7 +506,27 @@ python -m vccp predict --config configs/server.yaml --run-name <run> --force \
 ```
 
 `predict.lookup_shrinkage` is `none` (raw) by default; `gene`, the per-gene
-James–Stein factor, scored 0.0195 below raw on the leaderboard (D127).
+James–Stein factor, scored 0.0195 below raw on the leaderboard (D127). The
+per-entry denoisers (D128) are `snr` and `snr_hard` (knob
+`predict.lookup_snr_tau`, in z² units), `lowrank` (`predict.lookup_rank`) and
+`lowrank_snr` (both). The low-rank ones build a basis from every target of
+the screen on first use: one streaming pass over its cells, cached in
+`sources/lookup_basis_<screen>.npz` and, through `probe.sh`, in
+`runs/lookup_cache/`.
+
+They are chosen offline first, inside K562, with the lookup proxy:
+
+```bash
+source scripts/server_env.sh
+nice -n 10 ionice -c3 python scripts/measure/lookup_proxy.py \
+    --config configs/server.yaml --targets all
+```
+
+One pass over the screen's cells (cached in `runs/measure/measure/`), then
+three half-A / half-B splits scored on two panels: the round's covered
+targets and all K562 targets. Read `gate` first: the instrument is trusted
+only if it says `pass` on the round's panel. `--targets round` and
+`--depth quarter` reuse the cached moments.
 
 For a whole paired probe (copy a finished parent run, change one setting,
 rebuild the submission), use `scripts/probe.sh`; its header has the usage.

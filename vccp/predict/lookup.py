@@ -40,9 +40,22 @@ the large, rare entries that distinguish targets, which is why raw scored
 0.0195 higher. The factors are stored with the table and applied when a
 change is asked for, so the cache does not depend on the choice.
 
+**Per-entry denoisers** (D128): `snr`, `snr_hard`, `lowrank` and
+`lowrank_snr` (`denoise.py`). The table stores each entry's z for the SNR
+ones: the target's mean CP10K tested against the screen's mean response,
+from the per-cell CP10K variance of the target's cells and the controls'
+(`screen_stats.residual_z`). The low-rank ones project onto the top
+components of *every* target the screen measured, so each screen's basis is
+built by one streaming pass over its cells (`screen_stats.py`) and cached
+beside the table as `sources/lookup_basis_<screen>.npz`. A denoiser never
+moves an entry the raw residual leaves at exactly 0: a gene the screen does
+not measure or express, or the target's own gene.
+
 The table depends on the data, the round's targets, the gene axis and the
 lookup settings, not on the model, so it is built once per run and cached
 under `sources/`, keyed by all of them. A cache with another key is rebuilt.
+A cache from before D128 has no z; it is rebuilt when a denoiser asks for
+one, from the same cells, so its residuals do not change.
 """
 
 from __future__ import annotations
@@ -56,6 +69,8 @@ from typing import Any
 import numpy as np
 
 from ..logging_utils import get_logger
+from . import denoise
+from .denoise import LowRankBasis
 
 #: Targets read per batch, so a screen's cells are never all in memory at once.
 BATCH_TARGETS = 64
@@ -81,6 +96,12 @@ class LookupTable:
     #: Each screen's per-gene shrinkage factor in [0, 1], on the same axis.
     gene_factor: dict[str, np.ndarray] = field(default_factory=dict)
     uncovered: list[str] = field(default_factory=list)
+    #: Each entry's z (the target against the screen's mean response), same
+    #: shape as `residual`; None in a table cached before D128.
+    z: np.ndarray | None = None
+    #: Each screen's low-rank basis, attached by `load_or_build` when a
+    #: denoiser needs it; not stored in the table's file.
+    bases: dict[str, LowRankBasis] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._row = {t: i for i, t in enumerate(self.targets)}
@@ -93,29 +114,54 @@ class LookupTable:
             return float(self.reliability[self._row[target]])
         return 1.0
 
-    def residual_for(self, target: str, shrinkage: str) -> np.ndarray:
+    def residual_for(self, target: str, shrinkage: str, tau: float = 1.0,
+                     rank: int = 1) -> np.ndarray:
         row = self._row[target]
+        raw = self.residual[row]
+        if shrinkage == NONE:
+            return raw
         if shrinkage == GENE:
-            return self.residual[row] * self.gene_factor[self.screen[row]]
-        return self.residual[row]
+            return raw * self.gene_factor[self.screen[row]]
+        if shrinkage in denoise.NEEDS_Z and self.z is None:
+            raise ValueError(
+                f"lookup_shrinkage {shrinkage!r} needs each entry's z, which this table "
+                "predates; rebuild it (load_or_build does when it is asked for)"
+            )
+        if shrinkage in denoise.NEEDS_BASIS and self.screen[row] not in self.bases:
+            raise ValueError(
+                f"lookup_shrinkage {shrinkage!r} needs screen {self.screen[row]}'s low-rank "
+                "basis, which was not attached"
+            )
+        out = denoise.apply(
+            shrinkage, raw,
+            z=None if self.z is None else self.z[row],
+            basis=self.bases.get(self.screen[row]),
+            tau=tau, rank=rank,
+        )
+        # Never move what the raw residual leaves at exactly 0: unmeasured or
+        # unexpressed genes, and the target's own gene.
+        return np.where(raw != 0, out, 0.0).astype(np.float32)
 
     def change(
-        self, target: str, scale: float, weighting: str, shrinkage: str = NONE
+        self, target: str, scale: float, weighting: str, shrinkage: str = NONE,
+        tau: float = 1.0, rank: int = 1,
     ) -> np.ndarray | None:
-        """`scale x weight x (shrunk) residual`, or None for a target no screen measured."""
+        """`scale x weight x (denoised) residual`, or None for a target no screen measured."""
         if target not in self._row:
             return None
         return (
-            scale * self.weight(target, weighting) * self.residual_for(target, shrinkage)
+            scale * self.weight(target, weighting)
+            * self.residual_for(target, shrinkage, tau, rank)
         ).astype(np.float32)
 
     def describe(
-        self, target: str, scale: float, weighting: str, shrinkage: str = NONE
+        self, target: str, scale: float, weighting: str, shrinkage: str = NONE,
+        tau: float = 1.0, rank: int = 1,
     ) -> dict[str, Any]:
         if target not in self._row:
             return {"applied": False, "reason": "no lookup screen measured this target"}
         row = self._row[target]
-        used = self.residual_for(target, shrinkage)
+        used = self.residual_for(target, shrinkage, tau, rank)
         return {
             "applied": scale > 0,
             "screen": self.screen[row],
@@ -125,6 +171,9 @@ class LookupTable:
             "rms_raw": float(np.sqrt(np.mean(self.residual[row] ** 2))),
             "rms_used": float(np.sqrt(np.mean(used**2))),
             "genes_moved": int(np.count_nonzero(used)),
+            "shrinkage": shrinkage,
+            **({"snr_tau": tau} if shrinkage in denoise.NEEDS_Z else {}),
+            **({"rank": rank} if shrinkage in denoise.NEEDS_BASIS else {}),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -143,6 +192,7 @@ class LookupTable:
             }
         return {
             "key": self.key,
+            "has_z": self.z is not None,
             "n_covered": len(self.targets),
             "n_uncovered": len(self.uncovered),
             "uncovered": self.uncovered,
@@ -169,6 +219,7 @@ class LookupTable:
             if self.screen_means else np.zeros((0, self.residual.shape[1]), np.float32),
             uncovered=np.array(self.uncovered, dtype=object),
             key=np.array(self.key),
+            **({"z": self.z.astype(np.float32)} if self.z is not None else {}),
         )
         path.with_suffix(".json").write_text(json.dumps(self.summary(), indent=2))
 
@@ -186,6 +237,7 @@ class LookupTable:
             screen_means={n: data["screen_means"][i] for i, n in enumerate(names)},
             gene_factor={n: data["gene_factor"][i] for i, n in enumerate(names)},
             uncovered=[str(t) for t in data["uncovered"]],
+            z=data["z"] if "z" in data.files else None,
         )
 
 
@@ -238,6 +290,7 @@ def build_lookup(cfg, paths, targets: list[str], gene_axis: list[str]) -> Lookup
     """Read every covered target's cells once and build the table."""
     from ..data.replogle import load_replogle_context
     from ..sanity.checks import mean_cp10k
+    from .screen_stats import meansq_cp10k, residual_z
 
     log = get_logger()
     screens = chosen_screens(cfg, paths)
@@ -270,7 +323,11 @@ def build_lookup(cfg, paths, targets: list[str], gene_axis: list[str]) -> Lookup
         controls = context.cells.loc[context.cells["is_control"].astype(bool), "row"].to_numpy()
         if controls.size > cfg.predict.lookup_control_cells:
             controls = np.sort(rng.choice(controls, cfg.predict.lookup_control_cells, replace=False))
-        control_cp10k = mean_cp10k(context.raw_counts(controls))
+        control_block = context.raw_counts(controls)
+        control_cp10k = mean_cp10k(control_block)
+        control_meansq = meansq_cp10k(control_block)
+        n_controls = control_block.shape[0]
+        del control_block
         axis_idx = context.challenge_idx
         if axis_idx.size and int(axis_idx.max()) >= n_genes:
             raise ValueError(
@@ -288,7 +345,7 @@ def build_lookup(cfg, paths, targets: list[str], gene_axis: list[str]) -> Lookup
 
         by_target = context.cells.loc[~context.cells["is_control"].astype(bool)]
         by_target = by_target.groupby(by_target["target_gene"].astype(str), observed=True)["row"]
-        full, half_a, half_b, cells = {}, {}, {}, {}
+        full, half_a, half_b, cells, moments = {}, {}, {}, {}, {}
         for start in range(0, len(mine), BATCH_TARGETS):
             batch = mine[start:start + BATCH_TARGETS]
             picked = {}
@@ -304,6 +361,7 @@ def build_lookup(cfg, paths, targets: list[str], gene_axis: list[str]) -> Lookup
                 own = block[offset:offset + n]
                 offset += n
                 full[target] = on_axis(own)
+                moments[target] = (mean_cp10k(own), meansq_cp10k(own))
                 half_a[target] = on_axis(own[: n // 2])
                 half_b[target] = on_axis(own[n // 2:])
                 cells[target] = n
@@ -312,18 +370,25 @@ def build_lookup(cfg, paths, targets: list[str], gene_axis: list[str]) -> Lookup
         screen_means[name] = mean
         # James–Stein per gene: the share of the residuals' power that is not
         # sampling noise. The noise of a full-depth change is var(A - B) / 4.
-        noise = np.mean([(half_a[t] - half_b[t]) ** 2 for t in mine], axis=0) / 4
-        power = np.mean([(full[t] - mean) ** 2 for t in mine], axis=0)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            factor = np.where(power > 0, 1.0 - noise / power, 0.0)
-        gene_factor[name] = np.clip(factor, 0.0, 1.0).astype(np.float32)
+        gene_factor[name] = denoise.gene_factor(
+            np.stack([full[t] for t in mine]), mean,
+            np.stack([half_a[t] for t in mine]), np.stack([half_b[t] for t in mine]),
+        )
+        # Each entry's z, against the screen's mean response on its own genes.
+        shift = mean[axis_idx]
         for target in mine:
             residual = full[target] - mean
             own_gene = gene_index.get(target)
             if own_gene is not None:
                 residual[own_gene] = 0.0
             reliability = spearman_brown(half_a[target] - mean, half_b[target] - mean)
-            rows_out[target] = (residual.astype(np.float32), reliability, name, cells[target])
+            z = np.zeros(n_genes, dtype=np.float32)
+            z_screen = residual_z(cells[target], *moments[target], n_controls, control_cp10k,
+                                  control_meansq, shift)
+            z[axis_idx[expressed]] = z_screen[expressed]
+            if own_gene is not None:
+                z[own_gene] = 0.0
+            rows_out[target] = (residual.astype(np.float32), reliability, name, cells[target], z)
         log.info(
             "  lookup: %s gives %d targets (median %d cells), mean response rms %.3f, "
             "median split-half reliability %.2f, %d genes kept by shrinkage",
@@ -348,6 +413,10 @@ def build_lookup(cfg, paths, targets: list[str], gene_axis: list[str]) -> Lookup
         screen_means=screen_means,
         gene_factor=gene_factor,
         uncovered=sorted(set(targets) - set(covered)),
+        z=(
+            np.stack([rows_out[t][4] for t in covered])
+            if covered else np.zeros((0, n_genes), dtype=np.float32)
+        ),
     )
 
 
@@ -358,14 +427,150 @@ def load_or_build(cfg, paths, run_paths, targets: list[str], gene_axis: list[str
     log = get_logger()
     path = run_paths.root / "sources" / "lookup.npz"
     key = lookup_key(cfg, chosen_screens(cfg, paths), targets, len(gene_axis))
+    shrinkage = cfg.predict.lookup_shrinkage
+    table = None
     if path.is_file():
-        table = LookupTable.load(path)
-        if table.key == key:
-            log.info("  lookup: cached table %s (%d targets)", path, len(table.targets))
-            return table
-        log.info("  lookup: cached table has key %s, this run needs %s; rebuilding",
-                 table.key, key)
-    table = build_lookup(cfg, paths, targets, gene_axis)
-    table.save(path)
-    log.info("  lookup: %d of %d targets covered -> %s", len(table.targets), len(targets), path)
+        cached = LookupTable.load(path)
+        if cached.key != key:
+            log.info("  lookup: cached table has key %s, this run needs %s; rebuilding",
+                     cached.key, key)
+        elif cached.z is None and shrinkage in denoise.NEEDS_Z:
+            log.info("  lookup: cached table %s predates the per-entry z that '%s' needs; "
+                     "rebuilding it from the same cells", path, shrinkage)
+        else:
+            log.info("  lookup: cached table %s (%d targets)", path, len(cached.targets))
+            table = cached
+    if table is None:
+        table = build_lookup(cfg, paths, targets, gene_axis)
+        table.save(path)
+        log.info("  lookup: %d of %d targets covered -> %s",
+                 len(table.targets), len(targets), path)
+    if shrinkage in denoise.NEEDS_BASIS:
+        table.bases = load_or_build_bases(cfg, paths, run_paths, sorted(set(table.screen)),
+                                          gene_axis)
     return table
+
+
+# --------------------------------------------------------------------------- #
+# the low-rank basis: every target a screen measured
+# --------------------------------------------------------------------------- #
+def basis_key(cfg, screen: str, path: Path, n_genes: int) -> str:
+    material = {
+        "screen": screen,
+        "path": str(path),
+        "n_genes": n_genes,
+        "seed": cfg.seed,
+        "cpm_floor": cfg.predict.cpm_floor,
+        "max_cells": cfg.predict.lookup_max_cells,
+        "control_cells": cfg.predict.lookup_control_cells,
+        "min_control_cp10k": cfg.predict.lookup_min_control_cp10k,
+        "k_max": cfg.predict.lookup_basis_rank_max,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def screen_groups(context, max_cells: int, control_cells: int, rng) -> tuple[
+        list[str], list[np.ndarray], np.ndarray]:
+    """Every target with at least `MIN_CELLS` cells, its rows capped at
+    `max_cells`, and the controls capped at `control_cells`, all drawn by `rng`."""
+    cells = context.cells
+    controls = cells.loc[cells["is_control"].astype(bool), "row"].to_numpy()
+    if controls.size > control_cells:
+        controls = rng.choice(controls, control_cells, replace=False)
+    perturbed = cells.loc[~cells["is_control"].astype(bool)]
+    grouped = perturbed.groupby(perturbed["target_gene"].astype(str), observed=True)["row"]
+    targets, groups = [], []
+    for target in sorted(grouped.groups):
+        rows = grouped.get_group(target).to_numpy()
+        if rows.size < MIN_CELLS:
+            continue
+        if rows.size > max_cells:
+            rows = rng.choice(rows, max_cells, replace=False)
+        targets.append(target)
+        groups.append(np.sort(rows))
+    return targets, groups, np.sort(controls)
+
+
+def build_basis(cfg, name: str, context, gene_axis: list[str]) -> LowRankBasis:
+    """The low-rank basis of one screen, on the challenge gene axis."""
+    from .screen_stats import log2_change, null_log2_sd, stream_moments
+
+    rng = np.random.default_rng(
+        int(hashlib.sha256(f"{cfg.seed}:lookup-basis:{name}".encode()).hexdigest()[:8], 16)
+    )
+    targets, groups, controls = screen_groups(
+        context, cfg.predict.lookup_max_cells, cfg.predict.lookup_control_cells, rng
+    )
+    moments = stream_moments(context, groups + [controls], cfg.resources.max_ram_gb,
+                             label=f"lookup basis {name}")
+    n_t = len(targets)
+    n_c, mean_c, meansq_c = moments.merged([n_t])
+    floor = cfg.predict.cpm_floor
+    expressed = mean_c >= cfg.predict.lookup_min_control_cp10k
+    lfc = log2_change(moments.mean[:n_t], mean_c, floor)
+    noise = null_log2_sd(moments.n[:n_t], n_c, mean_c, meansq_c, floor)
+    del moments
+    lfc[:, ~expressed] = 0.0
+    noise[:, ~expressed] = 0.0
+    residual = lfc - lfc.mean(axis=0, keepdims=True)
+    residual[:, ~expressed] = 0.0
+    column = {g: i for i, g in enumerate(context.genes["gene_symbol"].astype(str))}
+    for row, target in enumerate(targets):
+        if target in column:
+            residual[row, column[target]] = 0.0
+    fitted = denoise.fit_basis(residual, noise, cfg.predict.lookup_basis_rank_max, cfg.seed)
+    axis_idx = context.challenge_idx
+    components = np.zeros((fitted.k_max, len(gene_axis)), dtype=np.float32)
+    components[:, axis_idx] = fitted.components
+    scale = np.zeros(len(gene_axis), dtype=np.float32)
+    scale[axis_idx] = fitted.scale
+    get_logger().info(
+        "  lookup basis: %s, %d targets, %d components, top singular values %s",
+        name, n_t, fitted.k_max, np.round(fitted.singular_values[:5], 1).tolist(),
+    )
+    return LowRankBasis(components=components, scale=scale,
+                        singular_values=fitted.singular_values, n_targets=n_t)
+
+
+def save_basis(basis: LowRankBasis, key: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, components=basis.components, scale=basis.scale,
+                        singular_values=basis.singular_values,
+                        n_targets=np.array(basis.n_targets), key=np.array(key))
+
+
+def load_basis(path: Path) -> tuple[LowRankBasis, str]:
+    data = np.load(path, allow_pickle=False)
+    basis = LowRankBasis(components=data["components"], scale=data["scale"],
+                         singular_values=data["singular_values"],
+                         n_targets=int(data["n_targets"]))
+    return basis, str(data["key"])
+
+
+def load_or_build_bases(cfg, paths, run_paths, screens: list[str],
+                        gene_axis: list[str]) -> dict[str, LowRankBasis]:
+    """Each named screen's basis, from `sources/` when its key matches."""
+    from ..data.replogle import load_replogle_context
+
+    log = get_logger()
+    found = chosen_screens(cfg, paths)
+    out = {}
+    for name in screens:
+        path = run_paths.root / "sources" / f"lookup_basis_{name}.npz"
+        key = basis_key(cfg, name, found[name], len(gene_axis))
+        if path.is_file():
+            basis, cached_key = load_basis(path)
+            if cached_key == key and basis.k_max >= cfg.predict.lookup_rank:
+                log.info("  lookup basis: cached %s (%d components)", path, basis.k_max)
+                out[name] = basis
+                continue
+            log.info("  lookup basis: cached %s does not fit this run; rebuilding", path)
+        basis = build_basis(cfg, name, load_replogle_context(found[name]), gene_axis)
+        if basis.k_max < cfg.predict.lookup_rank:
+            raise ValueError(
+                f"screen {name} gives a basis of {basis.k_max} components, fewer than "
+                f"predict.lookup_rank ({cfg.predict.lookup_rank}); lower it"
+            )
+        save_basis(basis, key, path)
+        out[name] = basis
+    return out

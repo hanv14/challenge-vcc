@@ -263,8 +263,10 @@ def run_predict(cfg: Config) -> dict[str, Any]:
         )
     if lookup is not None:
         log.info(
-            "predict: lookup on, scale %.3g, weighting %s, shrinkage %s, %d of %d targets covered",
+            "predict: lookup on, scale %.3g, weighting %s, shrinkage %s (snr tau %.3g, "
+            "rank %d), %d of %d targets covered",
             cfg.predict.lookup_scale, cfg.predict.lookup_weighting, cfg.predict.lookup_shrinkage,
+            cfg.predict.lookup_snr_tau, cfg.predict.lookup_rank,
             len(lookup.targets), len(pert_counts.targets),
         )
 
@@ -414,7 +416,8 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                         log2fc,
                         lookup.change(
                             target, cfg.predict.lookup_scale, cfg.predict.lookup_weighting,
-                            cfg.predict.lookup_shrinkage,
+                            cfg.predict.lookup_shrinkage, cfg.predict.lookup_snr_tau,
+                            cfg.predict.lookup_rank,
                         ),
                         settings,
                     )
@@ -479,7 +482,8 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                     detail=(
                         {"lookup": lookup.describe(
                             target, cfg.predict.lookup_scale, cfg.predict.lookup_weighting,
-                            cfg.predict.lookup_shrinkage,
+                            cfg.predict.lookup_shrinkage, cfg.predict.lookup_snr_tau,
+                            cfg.predict.lookup_rank,
                         )}
                         if lookup is not None else {}
                     ),
@@ -546,6 +550,8 @@ def run_predict(cfg: Config) -> dict[str, Any]:
                 "scale": cfg.predict.lookup_scale,
                 "weighting": cfg.predict.lookup_weighting,
                 "shrinkage": cfg.predict.lookup_shrinkage,
+                "snr_tau": cfg.predict.lookup_snr_tau,
+                "rank": cfg.predict.lookup_rank,
                 "screens": list(cfg.predict.lookup_screens) or "all found",
                 **lookup.summary(),
             }

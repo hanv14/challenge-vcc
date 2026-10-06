@@ -223,3 +223,72 @@ def test_the_saved_table_reads_back_whole(table_and_inputs, tmp_path):
     target = table.targets[0]
     np.testing.assert_array_equal(back.change(target, 0.7, "reliability", "gene"),
                                   table.change(target, 0.7, "reliability", "gene"))
+
+
+# --------------------------------------------------------------------------- #
+# per-entry denoisers (D128)
+# --------------------------------------------------------------------------- #
+def test_each_entry_carries_a_z_where_the_residual_can_move(table_and_inputs):
+    _, table, _, _, _ = table_and_inputs
+    assert table.z is not None and table.z.shape == table.residual.shape
+    assert np.all(np.isfinite(table.z) | (table.residual != 0))
+    assert not np.any(table.z[table.residual == 0]), "a z where nothing can move"
+
+
+def test_snr_denoisers_shrink_and_never_move_a_zero(table_and_inputs):
+    _, table, _, _, _ = table_and_inputs
+    for target in table.targets:
+        raw = table.change(target, 1.0, "none", "none")
+        np.testing.assert_array_equal(table.change(target, 1.0, "none", "snr", tau=0.0), raw)
+        for kind in ("snr", "snr_hard"):
+            out = table.change(target, 1.0, "none", kind, tau=2.0)
+            assert np.all(np.abs(out) <= np.abs(raw) + 1e-7), kind
+            assert not np.any(out[raw == 0]), kind
+
+
+def test_a_table_cached_before_z_is_rebuilt_only_when_a_denoiser_needs_it(table_and_inputs):
+    cfg, table, paths, axis, targets = table_and_inputs
+    cfg = dataclasses.replace(cfg, run_name="old_cache")
+    run_paths = RunPaths(cfg)
+    cache = run_paths.root / "sources" / "lookup.npz"
+    old = dataclasses.replace(table, z=None)
+    old.save(cache)
+    stamp = cache.stat().st_mtime_ns
+    reused = lookup_mod.load_or_build(cfg, paths, run_paths, targets, axis)
+    assert reused.z is None and cache.stat().st_mtime_ns == stamp
+    rebuilt = lookup_mod.load_or_build(with_lookup(cfg, lookup_shrinkage="snr"), paths,
+                                       run_paths, targets, axis)
+    assert rebuilt.z is not None
+    np.testing.assert_array_equal(rebuilt.residual, table.residual)
+
+
+def test_the_lowrank_basis_is_built_cached_and_applied(table_and_inputs):
+    cfg, table, paths, axis, targets = table_and_inputs
+    cfg = with_lookup(dataclasses.replace(cfg, run_name="basis"), lookup_shrinkage="lowrank",
+                      lookup_rank=3, lookup_basis_rank_max=8)
+    run_paths = RunPaths(cfg)
+    first = lookup_mod.load_or_build(cfg, paths, run_paths, targets, axis)
+    assert set(first.bases) == set(first.screen)
+    files = {s: run_paths.root / "sources" / f"lookup_basis_{s}.npz" for s in first.bases}
+    stamps = {s: f.stat().st_mtime_ns for s, f in files.items()}
+    second = lookup_mod.load_or_build(cfg, paths, run_paths, targets, axis)
+    assert {s: f.stat().st_mtime_ns for s, f in files.items()} == stamps
+    for screen, basis in second.bases.items():
+        np.testing.assert_array_equal(basis.components, first.bases[screen].components)
+        assert basis.components.shape[1] == len(axis)
+    target = first.targets[0]
+    raw = first.change(target, 1.0, "none", "none")
+    low = first.change(target, 1.0, "none", "lowrank", rank=3)
+    assert not np.array_equal(low, raw) and not np.any(low[raw == 0])
+    both = first.change(target, 1.0, "none", "lowrank_snr", tau=1.0, rank=3)
+    assert not np.any(both[raw == 0]) and np.all(np.isfinite(both))
+
+
+def test_the_config_refuses_a_bad_denoiser(mini_cfg):
+    with pytest.raises(ConfigError):
+        with_lookup(mini_cfg, lookup_shrinkage="magic").predict.validate()
+    with pytest.raises(ConfigError):
+        with_lookup(mini_cfg, lookup_snr_tau=-1.0).predict.validate()
+    with pytest.raises(ConfigError):
+        with_lookup(mini_cfg, lookup_rank=50, lookup_basis_rank_max=20).predict.validate()
+    assert mini_cfg.predict.lookup_shrinkage == "none", "the default is raw (D127)"

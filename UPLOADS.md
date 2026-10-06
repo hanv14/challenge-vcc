@@ -44,6 +44,13 @@ Seed noise, from P0 against its parent: 0.0020 overall, 0.0081 on pds, 0.0044
 on fid, under 0.001 on the rest. A change is adopted when it beats its parent
 by more than twice that, about 0.004 overall (REDESIGN.md §5.1 rule 2).
 
+### Planned, hypotheses written before the upload
+
+| upload | command | parent | the one change | hypothesis, expected sign | adopt if |
+|---|---|---|---|---|---|
+| L6 | `scripts/probe.sh probe_l6 2 0.05 0.01 1.5 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L4 | shared 2.0 → 1.5 | Without the lookup, 1.5 traded +0.039 nmae for −0.040 fid (P2 − P1). The lookup now makes its own calls, so fid should lose less: nmae up, fid down by under 0.04, pds flat or up (less dilution). Overall 0 to +0.008. | > +0.004 over L4 |
+| L5 | `scripts/probe.sh probe_l5 2 0.05 0.01 2.0 --set predict.lookup_scale=1.5 --set predict.lookup_shrinkage=none` | L4 | lookup 1.0 → 1.5 | pds ignores the total's size but not the lookup's share of it: a larger share is diluted less by the shared part and the generator's noise, so pds and reach rise; larger changes on the truth's significant genes cost nmae, extra noise calls cost jac. pds +0.01 to +0.04; overall −0.005 to +0.01, the sign being the question. | > +0.004 over L4 |
+
 Per-context scores are not available: neither the `vcc` tool nor the website
 reports them (2026-10-06). Each row is the average over the round's contexts;
 REDESIGN.md §5.1 rule 3 says when a context-isolated pair is worth two uploads.

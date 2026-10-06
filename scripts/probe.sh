@@ -14,9 +14,10 @@
 #
 # The parent's predictions, submission and sanity reports are not copied;
 # everything else is (config, priors, checkpoints, policy, phase3, rehearsal),
-# because the four stages below read it. A lookup table built by an earlier
-# probe (runs/lookup_cache) is reused when present: the predict stage checks
-# its key and rebuilds it if anything it depends on differs.
+# because the four stages below read it. A lookup table (and a low-rank basis)
+# built by an earlier probe (runs/lookup_cache) is reused when present: the
+# predict stage checks its key and rebuilds it if anything it depends on
+# differs, or if a denoiser needs per-entry z that the cached table lacks.
 set -euo pipefail
 
 if [ $# -lt 5 ]; then
@@ -58,8 +59,10 @@ fi
     done
 } 2>&1 | tee "$run/probe.log"
 
-if [ -d "$run/sources" ] && [ ! -d runs/lookup_cache ]; then
+# Refresh the cache with anything this probe built or rebuilt (a table with
+# per-entry z, a low-rank basis); files it only copied in are older and skipped.
+if [ -d "$run/sources" ]; then
     mkdir -p runs/lookup_cache
-    cp "$run"/sources/* runs/lookup_cache/
+    cp -u "$run"/sources/* runs/lookup_cache/
 fi
 ls -l "$run/submission/"

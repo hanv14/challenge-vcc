@@ -555,8 +555,18 @@ class Predict:
     #: lookup changes by its James–Stein factor, the share of their power that
     #: is not sampling noise. Raw beat `gene` by 0.0195 on the leaderboard:
     #: the per-gene factor zeroed the sparse effects that tell targets apart
-    #: (D127).
+    #: (D127). The per-entry denoisers (D128, `predict/denoise.py`): `snr`
+    #: keeps each entry in proportion z² / (z² + lookup_snr_tau), `snr_hard`
+    #: keeps it whole where z² > lookup_snr_tau, `lowrank` projects it onto
+    #: the top `lookup_rank` components of every target the screen measured,
+    #: `lowrank_snr` adds the SNR-shrunk remainder to that projection.
     lookup_shrinkage: str = "none"
+    #: tau of the SNR denoisers, in z² units (z = entry / its sampling sd).
+    lookup_snr_tau: float = 1.0
+    #: Components kept by the low-rank denoisers.
+    lookup_rank: int = 20
+    #: Components stored in a screen's cached basis (`lookup_rank` at most this).
+    lookup_basis_rank_max: int = 200
     #: Cells read per target, and control cells per screen.
     lookup_max_cells: int = 1000
     lookup_control_cells: int = 5000
@@ -590,12 +600,21 @@ class Predict:
             )
         if self.lookup_min_control_cp10k < 0:
             raise ConfigError("predict.lookup_min_control_cp10k must not be negative")
+        if self.lookup_snr_tau < 0:
+            raise ConfigError("predict.lookup_snr_tau must not be negative (0 = raw)")
+        if self.lookup_basis_rank_max < 1:
+            raise ConfigError("predict.lookup_basis_rank_max must be at least 1")
+        if not 1 <= self.lookup_rank <= self.lookup_basis_rank_max:
+            raise ConfigError(
+                f"predict.lookup_rank must be between 1 and predict.lookup_basis_rank_max "
+                f"({self.lookup_basis_rank_max}); got {self.lookup_rank}"
+            )
 
 
 #: How a target's lookup change can be weighted (`predict.lookup_weighting`).
 LOOKUP_WEIGHTINGS = frozenset({"none", "reliability"})
 #: How a target's lookup change can be shrunk (`predict.lookup_shrinkage`).
-LOOKUP_SHRINKAGES = frozenset({"none", "gene"})
+LOOKUP_SHRINKAGES = frozenset({"none", "gene", "snr", "snr_hard", "lowrank", "lowrank_snr"})
 
 
 @dataclass(frozen=True)

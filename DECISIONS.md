@@ -3754,3 +3754,97 @@ the pds- and reach-like scores).
 **Alternative.** Keep `gene` as the default and pass `none` on every probe.
 Rejected: a default the leaderboard refuted by 0.0195 is a trap for the
 final round.
+
+### D128. An offline instrument for the lookup's denoiser, and four per-entry denoisers
+
+**Built, not yet measured.** The numbers come from the server
+(`scripts/measure/lookup_proxy.py`); this entry records the design and what
+the instrument must show before it is trusted.
+
+**The instrument.** Inside K562 genome-wide, every target's cells (at most
+`predict.lookup_max_cells`) are shuffled into four quarters, and the controls
+into two disjoint halves of at most `predict.lookup_control_cells`. Three
+pairings of the quarters give three half-A / half-B splits. Half A is built
+as the lookup builds its table, at half depth, and denoised; half B is the
+truth. Scored per target, in **residual space** (change minus the panel's
+mean change, own gene zeroed):
+
+* **pds-like**: the cosine rank of the target's own half-B residual among
+  every panel target's, mid-rank ties, the scorer's panel-wide target-gene
+  exclusion on the round's panel;
+* **nmae-like**: mean |denoised − half-B residual| / mean |half-B residual|
+  over the genes whose half-B residual is significant (z-test, BH 0.05,
+  at least 10 genes as the scorer's `min_gate_size`); 1.0 is no change;
+* **reach-like**: those genes ranked by our confidence (|denoised| ×
+  √control CP10K, a proxy for the p-value our cells would give), the deepest
+  depth whose signs are ≥ 90% right, over their number;
+* **pearson-like** (diagnostic): correlation of denoised half A with half B.
+
+Each arm's per-target values are averaged over the pairings and compared
+with raw by a 1,000-resample paired target bootstrap. Two panels: the
+round's covered targets (272 on the server) and all K562 targets (about
+9,800; at most 1,000 queries on pds).
+
+**Design choices, each against an alternative.**
+
+1. **Separate control halves.** One control mean shared by both halves would
+   put the same control noise into both, and every arm would agree with the
+   truth a little for nothing.
+2. **Residual space, not the full change.** The full change carries the
+   screen's mean response. In mini's K562 its rms is 0.099, and in a dry run
+   the reach-like score of every heavily shrunk arm read 0.6 because it
+   scored the mean's signs, not the targets'. On the server the mean is
+   0.0148 rms, but the instrument is about the target-specific part, so it
+   scores that part only.
+3. **A linear-scale z, not a log-scale standard error.** The first version
+   took each entry's sd by the delta method on the log change. Where a
+   target's half shows a low-expressed gene not at all, its own variance is 0
+   and its log change sits at the floor (−3 to −6), so the entry read as a
+   huge, certain effect, and the SNR denoiser kept exactly the floor
+   artifacts. The z now tests the target's mean CP10K against the screen's
+   mean response on the linear scale, with the target's variance never
+   below the null's: a gene at 0.1 counts per cell absent from 80 cells
+   reads z ≈ −1 (`screen_stats.residual_z`, tested).
+4. **Quarters, not two halves.** The per-gene James–Stein reference arm needs
+   two halves *within* half A, as the lookup splits a target's cells; three
+   pairings also average out one split's luck.
+5. **Per-target quarter draws.** Each target's quarters come from its own
+   seeded generator, so the round's moments are a subset of the all-target
+   pass and one pass over the screen serves both panels.
+
+**The gate.** The instrument is trusted only if raw beats `gene` on the
+pds-like and reach-like scores by more than twice their bootstrap sd, as L4
+beat L2 on the leaderboard (pds +0.070, reach +0.030, D127). It also reports
+nmae-like's direction (the leaderboard had `gene` better there by 0.017).
+If the gate fails on these direction scores, the L4 − L2 gap was more
+magnitude than direction (D127 compared them at the same scale while `gene`
+kept 1–3% of the energy), and the denoiser upload must then be made at
+matched energy, not at the same scale.
+
+**The denoisers** (`predict/denoise.py`, `predict.lookup_shrinkage`):
+
+| value | rule | knob |
+|---|---|---|
+| `snr` | residual × z² / (z² + τ) | `lookup_snr_tau` (z² units) |
+| `snr_hard` | residual where z² > τ, else 0 | `lookup_snr_tau` |
+| `lowrank` | projection onto the top k components of every target's residual in the screen, genes whitened by their no-effect sd | `lookup_rank` |
+| `lowrank_snr` | the projection plus the SNR-shrunk remainder | both |
+
+τ is in z² units, so a value chosen at half depth carries to the full-depth
+table: a real effect's z grows with √cells while noise's does not. A rank
+may not carry (`--depth quarter` measures the drift from quarter to half
+depth). No denoiser moves an entry the raw residual leaves at exactly 0.
+The low-rank basis needs every target of the screen, so `predict` builds it
+by one streaming pass over the screen's cells (`predict/screen_stats.py`)
+and caches it as `sources/lookup_basis_<screen>.npz`.
+
+**Unchanged by construction.** The raw table is bit-identical to the one L4
+used: the same cells, the same random draws, the same arithmetic (checked
+on mini: residuals, reliabilities, per-gene factors and every `none` and
+`gene` change equal to the bit). The table now also stores each entry's z;
+a cached table without it is reused for `none` and `gene` and rebuilt, from
+the same cells, only when an SNR denoiser asks for it. `probe.sh` now
+refreshes `runs/lookup_cache` after each probe, so a rebuilt table and a
+basis are reused by the next one.
+
+**Default unchanged:** `lookup_shrinkage: none` until an upload wins.
