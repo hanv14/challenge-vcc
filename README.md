@@ -501,8 +501,11 @@ leaderboard uploads, through `--set` on the `predict` stage:
 
 ```bash
 python -m vccp predict --config configs/server.yaml --run-name <run> --force \
-    --set predict.lookup_scale=0.5 --set predict.lookup_shrinkage=gene
+    --set predict.lookup_scale=1.0
 ```
+
+`predict.lookup_shrinkage` is `none` (raw) by default; `gene`, the per-gene
+James–Stein factor, scored 0.0195 below raw on the leaderboard (D127).
 
 For a whole paired probe (copy a finished parent run, change one setting,
 rebuild the submission), use `scripts/probe.sh`; its header has the usage.

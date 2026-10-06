@@ -551,10 +551,12 @@ class Predict:
     #: How each target's lookup change is weighted: `none` (1), or
     #: `reliability`, its split-half reliability in the screen, in [0, 1].
     lookup_weighting: str = "none"
-    #: `gene` multiplies each gene's lookup changes by its James–Stein factor,
-    #: the share of their power that is not sampling noise; `none` adds them
-    #: raw. At a few hundred cells per target, raw is mostly noise (D124).
-    lookup_shrinkage: str = "gene"
+    #: `none` adds each target's residual raw; `gene` multiplies each gene's
+    #: lookup changes by its James–Stein factor, the share of their power that
+    #: is not sampling noise. Raw beat `gene` by 0.0195 on the leaderboard:
+    #: the per-gene factor zeroed the sparse effects that tell targets apart
+    #: (D127).
+    lookup_shrinkage: str = "none"
     #: Cells read per target, and control cells per screen.
     lookup_max_cells: int = 1000
     lookup_control_cells: int = 5000

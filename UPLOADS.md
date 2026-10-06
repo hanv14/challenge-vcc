@@ -12,15 +12,37 @@ Anchor set for every validation upload so far:
 
 ## Validation round
 
-| upload | run dir | parent | the one change | thr / effect / shared | overall | pds | expr | nmae | fid | reach | jac | D |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| v4 | `runs/server` | — | (old model, 98% shared) | 0.1 / 0.5 / — | −0.014 | −0.006 | 0 | −0.037 | −0.015 | −0.002 | −0.027 | D113, D117 |
-| v5 | `runs/server_12k` | — | — | 0.0 / 1.0 / — | −0.083 | −0.004 | 0 | −0.504 | +0.009 | +0.004 | −0.001 | D113 |
-| v6 | `runs/server_fix` | — | — | 0.25 / 0.25 / — | −0.242 | −0.016 | 0 | +0.002 | −1.340 | −0.019 | −0.078 | D113 |
-| v7 | `runs/server_cal` | — | — | 0.05 / 1.5 / — | −0.0673 | −0.0059 | 0 | −0.0860 | −0.2537 | −0.0145 | −0.0435 | D116 |
-| v8 | `runs/server_cal_s05` | v7 | generator setting | 0.1 / 0.5 / — | −0.1534 | −0.0079 | 0 | −0.0011 | −0.8257 | −0.0191 | −0.0668 | D116 |
-| shared 2 / specific 1 | `runs/server_shared` | — | — | 0.05 / 1.0 / 2.0 | **−0.0318** | −0.0063 | 0 | −0.0907 | −0.0589 | −0.0090 | −0.0256 | D118 |
-| single scale 2 | `runs/server_single2` | shared 2 / specific 1 | shared scale = effect scale | 0.05 / 2.0 / — | −0.0641 | −0.0037 | 0 | −0.1599 | −0.1673 | −0.0158 | −0.0378 | D118 |
+| upload | run dir | parent | the one change | thr / effect / shared | lookup | overall | pds | expr | nmae | fid | reach | jac | D |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| v4 | `runs/server` | — | (old model, 98% shared) | 0.1 / 0.5 / — | — | −0.014 | −0.006 | 0 | −0.037 | −0.015 | −0.002 | −0.027 | D113, D117 |
+| v5 | `runs/server_12k` | — | — | 0.0 / 1.0 / — | — | −0.083 | −0.004 | 0 | −0.504 | +0.009 | +0.004 | −0.001 | D113 |
+| v6 | `runs/server_fix` | — | — | 0.25 / 0.25 / — | — | −0.242 | −0.016 | 0 | +0.002 | −1.340 | −0.019 | −0.078 | D113 |
+| v7 | `runs/server_cal` | — | — | 0.05 / 1.5 / — | — | −0.0673 | −0.0059 | 0 | −0.0860 | −0.2537 | −0.0145 | −0.0435 | D116 |
+| v8 | `runs/server_cal_s05` | v7 | generator setting | 0.1 / 0.5 / — | — | −0.1534 | −0.0079 | 0 | −0.0011 | −0.8257 | −0.0191 | −0.0668 | D116 |
+| shared 2 / specific 1 | `runs/server_shared` | — | — | 0.05 / 1.0 / 2.0 | — | −0.0318 | −0.0063 | 0 | −0.0907 | −0.0589 | −0.0090 | −0.0256 | D118 |
+| single scale 2 | `runs/server_single2` | shared 2 / specific 1 | shared scale = effect scale | 0.05 / 2.0 / — | — | −0.0641 | −0.0037 | 0 | −0.1599 | −0.1673 | −0.0158 | −0.0378 | D118 |
+| P0 | `runs/probe_p0` | shared 2 / specific 1 | generator seed 2 → 3 (the noise floor) | 0.05 / 1.0 / 2.0 | — | −0.0298 | +0.0018 | 0 | −0.0912 | −0.0545 | −0.0092 | −0.0256 | D125 |
+| P1 | `runs/probe_p1` | shared 2 / specific 1 | model's specific part off (effect 1.0 → 0.01) | 0.05 / 0.01 / 2.0 | — | −0.0224 | −0.0062 | 0 | −0.0677 | −0.0291 | −0.0113 | −0.0202 | D125 |
+| P2 | `runs/probe_p2` | P1 | shared 2.0 → 1.5 | 0.05 / 0.01 / 1.5 | — | −0.0255 | −0.0091 | 0 | −0.0291 | −0.0690 | −0.0145 | −0.0311 | D125 |
+| P3 | `runs/probe_p3` | P1 | shared 2.0 → 3.0 | 0.05 / 0.01 / 3.0 | — | −0.0320 | −0.0040 | 0 | −0.1730 | +0.0018 | −0.0095 | −0.0074 | D125 |
+| P4 | `runs/probe_p4` | shared 2 / specific 1 | model's specific part halved (effect 1.0 → 0.5) | 0.05 / 0.5 / 2.0 | — | −0.0244 | −0.0056 | 0 | −0.0741 | −0.0342 | −0.0114 | −0.0213 | D125 |
+| L1 | `runs/probe_l1` | P1 | lookup on at 0.5, gene-shrunk | 0.05 / 0.01 / 2.0 | 0.5, gene | −0.0151 | +0.0071 | 0 | −0.0523 | −0.0244 | −0.0019 | −0.0189 | D126 |
+| L2 | `runs/probe_l2` | L1 | lookup scale 0.5 → 1.0 | 0.05 / 0.01 / 2.0 | 1.0, gene | −0.0097 | +0.0197 | 0 | −0.0444 | −0.0206 | +0.0049 | −0.0177 | D126 |
+| L3 | `runs/probe_l3` | L2 | reliability weighting | 0.05 / 0.01 / 2.0 | 1.0, gene, reliability | −0.0193 | +0.0011 | 0 | −0.0591 | −0.0275 | −0.0108 | −0.0195 | D127 |
+| L4 | `runs/probe_l4` | L2 | shrinkage gene → none (raw) | 0.05 / 0.01 / 2.0 | 1.0, none | **+0.0098** | +0.0897 | 0 | −0.0615 | +0.0047 | +0.0352 | −0.0093 | D127 |
+
+The probes P0–L4 were built by `scripts/probe.sh` (commit `aca4f08`; `fc03171`
+changed documents only) from the parent run `runs/server_shared`, at generator
+seed 2 unless the row says otherwise, so each differs from its parent in the
+one change named. The lookup reads K562 genome-wide only (272 of 300 targets;
+table `runs/lookup_cache`, D126). "Effect 0.01" stands for "the model's
+specific part off": `shared_scale` needs a positive effect scale, and at 0.01
+the 0.05 threshold no longer removes anything either (D125). **L4 is the
+parent of everything that follows.**
+
+Seed noise, from P0 against its parent: 0.0020 overall, 0.0081 on pds, 0.0044
+on fid, under 0.001 on the rest. A change is adopted when it beats its parent
+by more than twice that, about 0.004 overall (REDESIGN.md §5.1 rule 2).
 
 Per-context scores are not available: neither the `vcc` tool nor the website
 reports them (2026-10-06). Each row is the average over the round's contexts;

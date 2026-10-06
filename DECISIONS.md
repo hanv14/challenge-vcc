@@ -3538,6 +3538,10 @@ to this gap. Uploads are the only measurement of it.
 
 ### D124. The K562 lookup: a target-specific change measured in a Replogle screen, off by default
 
+**Superseded in part by D127.** "Why per-gene shrinkage is on by default"
+did not survive the leaderboard: raw beat it by 0.0195, and the default is
+now `none`.
+
 **Decision.** `vccp/predict/lookup.py` builds, once per run, a table over the
 challenge gene axis for every round target a Replogle screen measured. Each
 row is the target's change in that screen (log2 of the ratio of mean CP10K
@@ -3602,3 +3606,151 @@ leakage scope. Per-cell mode refuses it, as it refuses the shared scale.
 * `with_addition` reaching the cells at its own size at every effect scale;
 * a re-run of `predict` on a finished mini pipeline, where covered targets
   move, uncovered ones do not, and item 12 reports the deviation.
+
+## The redesign: validation-leaderboard probes
+
+### D125. The model's target-specific part is removed
+
+**Measured.** Five paired uploads from `runs/server_shared`, all built by
+`scripts/probe.sh`, seed 2 unless stated (UPLOADS.md). Leaderboard scale,
+difference from the named parent:
+
+| probe | parent | the one change | Δ overall | Δ pds | Δ nmae | Δ fid | Δ reach | Δ jac |
+|---|---|---|---|---|---|---|---|---|
+| P0 | shared 2 / specific 1 | seed 2 → 3 | +0.0020 | +0.0081 | −0.0005 | +0.0044 | −0.0002 | 0.0000 |
+| P1 | shared 2 / specific 1 | specific part off (effect 0.01) | **+0.0094** | +0.0001 | +0.0230 | +0.0298 | −0.0023 | +0.0054 |
+| P4 | shared 2 / specific 1 | specific part halved (effect 0.5) | +0.0074 | +0.0007 | +0.0166 | +0.0247 | −0.0024 | +0.0043 |
+| P2 | P1 | shared 2.0 → 1.5 | −0.0031 | −0.0029 | +0.0386 | −0.0399 | −0.0032 | −0.0109 |
+| P3 | P1 | shared 2.0 → 3.0 | −0.0096 | +0.0022 | −0.1053 | +0.0309 | +0.0018 | +0.0128 |
+
+**Readings.**
+
+1. **The noise floor is 0.002 overall, 0.008 on pds.** One seed pair, so it
+   is a floor of one sample, not an sd. The adoption bar is twice it, about
+   0.004 overall (REDESIGN.md §5.1 rule 2). pds is the noisiest member: a
+   pds difference under about 0.016 says nothing by itself.
+2. **The model's specific part costs points.** Turning it off gains 0.0094,
+   over twice the bar, and almost all of it on nmae (+0.023) and fid (+0.030):
+   its wrong-signed and oversized calls on genes the truth calls significant.
+   It earned nothing on pds (+0.0001), the member that measures
+   discrimination, which is the only reason to keep a target-specific part.
+3. **Half of it is no better than none.** P4 − P1 = −0.0020 overall, within
+   noise; nothing says any fraction of it is worth keeping.
+4. **The shared scale sits at 2.0.** 1.5 trades +0.039 nmae for −0.040 fid,
+   3.0 trades +0.031 fid for −0.105 nmae; both lose overall. The optimum is
+   near 2.0 for a prediction with no target-specific part. With one (the
+   lookup), it is measured again (L6).
+
+**Decision.** The model's target-specific part is off in every recipe from
+here: effect scale 0.01 with shared scale 2.0, through `predict.override_*`.
+The model stays as the source of the shared part. REDESIGN.md §4 rank 1 is
+closed.
+
+**Known confound.** "Off" is effect scale 0.01, not 0: `with_shared_scale`
+and `with_addition` divide by the effect scale, so it must be positive. At
+0.01 the model's own deviation is 1% of its size (D117 measured such a
+part at about 0.05 rms, so about 0.0005 here), and the 0.05 threshold,
+applied before the scale, removes nothing from the shared part or the
+lookup. So P1 also differs from its parent in having
+effectively no threshold. D114 measured thresholds 0–0.1 within 0.004 of
+each other on the rehearsal, so the confound is small; it is named here so
+that the final recipe states it (task 6 writes these settings into the
+config, not into override flags).
+
+**Alternative.** Keep a fraction of the specific part (P4). Rejected on the
+numbers: it scores level with none.
+
+### D126. The K562 lookup transfers to the challenge's cell lines
+
+**Measured.** The lookup table the server built for probe L1
+(`runs/probe_l1/sources/lookup.json`, cached in `runs/lookup_cache`):
+
+* 272 of 300 targets covered, all from K562 genome-wide (RPE1 and K562
+  essential cover none, D122); median **171.5** cells per target;
+* median split-half reliability **0.152**: each raw residual is about 85%
+  sampling noise, and its correlation with its own true K562 signal is about
+  √0.152 ≈ 0.39 (D101);
+* K562's mean response over these targets has rms **0.0148** log2, against
+  about 0.17–0.20 for the shared profile the leaderboard rewards (D117);
+* the per-gene shrinkage kept **2,563** genes at a median factor of
+  **0.196**: about 1–3% of the lookup's energy;
+* uncovered (28): ABCD1 CAPRIN2 EPHB2 HEATR6 KIF21B MAPK7 MLKL NICN1 PARP3
+  PBLD PDK3 PHF11 PSMB9 RAB11FIP5 SEMA4F SLC44A1 SNN SOCS5 SPATA20 TAF4
+  TBC1D19 TDRD7 TESK2 TMEM104 TMEM79 TTBK2 TXNDC16 ZC2HC1A.
+
+Uploads (P1 = shared 2.0, model's specific part off):
+
+| probe | lookup | overall | Δ vs P1 | pds | nmae | fid | reach | jac |
+|---|---|---|---|---|---|---|---|---|
+| P1 | — | −0.0224 | — | −0.0062 | −0.0677 | −0.0291 | −0.0113 | −0.0202 |
+| L1 | 0.5, gene-shrunk | −0.0151 | +0.0073 | +0.0071 | −0.0523 | −0.0244 | −0.0019 | −0.0189 |
+| L2 | 1.0, gene-shrunk | −0.0097 | +0.0127 | +0.0197 | −0.0444 | −0.0206 | +0.0049 | −0.0177 |
+| L4 | 1.0, raw | **+0.0098** | **+0.0322** | +0.0897 | −0.0615 | +0.0047 | +0.0352 | −0.0093 |
+
+**Readings.**
+
+1. **Target-specific knowledge from K562 helps in cell lines it never saw.**
+   Every lookup arm beats P1, on every member that measures target
+   specificity: pds (scale-free discrimination) and reach (the ordering of
+   genes by sign confidence). L4 is the first upload above the organizers'
+   oracle mean response (0), by +0.0098. REDESIGN.md §0's "anything above 0
+   must come from target-specific effects that hold in a cell line we never
+   saw perturbed" has its first instance.
+2. **Most of the gain is direction.** Of L4's +0.0322 over P1, pds and reach
+   carry +0.142 of the members' summed +0.193. They are the members a global
+   scale cannot buy: pds ignores size, reach ranks.
+3. **The K562 mean is not the challenge's shared shift.** It is over 10×
+   smaller (0.0148 against about 0.17–0.20 rms). Where the challenge's shared
+   shift comes from stays open; "K562's mean as the shared part" is a poor
+   candidate.
+4. **The lookup is mostly noise and still wins.** Each covered target's
+   residual correlates about 0.39 with its own K562 signal. A denoiser that
+   raises that correlation entry by entry is the largest lever left
+   (REDESIGN.md §4; D127).
+
+**Decision.** The lookup is part of the recipe: `predict.lookup_scale` 1.0
+on top of P1 (L4). It stays off by default in the config until task 6 writes
+the final recipe, so mini and every older run are unchanged.
+
+### D127. Per-gene shrinkage is refuted; the default becomes `lookup_shrinkage: none`
+
+**Measured.** L4 (raw) against L2 (per-gene James–Stein), both lookup 1.0 on
+P1, one change:
+
+| | overall | pds | nmae | fid | reach | jac |
+|---|---|---|---|---|---|---|
+| L4 − L2 | **+0.0195** | **+0.0700** | −0.0171 | +0.0253 | **+0.0303** | +0.0084 |
+| L3 − L2 (reliability weighting) | −0.0096 | −0.0186 | −0.0147 | −0.0069 | −0.0157 | −0.0018 |
+
+**Why the shrinkage failed.** It pooled each gene's power across all
+targets: a gene's factor is 1 − noise / power, both averaged over targets.
+Target-specific effects are sparse, so in a gene where a few targets move
+strongly and the rest not at all, the average power is barely above the
+noise and the factor is small for every target, including the few that
+carry the signal. The factor kept 2,563 genes at a median 0.196: about 1–3%
+of the lookup's energy, and it zeroed exactly the large, rare entries that
+tell targets apart. Raw beat it by 0.070 on pds and 0.030 on reach, the two
+scale-free members.
+
+**What the shrinkage did get right.** nmae: raw is 0.017 worse. nmae scores
+size on the truth's significant genes, where shrinking an uncertain
+estimate toward 0 lowers the expected error. A per-entry denoiser should
+keep that gain and give back none of pds and reach.
+
+**L3 says nothing about weighting the raw lookup.** Reliability weighting
+multiplied the already-shrunk lookup by each target's reliability (median
+0.15), so L3 is mostly L2 at a sixth of its size, and it scored below L1
+(scale 0.5). L1–L3 measured the shrinkage's remnant, so they say nothing
+about the raw lookup's best scale or about weighting it. L5 measures the
+first.
+
+**Decision.** `predict.lookup_shrinkage` defaults to `none`. `gene` stays
+available, so L1–L3 can be rebuilt. The lookup is still off by default
+(`lookup_scale` 0), so no default run changes. Per-entry denoisers (SNR
+shrinkage, low rank) are the next candidates, chosen on an offline
+instrument that must first reproduce this result (raw above gene-shrunk on
+the pds- and reach-like scores).
+
+**Alternative.** Keep `gene` as the default and pass `none` on every probe.
+Rejected: a default the leaderboard refuted by 0.0195 is a trap for the
+final round.

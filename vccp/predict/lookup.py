@@ -27,15 +27,17 @@ residual between two random halves of its cells, clipped to [0, 1]. With
 `predict.lookup_weighting: reliability` it multiplies the target's change, so
 a target whose screen measurement is mostly noise contributes little.
 
-**Per-gene shrinkage** (`predict.lookup_shrinkage: gene`, the default). At a
-few hundred cells most of a residual is sampling noise, spread over thousands
-of genes, and adding it to every target would make the DE test call noise.
-For each gene and screen, the noise in a full-depth change is estimated from
+**Per-gene shrinkage** (`predict.lookup_shrinkage: gene`; the default is
+`none`, raw, since the leaderboard refuted it, D127). At a few hundred cells
+most of a residual is sampling noise, spread over thousands of genes. For
+each gene and screen, the noise in a full-depth change is estimated from
 the halves as mean_t (half_A − half_B)² / 4, and the residual's total power
 as mean_t residual²; the gene's residuals are multiplied by
 max(0, 1 − noise / total), the James–Stein factor. A gene whose residuals are
 no larger than their noise goes to 0; one with real between-target variation
-keeps most of it. The factors are stored with the table and applied when a
+keeps most of it. Because it pools each gene across targets, it also zeroes
+the large, rare entries that distinguish targets, which is why raw scored
+0.0195 higher. The factors are stored with the table and applied when a
 change is asked for, so the cache does not depend on the choice.
 
 The table depends on the data, the round's targets, the gene axis and the
