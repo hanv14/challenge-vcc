@@ -280,12 +280,14 @@ about evidence, not budget.
    but for the generator seed (`--seed 3`). Its distance from the parent, per
    member, is the leaderboard's own noise for our submissions. A change is
    adopted only if it beats the parent by more than **twice** that.
-3. **Changes must hold per context.** A gain can be an artefact of A, B and C.
-   The leaderboard shows per-context scores, so every upload gives three
-   paired differences at no extra cost. A change is adopted only if its mean
-   gain beats twice the noise **and** it gains in at least two of the three
-   contexts. The spread of a setting's score across A, B and C is also the
-   first estimate of how far it can miss on D, E and F.
+3. **Per-context checks only where they decide something.** Neither the `vcc`
+   tool nor the website reports per-context scores (confirmed 2026-10-06), so
+   an upload gives only the average over A, B and C. A change is adopted on
+   its overall gain: more than twice the seed noise, about 0.004 (P0). For the
+   one or two decisions that matter most (the denoiser, the final recipe), a
+   context-isolated pair measures it per context: the candidate in one
+   context, the parent in the other two. At 2 uploads a day that is used
+   sparingly; offline checks carry the rest.
 4. **Prefer rules to constants.** A scale that is right for A/B/C may not be
    right for D/E/F. Settings are expressed relative to quantities the new
    context provides (the model's own shared estimate, the controls'
@@ -401,7 +403,7 @@ test-phase deadline is not yet known; the last row runs to it.
 |---|---|---|
 | Oct 1–3 | P0–P4 uploads (§5.3); measurements 3 and 4 on the server | the noise floor, `a_m`, whether the model's specific part goes; D124+ |
 | Oct 2–6 | Code: the source/composer split; the K562 lookup source; the per-gene sign-confidence and per-target strength factors (ranks 2–4) | tests; mini `all` passing |
-| Oct 6–13 | Paired uploads for ranks 2, 3, 4, then 5–7 if measurement 4 earns them; per-context reading of every upload | the validation-best recipe, with per-member, per-context evidence |
+| Oct 6–13 | Paired uploads for ranks 2, 3, 4, then 5–7 if measurement 4 earns them | the validation-best recipe, with per-member evidence |
 | Oct 13–19 | Final-round path: `configs/server_final.yaml`, a fast `all` with the rehearsal off the critical path (≈ 5–6 h); **a full rehearsal on the validation release reproducing the validation-best upload bit for bit**; `FINAL_ROUND.md` rewritten | a tested procedure |
 | Oct 19–21 | Buffer; the validation-best recipe frozen and tagged | — |
 | Oct 22 (T) | data prep (a few hours) and the run; **safe upload** = the validation-best recipe | the first test upload within about 24 h of the release |
@@ -457,7 +459,7 @@ deviation (DECISIONS.md and `checklist.json`).
    leaderboard as the instrument, the rehearsal off the critical path. Or what
    to change.
 2. The test-phase deadline (the release is 2026-10-22).
-3. The per-context scores of the past uploads, if the leaderboard still shows
-   them, for `UPLOADS.md`: they give a first cross-context spread for free.
+3. ~~Per-context scores~~: not reported by the `vcc` tool or the website
+   (2026-10-06); rule 3 of §5.1 was changed accordingly.
 4. Run P0–P4 and measurements 3–4. The commands are in the session message
    that accompanies this file.

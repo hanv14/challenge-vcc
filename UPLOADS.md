@@ -22,9 +22,9 @@ Anchor set for every validation upload so far:
 | shared 2 / specific 1 | `runs/server_shared` | — | — | 0.05 / 1.0 / 2.0 | **−0.0318** | −0.0063 | 0 | −0.0907 | −0.0589 | −0.0090 | −0.0256 | D118 |
 | single scale 2 | `runs/server_single2` | shared 2 / specific 1 | shared scale = effect scale | 0.05 / 2.0 / — | −0.0641 | −0.0037 | 0 | −0.1599 | −0.1673 | −0.0158 | −0.0378 | D118 |
 
-The leaderboard also shows each context's score. From P0 on, each row is
-followed by its per-context line (`A / B / C` overall, and per member where
-shown), because rule 3 of REDESIGN.md §5.1 reads them.
+Per-context scores are not available: neither the `vcc` tool nor the website
+reports them (2026-10-06). Each row is the average over the round's contexts;
+REDESIGN.md §5.1 rule 3 says when a context-isolated pair is worth two uploads.
 
 Rows before this file existed were not designed as paired experiments;
 v4, v5, v6 and v7 differ in model and setting at once (D115).
