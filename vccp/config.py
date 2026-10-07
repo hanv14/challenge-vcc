@@ -567,6 +567,10 @@ class Predict:
     lookup_rank: int = 20
     #: Components stored in a screen's cached basis (`lookup_rank` at most this).
     lookup_basis_rank_max: int = 200
+    #: Rescale the denoised table by one global factor so its total rms over
+    #: the covered targets equals the raw table's (D130): the denoiser then
+    #: changes which entries carry the lookup, not how large it is.
+    lookup_match_energy: bool = False
     #: Cells read per target, and control cells per screen.
     lookup_max_cells: int = 1000
     lookup_control_cells: int = 5000

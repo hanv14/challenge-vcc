@@ -292,3 +292,20 @@ def test_the_config_refuses_a_bad_denoiser(mini_cfg):
     with pytest.raises(ConfigError):
         with_lookup(mini_cfg, lookup_rank=50, lookup_basis_rank_max=20).predict.validate()
     assert mini_cfg.predict.lookup_shrinkage == "none", "the default is raw (D127)"
+
+
+def test_matched_energy_keeps_the_raw_tables_size_and_only_redistributes_it(table_and_inputs):
+    _, table, _, _, _ = table_and_inputs
+    raw = np.stack([table.change(t, 1.0, "none", "none") for t in table.targets])
+    assert table.energy_factor("none") == 1.0
+    for kind, kwargs in (("snr", {"tau": 4.0}), ("gene", {})):
+        plain = np.stack([table.change(t, 1.0, "none", kind, **kwargs) for t in table.targets])
+        matched = np.stack([table.change(t, 1.0, "none", kind, match_energy=True, **kwargs)
+                            for t in table.targets])
+        factor = table.energy_factor(kind, **kwargs)
+        assert factor > 1.0, f"{kind} shrinks, so matching its energy scales it up"
+        np.testing.assert_allclose(matched, factor * plain, rtol=1e-5)
+        np.testing.assert_allclose(np.sqrt(np.mean(matched.astype(np.float64) ** 2)),
+                                   np.sqrt(np.mean(raw.astype(np.float64) ** 2)), rtol=1e-4)
+    record = table.describe(table.targets[0], 1.0, "none", "snr", tau=4.0, match_energy=True)
+    assert record["energy_factor"] == table.energy_factor("snr", tau=4.0)

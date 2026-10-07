@@ -8,7 +8,8 @@ known yet, the section says so and names the measurement that will give it.
 **Status: approved 2026-10-01.** Built so far: the K562 lookup (rank 2, D124), off by default.
 Measured since (UPLOADS.md): rank 1 closed, the model's specific part removed (D125);
 the raw lookup transfers, +0.0098, the first upload above 0 (D126); per-gene shrinkage
-refuted (D127).
+refuted (D127). Since: L6, shared 1.5 with the raw lookup, +0.0189 (D129); the
+lookup proxy passes its gate on the round's targets and picks soft SNR (D130).
 `CLAUDE.md` stays the specification; §7 lists the changes I recommend to it.
 
 ---

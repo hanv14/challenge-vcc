@@ -514,6 +514,11 @@ the screen on first use: one streaming pass over its cells, cached in
 `sources/lookup_basis_<screen>.npz` and, through `probe.sh`, in
 `runs/lookup_cache/`.
 
+`predict.lookup_match_energy: true` rescales a denoised table by one global
+factor so its total size equals the raw table's (D130): on the leaderboard
+pds follows the lookup's share of the change (D129), so a denoiser compared
+at the same scale would only measure dilution.
+
 They are chosen offline first, inside K562, with the lookup proxy:
 
 ```bash

@@ -29,7 +29,9 @@ Anchor set for every validation upload so far:
 | L1 | `runs/probe_l1` | P1 | lookup on at 0.5, gene-shrunk | 0.05 / 0.01 / 2.0 | 0.5, gene | −0.0151 | +0.0071 | 0 | −0.0523 | −0.0244 | −0.0019 | −0.0189 | D126 |
 | L2 | `runs/probe_l2` | L1 | lookup scale 0.5 → 1.0 | 0.05 / 0.01 / 2.0 | 1.0, gene | −0.0097 | +0.0197 | 0 | −0.0444 | −0.0206 | +0.0049 | −0.0177 | D126 |
 | L3 | `runs/probe_l3` | L2 | reliability weighting | 0.05 / 0.01 / 2.0 | 1.0, gene, reliability | −0.0193 | +0.0011 | 0 | −0.0591 | −0.0275 | −0.0108 | −0.0195 | D127 |
-| L4 | `runs/probe_l4` | L2 | shrinkage gene → none (raw) | 0.05 / 0.01 / 2.0 | 1.0, none | **+0.0098** | +0.0897 | 0 | −0.0615 | +0.0047 | +0.0352 | −0.0093 | D127 |
+| L4 | `runs/probe_l4` | L2 | shrinkage gene → none (raw) | 0.05 / 0.01 / 2.0 | 1.0, none | +0.0098 | +0.0897 | 0 | −0.0615 | +0.0047 | +0.0352 | −0.0093 | D127 |
+| L5 | `runs/probe_l5` | L4 | lookup scale 1.0 → 1.5 | 0.05 / 0.01 / 2.0 | 1.5, none | +0.0050 | +0.1268 | 0 | −0.1333 | +0.0055 | +0.0391 | −0.0079 | D129 |
+| L6 | `runs/probe_l6` | L4 | shared 2.0 → 1.5 | 0.05 / 0.01 / 1.5 | 1.0, none | **+0.0189** | +0.1146 | 0 | −0.0195 | −0.0073 | +0.0393 | −0.0137 | D129 |
 
 The probes P0–L4 were built by `scripts/probe.sh` (commit `aca4f08`; `fc03171`
 changed documents only) from the parent run `runs/server_shared`, at generator
@@ -38,7 +40,9 @@ one change named. The lookup reads K562 genome-wide only (272 of 300 targets;
 table `runs/lookup_cache`, D126). "Effect 0.01" stands for "the model's
 specific part off": `shared_scale` needs a positive effect scale, and at 0.01
 the 0.05 threshold no longer removes anything either (D125). **L4 is the
-parent of everything that follows.**
+parent of L5 and L6; L6 (rank 847) is the parent of everything after.**
+L5 and L6 ran on code at `c105982` or later; the raw lookup is bit-identical
+there (D128).
 
 Seed noise, from P0 against its parent: 0.0020 overall, 0.0081 on pds, 0.0044
 on fid, under 0.001 on the rest. A change is adopted when it beats its parent
@@ -48,8 +52,11 @@ by more than twice that, about 0.004 overall (REDESIGN.md §5.1 rule 2).
 
 | upload | command | parent | the one change | hypothesis, expected sign | adopt if |
 |---|---|---|---|---|---|
-| L6 | `scripts/probe.sh probe_l6 2 0.05 0.01 1.5 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L4 | shared 2.0 → 1.5 | Without the lookup, 1.5 traded +0.039 nmae for −0.040 fid (P2 − P1). The lookup now makes its own calls, so fid should lose less: nmae up, fid down by under 0.04, pds flat or up (less dilution). Overall 0 to +0.008. | > +0.004 over L4 |
-| L5 | `scripts/probe.sh probe_l5 2 0.05 0.01 2.0 --set predict.lookup_scale=1.5 --set predict.lookup_shrinkage=none` | L4 | lookup 1.0 → 1.5 | pds ignores the total's size but not the lookup's share of it: a larger share is diluted less by the shared part and the generator's noise, so pds and reach rise; larger changes on the truth's significant genes cost nmae, extra noise calls cost jac. pds +0.01 to +0.04; overall −0.005 to +0.01, the sign being the question. | > +0.004 over L4 |
+| D1 | `scripts/probe.sh probe_d1 2 0.05 0.01 1.5 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=snr --set predict.lookup_snr_tau=4 --set predict.lookup_match_energy=true` | L6 | the lookup's entries soft-shrunk by SNR (τ = 4), at the raw table's total size | Direction at a fixed share: pds +0.005 to +0.02; reach up (the surest entries grow and rank first); jac up (fewer noise calls); nmae uncertain, −0.02 to +0.02 (noise gone, strong entries ×2–3). Overall −0.005 to +0.01. (D130) | > +0.004; under +0.01, a context-isolated pair before the final round |
+| L7 | `scripts/probe.sh probe_l7 2 0.05 0.01 1.0 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L6 | shared 1.5 → 1.0 | Brackets the shared optimum with the lookup on. pds up again (+0.01 to +0.03, share), nmae up (+0.01 to +0.04), fid down (−0.02 to −0.06: most of the truth's calls are the shared shift's), jac down. Overall −0.01 to +0.008. (D129) | > +0.004 |
+
+L5 and L6 were planned here on 2026-10-06 with their hypotheses; D129 checks
+them against the result.
 
 Per-context scores are not available: neither the `vcc` tool nor the website
 reports them (2026-10-06). Each row is the average over the round's contexts;

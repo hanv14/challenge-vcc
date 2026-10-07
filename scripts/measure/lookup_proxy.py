@@ -353,6 +353,9 @@ def aggregate(splits: list[dict], panel: str, n_boot: int, seed: int) -> dict:
             sign = 1.0 if HIGHER_IS_BETTER[member] else -1.0
             gain, sd = score.paired_bootstrap(sign * (values - raw[member]), n_boot, seed)
             row[member] = float(np.nanmean(values)) if np.isfinite(values).any() else None
+            # Targets the member could score: nmae and reach need min_gate
+            # significant half-B genes, which weak targets rarely have.
+            row[f"{member}_n"] = int(np.isfinite(values).sum())
             row[f"{member}_gain"] = gain
             row[f"{member}_gain_sd"] = sd
         row["energy"] = float(np.mean([s[panel]["arms"][label]["energy"] for s in splits]))
@@ -566,6 +569,8 @@ def main(argv: list[str] | None = None) -> int:
             "arms": table,
         }
         print_table(panel.name, table, splits[0][panel.name]["n_targets"])
+        print("targets scored: " + ", ".join(
+            f"{m} {table['raw'][m + '_n']}" for m in MEMBERS))
         print(f"gate ({panel.name}): {verdict['verdict']}"
               + (f"  {json.dumps(verdict.get('checks', {}), default=float)}"
                  if "checks" in verdict else f"  {verdict.get('reason', '')}"))

@@ -3848,3 +3848,134 @@ refreshes `runs/lookup_cache` after each probe, so a rebuilt table and a
 basis are reused by the next one.
 
 **Default unchanged:** `lookup_shrinkage: none` until an upload wins.
+
+### D129. The lookup's share of the change drives pds; shrink the shared part, not grow the lookup
+
+**Measured.** Two uploads against L4 (lookup 1.0 raw, shared 2.0, model's
+specific part off), seed 2, one change each:
+
+| probe | the one change | overall | Δ | Δ pds | Δ nmae | Δ fid | Δ reach | Δ jac | rank |
+|---|---|---|---|---|---|---|---|---|---|
+| L4 | — | +0.0098 | — | — | — | — | — | — | — |
+| L5 | lookup 1.0 → 1.5 | +0.0050 | −0.0048 | +0.0371 | −0.0718 | +0.0008 | +0.0039 | +0.0014 | 885 |
+| L6 | shared 2.0 → 1.5 | **+0.0189** | **+0.0091** | +0.0249 | +0.0420 | −0.0120 | +0.0041 | −0.0044 | 847 |
+
+**Against the hypotheses written before the uploads (UPLOADS.md).** L6:
+predicted 0 to +0.008, nmae up, fid down by under 0.04, pds flat or up; got
++0.0091, nmae +0.042, fid −0.012, pds +0.025. Every sign right, overall
+slightly above the range. L5: predicted pds +0.01 to +0.04, nmae down, jac
+down, overall −0.005 to +0.01; got pds +0.037, nmae −0.072, jac +0.001
+(flat, not down), overall −0.0048, at the bottom of the range.
+
+**Readings.**
+
+1. **pds follows the lookup's share of the predicted change, whichever way
+   the share grows.** Lookup ×1.5 gave +0.037, shared ×0.75 gave +0.025, both
+   over three times pds's seed noise (0.008). This is the cosine argument of
+   REDESIGN.md §1.1: the shared part adds the same bias towards every real
+   effect and dilutes the target-specific one. So **at the same scale, any
+   denoiser that shrinks the lookup loses pds to dilution, whatever it does
+   to direction**, which is what L2 did (D127).
+2. **The two routes differ by 0.114 on nmae.** A larger lookup puts more of
+   its noise on the genes the truth calls significant (−0.072). A smaller
+   shared part removes oversize there (+0.042, as P2 − P1's +0.039 without
+   the lookup). Shared 2.0 was too large for nmae once the lookup was on.
+3. **The lookup now supplies calls the shared part used to.** Without the
+   lookup, 2.0 → 1.5 cost fid 0.040 (P2 − P1); with it, 0.012.
+4. **reach moved +0.004 both ways**, twenty times its seed noise (0.0002),
+   but small: reach is about ordering, and neither change reordered much.
+
+**Decision.** L6 is the new parent: +0.0189, the best validation upload so
+far. The lookup stays at scale 1.0 raw. Two follow-ups, one change each:
+the shared part at 1.0 (L7) brackets its optimum with the lookup on, and
+the denoiser is compared at the raw table's size (D130), because reading 1
+says that is the only comparison that measures direction.
+
+### D130. The proxy passes its gate on the round's panel; soft SNR is the denoiser, at matched energy
+
+**Measured.** `scripts/measure/lookup_proxy.py --targets all` on the server:
+K562 genome-wide, 9,854 targets read, 272 round targets covered, three
+splits, 3,276 s in all (`runs/measure/measure/lookup_proxy_K562_gwps_all.json`).
+
+**The gate** (raw against the per-gene shrinkage, as L4 against L2):
+
+| panel | pds raw − gene | reach raw − gene | nmae | verdict |
+|---|---|---|---|---|
+| round (272) | **+0.0201** (sd 0.0073) | +0.117 (sd 0.031) | gene worse by 0.449 | pass |
+| all (9,854) | −0.0164 (sd 0.0044) | +0.062 (sd 0.0023) | gene worse by 0.391 | fail |
+
+**What the gate says, and what it does not.**
+
+1. **The instrument is trusted for direction on the round's targets.** On
+   the panel that resembles the challenge, raw beats the per-gene shrinkage
+   on the scale-free pds-like score by 2.7 sd, as on the leaderboard. Part of
+   L4 − L2 was direction, not only size.
+2. **It is not a proxy for the leaderboard's nmae.** In K562 the per-gene
+   shrinkage costs 0.45 of nmae-like; on the leaderboard it gained 0.017.
+   Inside K562 the genes half B calls significant are where K562's own
+   residual is real, so shrinking them costs; on the leaderboard the truth's
+   significant genes are in another cell line, mostly the shared shift's,
+   where the lookup's noise costs. Magnitude has to be settled on uploads.
+3. **nmae and reach rest on few targets.** The median target has no gene
+   whose half-B residual is significant (BH 0.05): a weak target at about 86
+   cells per half cannot show one. Only a handful of strong targets pass the
+   10-gene gate. The reach check is weak evidence, and the script now
+   reports how many targets each member scored (`<member>_n`).
+4. **On all K562 targets the per-gene shrinkage wins pds.** That panel is
+   dominated by essential genes with broad responses, where pooling a gene
+   across targets helps. On the round's weak, sparse targets it zeroes the
+   entries that tell them apart. This is D127's mechanism seen from both
+   sides, and it is why the round's panel decides.
+
+**The denoisers** (round panel; pds-like gain over raw ± bootstrap sd; the
+Pearson diagnostic's gain; energy = rms denoised / rms raw):
+
+| arm | Δ pds-like | Δ Pearson | energy |
+|---|---|---|---|
+| snr τ=1 | +0.0026 ± 0.0019 | +0.0060 | 0.66 |
+| snr τ=4 | +0.0052 ± 0.0031 | +0.0130 | 0.39 |
+| snr τ=16 | +0.0083 ± 0.0041 | +0.0218 | 0.16 |
+| snr_hard τ=1 / 4 / 16 | −0.0064 / −0.0344 / −0.1331 | −0.002 / −0.007 / +0.004 | 0.89 / 0.43 / 0.09 |
+| lowrank k=5 / 50 / 200 | −0.182 / −0.082 / −0.044 | −0.017 / +0.013 / +0.014 | 0.19 / 0.34 / 0.55 |
+| lowrank_snr k=50 τ=1 / τ=4 | +0.0006 / −0.0054 | +0.014 / +0.032 | 0.70 / 0.49 |
+| gene | −0.0201 ± 0.0073 | −0.011 | 0.20 |
+
+Raw pds-like 0.877, raw Pearson 0.075. On the all-target panel the order is
+the same: snr τ=4 +0.0047 ± 0.0017, τ=16 +0.0061 ± 0.0024.
+
+**Readings.**
+
+1. **Soft SNR is the only family that improves pds-like on both panels**,
+   rising steadily with τ to the edge of the grid.
+2. **Hard thresholding loses everywhere.** Keeping only entries with z² > τ
+   throws away the many weak real effects: the signal is spread thin, as a
+   reliability of 0.15 says.
+3. **Low rank alone loses pds badly, while it raises Pearson.** The top
+   components of 9,854 targets' residuals are programmes shared by many
+   targets: they correlate with each target's truth but do not tell targets
+   apart. Adding the SNR remainder recovers pds to about raw, not above it.
+4. **The gains are modest.** At τ = 4 the half-A residual's correlation with
+   half B rises from 0.075 to 0.088 (+17%).
+
+**Decision.** The next denoiser upload is `snr`, τ = 4, with
+`predict.lookup_match_energy: true` (new): one global factor,
+rms(raw)/rms(denoised) over every covered target, gives the denoised table
+the raw table's total size. **This departs from the agreed "same scale"
+rule**, for reading 1 of D129: at the same scale the τ = 4 table would be
+about half the raw table's rms, and the upload would measure dilution, not
+the denoiser. At matched energy the one change is which entries carry the
+lookup: entries with strong evidence grow, noise shrinks. That is also
+REDESIGN.md §4 rank 3, size rising with sign confidence, applied to the
+target-specific part. It is a rule, so it recomputes for any round.
+
+**Why τ = 4 and not the grid's edge.** The instrument sees direction only.
+At matched energy the kept entries are multiplied by about 1/energy: 2.6×
+at τ = 4 and 6.1× at τ = 16 at half depth, less at full depth, where real
+effects have larger z. How the leaderboard's nmae prices that is unmeasured,
+and L5 showed raw ×1.5 costs 0.072 of it. Beyond τ = 4 each doubling buys
+about +0.0016 of pds-like for about 1.5× more amplification. τ = 4 first;
+the result decides whether the next step is up or down. The predict log and
+`index.json` report the full-depth factor.
+
+**Not chosen:** `lowrank_snr`, the best on Pearson (+0.032) but not on
+pds-like (−0.005 ± 0.004); pds is the leaderboard's member.

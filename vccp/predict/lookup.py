@@ -51,6 +51,17 @@ beside the table as `sources/lookup_basis_<screen>.npz`. A denoiser never
 moves an entry the raw residual leaves at exactly 0: a gene the screen does
 not measure or express, or the target's own gene.
 
+**Matched energy** (`predict.lookup_match_energy`, D130). A shrinking
+denoiser also makes the lookup smaller, and on the leaderboard pds tracks the
+lookup's share of the predicted change (L5, L6: D129), so at the same scale
+it would lose to dilution whatever its direction. With matched energy the
+denoised table is multiplied by one global factor, rms(raw) / rms(denoised)
+over every covered target, so its total size equals the raw table's and only
+how that size is spread across entries changes: entries with strong evidence
+grow, noise shrinks. One factor for all targets keeps the denoiser's own
+weighting between them. It is a rule, recomputed from whatever table a round
+builds.
+
 The table depends on the data, the round's targets, the gene axis and the
 lookup settings, not on the model, so it is built once per run and cached
 under `sources/`, keyed by all of them. A cache with another key is rebuilt.
@@ -105,6 +116,7 @@ class LookupTable:
 
     def __post_init__(self) -> None:
         self._row = {t: i for i, t in enumerate(self.targets)}
+        self._energy: dict[tuple, float] = {}
 
     def covers(self, target: str) -> bool:
         return target in self._row
@@ -142,26 +154,44 @@ class LookupTable:
         # unexpressed genes, and the target's own gene.
         return np.where(raw != 0, out, 0.0).astype(np.float32)
 
+    def energy_factor(self, shrinkage: str, tau: float = 1.0, rank: int = 1) -> float:
+        """rms(raw) / rms(denoised) over every covered target: the one factor
+        that gives the denoised table the raw table's total size."""
+        if shrinkage == NONE:
+            return 1.0
+        key = (shrinkage, float(tau), int(rank))
+        if key not in self._energy:
+            raw = float(np.sum(self.residual.astype(np.float64) ** 2))
+            used = sum(
+                float(np.sum(self.residual_for(t, shrinkage, tau, rank).astype(np.float64) ** 2))
+                for t in self.targets
+            )
+            self._energy[key] = float(np.sqrt(raw / used)) if used > 0 else 1.0
+        return self._energy[key]
+
     def change(
         self, target: str, scale: float, weighting: str, shrinkage: str = NONE,
-        tau: float = 1.0, rank: int = 1,
+        tau: float = 1.0, rank: int = 1, match_energy: bool = False,
     ) -> np.ndarray | None:
-        """`scale x weight x (denoised) residual`, or None for a target no screen measured."""
+        """`scale x weight x (denoised) residual`, times the energy factor when
+        `match_energy`; None for a target no screen measured."""
         if target not in self._row:
             return None
+        factor = self.energy_factor(shrinkage, tau, rank) if match_energy else 1.0
         return (
-            scale * self.weight(target, weighting)
+            scale * factor * self.weight(target, weighting)
             * self.residual_for(target, shrinkage, tau, rank)
         ).astype(np.float32)
 
     def describe(
         self, target: str, scale: float, weighting: str, shrinkage: str = NONE,
-        tau: float = 1.0, rank: int = 1,
+        tau: float = 1.0, rank: int = 1, match_energy: bool = False,
     ) -> dict[str, Any]:
         if target not in self._row:
             return {"applied": False, "reason": "no lookup screen measured this target"}
         row = self._row[target]
-        used = self.residual_for(target, shrinkage, tau, rank)
+        factor = self.energy_factor(shrinkage, tau, rank) if match_energy else 1.0
+        used = factor * self.residual_for(target, shrinkage, tau, rank)
         return {
             "applied": scale > 0,
             "screen": self.screen[row],
@@ -174,6 +204,7 @@ class LookupTable:
             "shrinkage": shrinkage,
             **({"snr_tau": tau} if shrinkage in denoise.NEEDS_Z else {}),
             **({"rank": rank} if shrinkage in denoise.NEEDS_BASIS else {}),
+            **({"energy_factor": factor} if match_energy else {}),
         }
 
     def summary(self) -> dict[str, Any]:
