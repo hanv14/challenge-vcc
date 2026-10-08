@@ -515,9 +515,10 @@ the screen on first use: one streaming pass over its cells, cached in
 `runs/lookup_cache/`.
 
 `predict.lookup_match_energy: true` rescales a denoised table by one global
-factor so its total size equals the raw table's (D130): on the leaderboard
-pds follows the lookup's share of the change (D129), so a denoiser compared
-at the same scale would only measure dilution.
+factor so its total size equals the raw table's (D130). It is off by
+default and no recipe uses it: on the leaderboard it inflated the lookup's
+strongest entries and lost 0.0093, nmae charging what it charges for a
+larger lookup (D132). Denoisers are compared at the same scale.
 
 They are chosen offline first, inside K562, with the lookup proxy:
 

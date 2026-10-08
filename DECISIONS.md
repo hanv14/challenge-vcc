@@ -3893,6 +3893,11 @@ says that is the only comparison that measures direction.
 
 ### D130. The proxy passes its gate on the round's panel; soft SNR is the denoiser, at matched energy
 
+**Superseded in part by D132.** The gate, the instrument's limits and the
+ranking of the families stand. The decision to compare at matched energy
+did not survive its upload: matching inflated the strong entries, and nmae
+charged for it. The next denoiser upload is at the same scale.
+
 **Measured.** `scripts/measure/lookup_proxy.py --targets all` on the server:
 K562 genome-wide, 9,854 targets read, 272 round targets covered, three
 splits, 3,276 s in all (`runs/measure/measure/lookup_proxy_K562_gwps_all.json`).
@@ -3979,3 +3984,78 @@ the result decides whether the next step is up or down. The predict log and
 
 **Not chosen:** `lowrank_snr`, the best on Pearson (+0.032) but not on
 pds-like (−0.005 ± 0.004); pds is the leaderboard's member.
+
+### D131. The shared part keeps paying as it shrinks: 1.0 beats 1.5 by 0.0097
+
+**Measured.** L7 against L6 (lookup 1.0 raw on both), seed 2:
+
+| step | Δ overall | Δ pds | Δ nmae | Δ fid | Δ reach | Δ jac |
+|---|---|---|---|---|---|---|
+| shared 2.0 → 1.5 (L6 − L4) | +0.0091 | +0.0249 | +0.0420 | −0.0120 | +0.0041 | −0.0044 |
+| shared 1.5 → 1.0 (L7 − L6) | **+0.0097** | +0.0425 | +0.0315 | −0.0158 | +0.0051 | −0.0050 |
+
+L7 scores **+0.0286** (rank 836), the best validation upload so far. Its
+nmae is +0.012, above the oracle mean response's.
+
+**Against the hypothesis** (UPLOADS.md): pds predicted +0.01 to +0.03, got
++0.043; nmae +0.01 to +0.04, got +0.032; fid −0.02 to −0.06, got −0.016;
+jac down, got −0.005; overall −0.01 to +0.008, got +0.0097. Every sign
+right; pds larger and fid's loss smaller than expected, so overall above
+the range.
+
+**Readings.**
+
+1. **No sign of an optimum yet.** Two equal steps gave nearly equal gains.
+   pds rises faster as the shared part shrinks (+0.025, then +0.043), as
+   the share argument of D129 predicts; nmae's gain is slowing (+0.042,
+   then +0.032); fid's loss is growing (−0.012, then −0.016). The turn is
+   where fid's loss overtakes the other two.
+2. **The model's shared part was sized for a prediction without a
+   target-specific part** (D118's 2.0 was chosen when the model's own
+   specific part was on and then off, D125). With the lookup supplying
+   target-specific calls, less of it is needed.
+3. **This is one global knob tuned on three contexts.** It is expressed
+   relative to the model's own shared estimate, which recomputes for D/E/F
+   (REDESIGN.md §5.1 rule 4), but its optimum may differ by context. The
+   final recipe's context-isolated check covers it.
+
+**Decision.** L7 is the parent. The bracket continues to 0.5 (L8).
+
+### D132. Energy-matched SNR lost 0.0093: amplifying the lookup's strong entries costs what growing the lookup costs
+
+**Measured.** D1 against L6: the lookup soft-shrunk by SNR (τ = 4) and
+multiplied back to the raw table's total size
+(`predict.lookup_match_energy`), seed 2:
+
+| | Δ overall | Δ pds | Δ nmae | Δ fid | Δ reach | Δ jac |
+|---|---|---|---|---|---|---|
+| D1 − L6 (SNR, matched energy) | **−0.0093** | +0.0272 | **−0.0721** | −0.0055 | −0.0020 | −0.0036 |
+| L5 − L4 (raw lookup ×1.5) | −0.0048 | +0.0371 | **−0.0718** | +0.0008 | +0.0039 | +0.0014 |
+
+**Against the hypothesis** (UPLOADS.md): pds predicted +0.005 to +0.02,
+got +0.027; nmae −0.02 to +0.02, got −0.072; reach up, got −0.002; jac up,
+got −0.004; overall −0.005 to +0.01, got −0.0093. Not adopted.
+
+**Reading: D1 measured amplification, not denoising.** At τ = 4 an entry
+with z² well above 4 keeps nearly all of itself, and the matching factor
+then multiplies it (2.6 at half depth in the proxy; less at full depth,
+where `runs/probe_d1/predictions/model/index.json` records the value used).
+So on the entries where K562 is surest, D1 is the raw lookup times that
+factor. nmae charged exactly
+what it charged L5 for ×1.5 on every entry (−0.072 both times), and pds
+rose as it did there. The lookup's strong entries are already about as
+large as nmae tolerates; enlarging them, by any route, costs nmae more than
+it buys pds. D130's reason for matching energy (dilution of pds) was right
+in sign, since pds rose, but it ignored that nmae prices the size of the
+largest entries, which matching inflates.
+
+**What it does not say.** Whether SNR improves the lookup's direction on
+the leaderboard is still unmeasured: D1's pds gain mixes direction with
+concentration, and the comparison the plan agreed on, the same scale (no
+matching), was not run. That is D2: strong entries stay at their K562 size,
+noise shrinks.
+
+**Decision.** `predict.lookup_match_energy` stays, default off; no recipe
+uses it. The next denoiser upload is SNR τ = 4 at the same scale, on L7
+(D2). The rule this departure broke is restored: a denoiser is compared at
+the same scale as its parent.
