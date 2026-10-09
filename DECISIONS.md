@@ -4098,3 +4098,82 @@ its file, and one that would wait on stdin.
 **Alternative.** Raise the constant. Rejected: the tool's time depends on the
 machine's load, which a constant cannot know, and a timeout would still have
 looked like any other failure.
+
+### D134. Shared 0.5 beats 1.0 by 0.0083; the curve is bending, and its end is next
+
+**Measured.** L8 against L7 (lookup 1.0 raw on both), seed 2: **+0.0369**,
++0.0083. The whole bracket so far, every point with the raw lookup at 1.0:
+
+| shared | upload | overall | pds | nmae | fid | reach | jac |
+|---|---|---|---|---|---|---|---|
+| 2.0 | L4 | +0.0098 | +0.0897 | −0.0615 | +0.0047 | +0.0352 | −0.0093 |
+| 1.5 | L6 | +0.0189 | +0.1146 | −0.0195 | −0.0073 | +0.0393 | −0.0137 |
+| 1.0 | L7 | +0.0286 | +0.1572 | +0.0120 | −0.0231 | +0.0444 | −0.0187 |
+| 0.5 | L8 | **+0.0369** | +0.2393 | +0.0276 | −0.0677 | +0.0464 | −0.0242 |
+
+**Against the hypothesis** (UPLOADS.md): pds +0.02 to +0.05, got +0.082;
+fid −0.02 to −0.05, got −0.045; nmae "may turn down", got +0.016 (still up,
+fading); overall −0.01 to +0.01, got +0.0083. Signs right; pds larger again.
+
+**Readings.**
+
+1. **Each step still pays, but by less (+0.0091, +0.0097, +0.0083), and the
+   members are diverging.** pds's gain accelerates (+0.025, +0.043, +0.082)
+   as the lookup's share of the change grows (D129). fid's loss accelerates
+   too (−0.012, −0.016, −0.045): the shared part supplies most of the DE
+   calls the truth makes, and with less of it we call too few genes. nmae's
+   gain fades (+0.042, +0.032, +0.016). The turn is where fid's loss
+   overtakes pds's gain, plausibly between 0 and 0.5.
+2. **The model's shared part is worth less than it seemed.** It was sized
+   (D118) when it was the whole prediction. Next to the lookup, its main
+   contribution is DE calls (fid), and each unit of it costs pds.
+3. **Shared 0 is a real question for the final round,** not only a bracket
+   end. If the lookup and the knockdown prior alone score at or above L8,
+   the model's shared part, and with it Phase 2, earns nothing on the
+   leaderboard, and the final round's path can drop them (REDESIGN.md §6.1:
+   the model is kept only where an upload shows it earns its place).
+
+**Decision.** L8 is the parent. Two uploads finish the bracket against it:
+shared 0.25 (L9) and shared 0 (L10). Then the lookup's scale is re-tested at
+the bracket's best shared scale, since L5's verdict (×1.5 loses) was measured
+at shared 2.0, when fid was not yet short of calls.
+
+### D135. SNR at the same scale lost 0.0212: the per-entry denoiser line is closed
+
+**Measured.** D2 against L7: the lookup soft-shrunk by SNR (τ = 4) at the
+same scale, which at full depth leaves it at about 1/2.37 of the raw table's
+rms (D132), seed 2:
+
+| | Δ overall | Δ pds | Δ nmae | Δ fid | Δ reach | Δ jac |
+|---|---|---|---|---|---|---|
+| D2 − L7 (SNR, same scale) | **−0.0212** | −0.0598 | +0.0213 | **−0.0640** | −0.0114 | −0.0134 |
+| D1 − L6 (SNR, matched energy) | −0.0093 | +0.0272 | −0.0721 | −0.0055 | −0.0020 | −0.0036 |
+
+**Against the hypothesis** (UPLOADS.md): nmae +0.01 to +0.05, got +0.021;
+pds −0.03 to 0, got −0.060; jac up, got −0.013; reach ±0.005, got −0.011;
+overall −0.005 to +0.01, got −0.0212. nmae right; everything else worse.
+
+**Readings.**
+
+1. **The weak entries carried direction that transfers.** Shrinking them
+   cost fid 0.064 and reach 0.011: the calls they made in the challenge's
+   cells were right-signed often enough to count. What K562 measures as
+   noise-level at 172 cells is not noise-level in its effect on the
+   leaderboard.
+2. **The two forms bracket raw and both lose.** Matched energy (D1) inflated
+   the strong entries and nmae charged for it; same scale (D2) removed calls
+   and pds's share, and fid and pds charged for it. Raw at scale 1.0 sits
+   between the two failures.
+3. **The proxy was right about what it measures and wrong to be trusted for
+   the choice.** It found a direction gain inside K562 (pds-like +0.005 at
+   τ = 4), real but an order of magnitude smaller than the leaderboard's
+   magnitude effects (±0.06 on pds, ±0.06 on fid). An instrument that sees
+   only direction cannot choose a change that moves magnitude this much.
+
+**Decision.** Per-entry denoising is closed: `lookup_shrinkage` stays
+`none`; `snr`, `snr_hard`, `lowrank`, `lowrank_snr` and
+`lookup_match_energy` stay in the code, off, with their tests, recorded as
+measured and not adopted. REDESIGN.md's "a denoiser that improves direction
+entry by entry is the largest lever" is refuted for these denoisers: on the
+leaderboard the lookup's magnitude moves the score more than its direction
+can be improved. The proxy stays available as a direction instrument.

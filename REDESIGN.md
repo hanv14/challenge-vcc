@@ -10,6 +10,8 @@ Measured since (UPLOADS.md): rank 1 closed, the model's specific part removed (D
 the raw lookup transfers, +0.0098, the first upload above 0 (D126); per-gene shrinkage
 refuted (D127). Since: L6, shared 1.5 with the raw lookup, +0.0189 (D129); the
 lookup proxy passes its gate on the round's targets and picks soft SNR (D130).
+Then: L7 (shared 1.0) +0.0286 and L8 (shared 0.5) **+0.0369** (D131, D134); SNR
+lost in both forms, closing per-entry denoising (D132, D135).
 `CLAUDE.md` stays the specification; §7 lists the changes I recommend to it.
 
 ---

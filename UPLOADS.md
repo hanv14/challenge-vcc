@@ -33,7 +33,9 @@ Anchor set for every validation upload so far:
 | L5 | `runs/probe_l5` | L4 | lookup scale 1.0 → 1.5 | 0.05 / 0.01 / 2.0 | 1.5, none | +0.0050 | +0.1268 | 0 | −0.1333 | +0.0055 | +0.0391 | −0.0079 | D129 |
 | L6 | `runs/probe_l6` | L4 | shared 2.0 → 1.5 | 0.05 / 0.01 / 1.5 | 1.0, none | +0.0189 | +0.1146 | 0 | −0.0195 | −0.0073 | +0.0393 | −0.0137 | D129 |
 | D1 | `runs/probe_d1` | L6 | lookup soft-SNR τ = 4, energy matched to raw | 0.05 / 0.01 / 1.5 | 1.0, snr τ=4, matched | +0.0096 | +0.1418 | 0 | −0.0916 | −0.0128 | +0.0373 | −0.0173 | D132 |
-| L7 | `runs/probe_l7` | L6 | shared 1.5 → 1.0 | 0.05 / 0.01 / 1.0 | 1.0, none | **+0.0286** | +0.1572 | 0 | +0.0120 | −0.0231 | +0.0444 | −0.0187 | D131 |
+| L7 | `runs/probe_l7` | L6 | shared 1.5 → 1.0 | 0.05 / 0.01 / 1.0 | 1.0, none | +0.0286 | +0.1572 | 0 | +0.0120 | −0.0231 | +0.0444 | −0.0187 | D131 |
+| L8 | `runs/probe_l8` | L7 | shared 1.0 → 0.5 | 0.05 / 0.01 / 0.5 | 1.0, none | **+0.0369** | +0.2393 | 0 | +0.0276 | −0.0677 | +0.0464 | −0.0242 | D134 |
+| D2 | `runs/probe_d2` | L7 | lookup soft-SNR τ = 4, same scale | 0.05 / 0.01 / 1.0 | 1.0, snr τ=4 | +0.0074 | +0.0974 | 0 | +0.0333 | −0.0870 | +0.0329 | −0.0321 | D135 |
 
 The probes P0–L4 were built by `scripts/probe.sh` (commit `aca4f08`; `fc03171`
 changed documents only) from the parent run `runs/server_shared`, at generator
@@ -42,7 +44,9 @@ one change named. The lookup reads K562 genome-wide only (272 of 300 targets;
 table `runs/lookup_cache`, D126). "Effect 0.01" stands for "the model's
 specific part off": `shared_scale` needs a positive effect scale, and at 0.01
 the 0.05 threshold no longer removes anything either (D125). **L4 is the
-parent of L5 and L6; L6 of D1 and L7; L7 (rank 836) of everything after.**
+parent of L5 and L6; L6 of D1 and L7; L7 of L8 and D2; L8 of everything after.**
+Ranks are not comparable across days: L8 scored higher than L7 and ranked
+lower (845 against 836), because the leaderboard moved in between.
 L5 and L6 ran on code at `c105982` or later; the raw lookup is bit-identical
 there (D128).
 
@@ -54,10 +58,10 @@ by more than twice that, about 0.004 overall (REDESIGN.md §5.1 rule 2).
 
 | upload | command | parent | the one change | hypothesis, expected sign | adopt if |
 |---|---|---|---|---|---|
-| L8 | `scripts/probe.sh probe_l8 2 0.05 0.01 0.5 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L7 | shared 1.0 → 0.5 | Continues the bracket (two steps of +0.009 and +0.010). pds up again (+0.02 to +0.05); fid down further (−0.02 to −0.05), most of the truth's calls being the shared shift's; nmae, now above the oracle, may turn down as the shared part gets undersized. Overall −0.01 to +0.01: where the trend turns is the question. (D131) | > +0.004 |
-| D2 | `scripts/probe.sh probe_d2 2 0.05 0.01 1.0 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=snr --set predict.lookup_snr_tau=4` | L7 | the lookup soft-shrunk by SNR (τ = 4), **same scale** | The agreed test D1 was not: strong entries stay at their K562 size, noise shrinks. nmae up (+0.01 to +0.05: less noise on the truth's significant genes, no amplification); pds down (−0.03 to 0: dilution, partly offset by direction); jac up (fewer noise calls); reach ±0.005. Overall −0.005 to +0.01. (D132) | > +0.004; under +0.01, a context-isolated pair before the final round |
+| L9 | `scripts/probe.sh probe_l9 2 0.05 0.01 0.25 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L8 | shared 0.5 → 0.25 | Three steps so far: +0.0091, +0.0097, +0.0083, with fid's loss accelerating (−0.012, −0.016, −0.045) and nmae's gain fading (+0.042, +0.032, +0.016). pds +0.03 to +0.07, fid −0.02 to −0.05, nmae 0 to +0.01, jac −0.003 to −0.006. Overall −0.003 to +0.006: near the turn. (D134) | > +0.004 |
+| L10 | `scripts/probe.sh probe_l10 2 0.05 0.01 0 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L8 | shared 0.5 → 0 (the model contributes only 1% of its own deviation: lookup and knockdown prior alone) | The end of the curve, and what the model's shared part is worth at all. pds +0.06 to +0.14, fid −0.05 to −0.12 (no shared calls), nmae −0.02 to +0.01 (the truth's shared-shift genes get nothing), jac −0.005 to −0.015. Overall −0.01 to +0.008. (D134) | > +0.004 |
 
-L5–L7 and D1 were planned here before their uploads; D129, D131 and D132
+L5–L8, D1 and D2 were planned here before their uploads; D129 and D131–D135
 check them against the results. D2's first attempt stopped at packaging
 (D133: `vcc prep` timed out after an hour); its validated `prediction.h5ad`
 is packaged by hand and uploaded as planned, unchanged.
