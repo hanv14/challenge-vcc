@@ -4038,10 +4038,11 @@ got −0.004; overall −0.005 to +0.01, got −0.0093. Not adopted.
 
 **Reading: D1 measured amplification, not denoising.** At τ = 4 an entry
 with z² well above 4 keeps nearly all of itself, and the matching factor
-then multiplies it (2.6 at half depth in the proxy; less at full depth,
-where `runs/probe_d1/predictions/model/index.json` records the value used).
-So on the entries where K562 is surest, D1 is the raw lookup times that
-factor. nmae charged exactly
+then multiplies it: by **2.37** at full depth
+(`runs/probe_d1/predictions/model/index.json`), against 2.6 at half depth
+in the proxy. So on the entries where K562 is surest, D1 is the raw lookup
+×2.37, larger than L5's ×1.5, and nmae's loss was the same, −0.072: the
+cost sits in the strongest entries, which both enlarged. nmae charged exactly
 what it charged L5 for ×1.5 on every entry (−0.072 both times), and pds
 rose as it did there. The lookup's strong entries are already about as
 large as nmae tolerates; enlarging them, by any route, costs nmae more than
@@ -4059,3 +4060,41 @@ noise shrinks.
 uses it. The next denoiser upload is SNR τ = 4 at the same scale, on L7
 (D2). The rule this departure broke is restored: a denoiser is compared at
 the same scale as its parent.
+
+### D133. `vcc prep` ran past its one-hour limit; the limit is now a config key
+
+**Observed.** Probe D2's `package` stage on the server:
+
+```
+01:33:12 INFO      running: .../vcc prep .../probe_d2/submission/prediction.h5ad ...
+02:33:13 ERROR   `vcc prep` did not write a .vcc; prediction.h5ad remains the deliverable
+```
+
+Exactly one hour: `package.py` capped every call of the tool at a module
+constant, `TIMEOUT_SECONDS = 3600`, and a timeout was reported as a plain
+failure. The tool reads the whole file (360,000 cells × 18,533 genes, about
+2×10⁹ stored entries), single-threaded under the server's thread limits, so
+an hour is within reach of a normal run on a busy machine. The submission
+itself had passed `validate` (our checks and `vcc prep --dry-run`), so it was
+sound; only the packaging stopped.
+
+**Decision.**
+* `submission.vcc_timeout_minutes` (default 240; 0 = no limit) bounds each
+  call of the tool, dry run and packaging alike.
+* A timeout is reported as one, naming the key, and the stage prints the
+  exact command to package by hand.
+* The tool's stdin is closed. Its output is captured, so a question it asked
+  (an update check, a confirmation) would wait unseen until the limit; now it
+  reads end-of-file at once.
+* A `.vcc` left by a failed or stopped call is removed, so the file on disk is
+  this run's, whole, or absent (as D97 intends for an earlier run's file).
+* Each call's duration is logged and kept in `submission/package.json`, so the
+  tool's normal running time is known instead of guessed.
+
+**Tests.** `tests/test_package.py`: a fake `vcc` that finishes, one that
+never does (stopped, its partial file removed), one that fails after starting
+its file, and one that would wait on stdin.
+
+**Alternative.** Raise the constant. Rejected: the tool's time depends on the
+machine's load, which a constant cannot know, and a timeout would still have
+looked like any other failure.

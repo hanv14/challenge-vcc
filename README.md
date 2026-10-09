@@ -219,6 +219,12 @@ already has one, delete it first or `vcc prep` will exit 1 — and check that
 the `.vcc` you upload is newer than the `prediction.h5ad` beside it.
 Checklist item 13 now checks that for you.
 
+Each call of the tool is bounded by `submission.vcc_timeout_minutes` (240 by
+default, 0 = no limit), its stdin is closed, and a `.vcc` it left half-written
+is removed (D133). On a timeout the log names the key and prints the exact
+command, so the validated `prediction.h5ad` can be packaged by hand without
+rerunning anything; `submission/package.json` records how long each call took.
+
 ---
 
 ## What to read before you submit

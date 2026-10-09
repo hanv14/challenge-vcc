@@ -58,7 +58,9 @@ by more than twice that, about 0.004 overall (REDESIGN.md §5.1 rule 2).
 | D2 | `scripts/probe.sh probe_d2 2 0.05 0.01 1.0 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=snr --set predict.lookup_snr_tau=4` | L7 | the lookup soft-shrunk by SNR (τ = 4), **same scale** | The agreed test D1 was not: strong entries stay at their K562 size, noise shrinks. nmae up (+0.01 to +0.05: less noise on the truth's significant genes, no amplification); pds down (−0.03 to 0: dilution, partly offset by direction); jac up (fewer noise calls); reach ±0.005. Overall −0.005 to +0.01. (D132) | > +0.004; under +0.01, a context-isolated pair before the final round |
 
 L5–L7 and D1 were planned here before their uploads; D129, D131 and D132
-check them against the results.
+check them against the results. D2's first attempt stopped at packaging
+(D133: `vcc prep` timed out after an hour); its validated `prediction.h5ad`
+is packaged by hand and uploaded as planned, unchanged.
 
 Per-context scores are not available: neither the `vcc` tool nor the website
 reports them (2026-10-06). Each row is the average over the round's contexts;

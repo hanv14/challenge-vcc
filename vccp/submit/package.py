@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,8 @@ from typing import Any
 from ..logging_utils import get_logger
 
 TOOL = "vcc"
-#: Long enough for the real file, which `vcc prep` reads end to end.
-TIMEOUT_SECONDS = 3600
+#: The config key that bounds one call of the tool (D133).
+TIMEOUT_KEY = "submission.vcc_timeout_minutes"
 
 
 @dataclass
@@ -38,11 +39,15 @@ class ToolResult:
     stderr: str = ""
     skipped_reason: str | None = None
     treated_as_warning: bool = False
+    seconds: float | None = None
+    timed_out: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "ran": self.ran,
             "ok": self.ok,
+            "seconds": self.seconds,
+            "timed_out": self.timed_out,
             "command": " ".join(self.command),
             "returncode": self.returncode,
             "stdout": self.stdout[-4000:],
@@ -56,17 +61,38 @@ def tool_path() -> str | None:
     return shutil.which(TOOL)
 
 
-def _run(command: list[str], *, warning_only: bool) -> ToolResult:
+def timeout_seconds(cfg) -> float | None:
+    """`submission.vcc_timeout_minutes` in seconds; None when it is 0 (no limit)."""
+    minutes = cfg.submission.vcc_timeout_minutes
+    return None if minutes <= 0 else float(minutes) * 60.0
+
+
+def _run(command: list[str], *, warning_only: bool, timeout: float | None) -> ToolResult:
+    """One call of the tool. Its stdin is closed: a question it might ask can
+    never wait on a terminal nobody is watching, as its stdout is captured."""
     log = get_logger()
     log.info("  running: %s", " ".join(command))
+    started = time.monotonic()
     try:
         completed = subprocess.run(  # noqa: S603 — the command is built here
-            command, capture_output=True, text=True, timeout=TIMEOUT_SECONDS, check=False
+            command, capture_output=True, text=True, timeout=timeout, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        seconds = time.monotonic() - started
+        message = (
+            f"{TOOL} did not finish within {seconds / 60:.0f} min and was stopped; "
+            f"raise {TIMEOUT_KEY} (0 = no limit) or run the command by hand"
+        )
+        (log.warning if warning_only else log.error)("  %s", message)
+        return ToolResult(
+            ran=True, ok=False, command=command, stderr=message,
+            treated_as_warning=warning_only, seconds=seconds, timed_out=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return ToolResult(
             ran=True, ok=False, command=command, stderr=f"{type(exc).__name__}: {exc}",
-            treated_as_warning=warning_only,
+            treated_as_warning=warning_only, seconds=time.monotonic() - started,
         )
 
     result = ToolResult(
@@ -77,7 +103,10 @@ def _run(command: list[str], *, warning_only: bool) -> ToolResult:
         stdout=completed.stdout,
         stderr=completed.stderr,
         treated_as_warning=warning_only,
+        seconds=time.monotonic() - started,
     )
+    log.info("  %s %s in %.1f min", TOOL, "finished" if result.ok else "failed",
+             result.seconds / 60)
     if not result.ok:
         (log.warning if warning_only else log.error)(
             "  %s exited %d: %s", TOOL, completed.returncode,
@@ -104,6 +133,7 @@ def dry_run(cfg, paths, submission: Path, *, warning_only: bool) -> ToolResult:
             "--dry-run",
         ],
         warning_only=warning_only,
+        timeout=timeout_seconds(cfg),
     )
 
 
@@ -128,7 +158,7 @@ def package(cfg, paths, submission: Path, output: Path, *, warning_only: bool) -
         log = get_logger()
         log.info("  replacing the .vcc left by an earlier run: %s", output)
         output.unlink()
-    return _run(
+    result = _run(
         [
             executable, "prep", str(submission),
             "-g", str(paths.gene_names),
@@ -136,4 +166,12 @@ def package(cfg, paths, submission: Path, output: Path, *, warning_only: bool) -
             "-o", str(output),
         ],
         warning_only=warning_only,
+        timeout=timeout_seconds(cfg),
     )
+    if not result.ok and output.exists():
+        # A tool stopped mid-write, or one that failed after starting the
+        # file, leaves a .vcc that is not this submission. The file on disk is
+        # this run's, whole, or absent (D97, D133).
+        get_logger().info("  removing the incomplete .vcc %s left by the failed call", output)
+        output.unlink()
+    return result

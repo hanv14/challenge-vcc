@@ -657,8 +657,14 @@ class Submission:
     #: Rows appended to the on-disk sparse dataset at a time. The file is
     #: assembled block by block; nothing concatenates it in RAM (§8).
     write_chunk_cells: int = 4096
+    #: Minutes one call of the challenge's `vcc prep` may take before it is
+    #: stopped (0 = no limit). It reads the whole file; on the validation
+    #: round's 360,000 cells it once ran past an hour (D133).
+    vcc_timeout_minutes: float = 240.0
 
     def validate(self) -> None:
+        if self.vcc_timeout_minutes < 0:
+            raise ConfigError("submission.vcc_timeout_minutes must not be negative (0 = no limit)")
         if self.max_counts_per_cell < 1:
             raise ConfigError("submission.max_counts_per_cell must be at least 1")
         if self.max_stored_entries < 1:

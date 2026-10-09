@@ -156,8 +156,14 @@ def run_package(cfg: Config, options=None) -> dict[str, Any]:
     elif result.ok:
         log.info("packaged -> %s", run_paths.submission_vcc)
     else:
+        reason = (
+            f"it was stopped after {result.seconds / 60:.0f} min "
+            f"({package_mod.TIMEOUT_KEY}; 0 = no limit)" if result.timed_out
+            else f"it exited {result.returncode}"
+        )
         (log.warning if on_mini else log.error)(
-            "`vcc prep` did not write a .vcc; prediction.h5ad remains the deliverable"
+            "`vcc prep` did not write a .vcc (%s); prediction.h5ad remains the deliverable. "
+            "To package it by hand: %s", reason, " ".join(result.command)
         )
 
     report = {
