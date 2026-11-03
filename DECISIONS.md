@@ -4177,3 +4177,72 @@ measured and not adopted. REDESIGN.md's "a denoiser that improves direction
 entry by entry is the largest lever" is refuted for these denoisers: on the
 leaderboard the lookup's magnitude moves the score more than its direction
 can be improved. The proxy stays available as a direction instrument.
+
+### D136. The shared bracket peaks at 0.5; L8 is the final round's recipe, and the path to it is drilled
+
+**Measured.** The bracket's last two points against L8 (lookup 1.0 raw),
+seed 2:
+
+| shared | upload | overall | Δ vs L8 | Δ pds | Δ nmae | Δ fid | Δ reach | Δ jac |
+|---|---|---|---|---|---|---|---|---|
+| 0.5 | L8 | **+0.0369** | — | — | — | — | — | — |
+| 0.25 | L9 | +0.0296 | −0.0073 | +0.0579 | +0.0030 | **−0.1077** | +0.0051 | −0.0022 |
+| 0 | L10 | +0.0282 | −0.0087 | +0.0854 | +0.0002 | **−0.1527** | +0.0179 | −0.0030 |
+
+The whole curve: 2.0 / 1.5 / 1.0 / 0.5 / 0.25 / 0 → +0.0098 / +0.0189 /
++0.0286 / **+0.0369** / +0.0296 / +0.0282.
+
+**Against the hypotheses** (UPLOADS.md): L9, overall −0.003 to +0.006,
+got −0.0073; fid −0.02 to −0.05, got −0.108. L10, overall −0.01 to +0.008,
+got −0.0087; fid −0.05 to −0.12, got −0.153. pds rose as predicted; fid fell
+faster than predicted, which is where both lost.
+
+**Readings.**
+
+1. **The optimum is at about 0.5.** Below it, fid collapses: without the
+   shared part we call far fewer genes than the truth (fid divides by the
+   larger of the two call counts), and pds's gain no longer pays for it.
+   Between 0.5 and 1.0 the curve is not measured; 0.5 is the best point.
+2. **The model's shared part earns its place, narrowly.** L10 is the
+   lookup and the knockdown prior with 1% of the model: +0.0282, against
+   L8's +0.0369. The model's shared part at 0.5 is worth +0.0087, over twice
+   the seed noise. So the model stays in the final recipe, as one source of
+   the shared shift (REDESIGN.md §6.1).
+3. **Both uploads report rank 943** with different scores: the rank shown
+   is the team's, set by its best entry, not the entry's own.
+
+**Decision: the final round's recipe is L8, unchanged.** The validation
+run's model (`runs/server_shared`: priors, Phase 2 checkpoint, policy), its
+target-specific part off (effect 0.01, threshold 0.05), its shared part at
+0.5, the raw K562 lookup at 1.0, rebuilt from the round's processed data,
+seed 2. Not retrained: retraining would change the model the validation
+round measured, and the final round's data enters the model only through
+each context's controls, as A, B and C did.
+
+**What the final path needed, and the drill that tested it.**
+
+* `predict` refuses a context without a Phase 3 adapter, so the path runs
+  `phase3` first: it adapts the round's contexts from the Phase 2 checkpoint
+  under the copied policy, the procedure that adapted A, B and C.
+  `scripts/probe.sh` gained `STAGES` (to add `phase3`) and `LOOKUP_CACHE`
+  (so the final round's lookup table does not overwrite the validation
+  round's cache); with neither set it behaves as before.
+* Both `data_prep` scripts process every `context_*.h5ad` in the release
+  directory, and the server's release directory now holds A–F side by side.
+  The final release is unpacked into a directory of its own, and
+  `scripts/final_release_check.py` refuses a directory whose context files
+  and manifest disagree, and says whether the gene axis is the validation
+  model's (if not, the fallback: a full `all`, then the same settings).
+* **Drill**, on `mini_data` relabelled as a round with contexts D, E, F and a
+  `test` partition: check-data passed (42 ok, 0 fail); the final command
+  (`STAGES="phase3 predict sanity validate package"`) adapted D, E and F,
+  rebuilt the lookup from the round's data (27 of 30 covered), applied
+  threshold 0.05 / effect 0.01 / shared 0.5 / lookup 1.0, and wrote a
+  submission of exactly D, E and F (4,500 of 4,500 rows) that `validate`
+  passed; sanity 1–5 PASS, 6–7 WARN as in every run. The data rebuild
+  itself cannot run on `mini_data` (`phase_data.py` reads the server's raw
+  LINCS tables); its Phase 3 outputs were produced by relabelling mini's.
+  The release check passed the clean release and refused the mixed one.
+
+`FINAL_ROUND.md` is rewritten for this recipe and path; its earlier version
+described the pre-redesign pipeline.

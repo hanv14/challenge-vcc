@@ -9,8 +9,16 @@
 #   scripts/probe.sh probe_l1 2 0.05 0.01 2.0 --set predict.lookup_scale=0.5
 #
 # Environment: PARENT (default runs/server_shared), CONFIG (default
-# configs/server.yaml), PYTHON (default python). Run from the repo root,
-# after `source scripts/server_env.sh`. Needs only cp, no rsync.
+# configs/server.yaml), PYTHON (default python), STAGES (default
+# "predict sanity validate package"), LOOKUP_CACHE (default runs/lookup_cache).
+# Run from the repo root, after `source scripts/server_env.sh`. Needs only cp.
+#
+# The final round (FINAL_ROUND.md) is the same probe on the round's data, with
+# `phase3` first so every new context gets its adapter, and its own cache:
+#
+#   CONFIG=configs/server_final.yaml STAGES="phase3 predict sanity validate package" \
+#   LOOKUP_CACHE=runs/lookup_cache_final scripts/probe.sh final_l8 2 0.05 0.01 0.5 \
+#       --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none
 #
 # The parent's predictions, submission and sanity reports are not copied;
 # everything else is (config, priors, checkpoints, policy, phase3, rehearsal),
@@ -29,6 +37,8 @@ shift 5
 parent=${PARENT:-runs/server_shared}
 config=${CONFIG:-configs/server.yaml}
 python=${PYTHON:-python}
+stages=${STAGES:-predict sanity validate package}
+cache=${LOOKUP_CACHE:-runs/lookup_cache}
 run=runs/$name
 
 [ -f "$parent/phase3_policy.json" ] || {
@@ -39,18 +49,21 @@ mkdir -p "$run"
 for entry in "$parent"/* "$parent"/.stages; do
     [ -e "$entry" ] || continue
     case $(basename "$entry") in
-        predictions|submission|sanity) continue ;;
+        predictions|submission|sanity|sources) continue ;;
+        # When this probe adapts its own contexts, the parent's per-context
+        # records would only sit beside them, describing other contexts.
+        phase3) case " $stages " in *" phase3 "*) continue ;; esac ;;
     esac
     cp -r "$entry" "$run"/
 done
-if [ -d runs/lookup_cache ]; then
+if [ -d "$cache" ]; then
     mkdir -p "$run/sources"
-    cp runs/lookup_cache/* "$run/sources/"
+    cp "$cache"/* "$run/sources/"
 fi
 
 {
-    echo "probe $name: parent $parent, seed $seed, threshold $threshold, effect $effect, shared $shared, extra: $*"
-    for stage in predict sanity validate package; do
+    echo "probe $name: parent $parent, config $config, stages: $stages, seed $seed, threshold $threshold, effect $effect, shared $shared, extra: $*"
+    for stage in $stages; do
         nice -n 10 ionice -c3 "$python" -m vccp "$stage" --config "$config" --run-name "$name" \
             --seed "$seed" --force --allow-warnings \
             --set predict.override_threshold="$threshold" \
@@ -62,7 +75,7 @@ fi
 # Refresh the cache with anything this probe built or rebuilt (a table with
 # per-entry z, a low-rank basis); files it only copied in are older and skipped.
 if [ -d "$run/sources" ]; then
-    mkdir -p runs/lookup_cache
-    cp -u "$run"/sources/* runs/lookup_cache/
+    mkdir -p "$cache"
+    cp -u "$run"/sources/* "$cache"/
 fi
 ls -l "$run/submission/"

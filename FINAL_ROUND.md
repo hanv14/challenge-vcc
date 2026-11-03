@@ -1,89 +1,77 @@
 # Final round: checklist and commands
 
-The final test data arrives **2026-10-22**: new contexts (D, E, F) and a
-**different** perturbation list. The method doesn't change, only the data.
-This file is the whole procedure, in order, with what to check at each step
-and what each check should read. Tick the boxes as you go.
+Rewritten 2026-11-03 for the recipe the validation leaderboard selected
+(DECISIONS.md D125–D136). The earlier version described the pre-redesign
+pipeline (a full `all`, rehearsal-calibrated shared 2 / specific 1); it no
+longer applies.
 
-**What ships** is the pipeline as measured through the validation round
-(DECISIONS.md D99–D118):
+## What ships: the L8 recipe, unchanged
 
-* Phase 2 from the priors (`warm_start: none`, D91): 12,000 deterministic
-  steps (D103, D107).
-* The rehearsal trains the shipped recipe without each screen (D109). It
-  calibrates the generator on **rpe1**, the held-out screen from a new cell
-  line, on the leaderboard's scale. Its score tracked six uploads within
-  about 0.02 (D113, D116, D118).
-* The generator scales the part every target shares separately from each
-  target's own part (D117). This is a recorded §4.7 deviation, worth 0.032
-  on the validation leaderboard (D118).
+| part | setting | evidence |
+|---|---|---|
+| model | `runs/server_shared`'s priors, Phase 2 checkpoint and policy, **not retrained** | the model every probe used (D118, D125) |
+| Phase 3 | rerun on the round's contexts, per that policy | `predict` needs an adapter for every context of the round |
+| model's own target-specific part | off (effect scale 0.01, threshold 0.05) | P1 +0.0094 (D125) |
+| model's shared part | scale **0.5** | the bracket 2.0 / 1.5 / 1.0 / 0.5 / 0.25 / 0: +0.0098 / +0.0189 / +0.0286 / **+0.0369** / +0.0296 / +0.0282 (D134, D136) |
+| K562 lookup | raw, scale 1.0, rebuilt from the round's processed data | L4 +0.0322 over no lookup; denoisers lost (D126, D135) |
+| knockdown prior | as in every run | §4.7 |
 
-Validation-round reference values are quoted below. A final-round number far
-from its reference is a reason to stop and look before uploading.
+Validation score of exactly this recipe: **+0.0369** (L8). Targets the K562
+screen does not measure get the model's shared part alone, as the 28
+uncovered validation targets did. Seed 2, as every probe.
 
-Budget: data prep a few hours (mostly copying the harmonized Replogle files),
-then about 12 hours for `all`. **Start the morning the data lands.** Check the
-challenge site for the final-round deadline and allow two days.
+The whole path after the data rebuild was drilled on `mini_data` relabelled
+as a new round (contexts D, E, F): `phase3` adapted the new contexts,
+`predict` rebuilt the lookup from the round's data, `validate` passed with
+exactly D, E and F (D136).
 
 ---
 
-## 0. Before 2026-10-22
+## 1. The release: one clean directory
 
-- [ ] **Validation round:** keep v4 (−0.014) as the entry that counts, if the
-      leaderboard lets you choose (D118).
-- [ ] **Disk.** The rebuild writes a second `processed/` tree. The new copy
-      needs at least as much free space as the old one uses:
-  ```bash
-  du -sh /data/han/projects/VCC/data/processed
-  df -h /data/han/projects/VCC
-  ```
-- [ ] **Optional fire drill (a few hours, no GPU):** run step 2 against the
-      **validation** release into a scratch root and confirm it reproduces
-      today's data. Then the commands are proven before they matter:
-  ```bash
-  export VCC_FINAL=/data/share/han/VCC                 # the validation release, for the drill
-  export DATA_FINAL=/data/han/projects/VCC/data_drill
-  # ... run step 2 exactly as written below, then:
-  for f in processed/phases/gene_split.csv processed/phases/phase3/targets.csv \
-           processed/phases/phase3/genes.csv ref/challenge_perts.txt; do
-    cmp -s /data/han/projects/VCC/data/$f $DATA_FINAL/$f && echo "same  $f" || echo "DIFF  $f"
-  done
-  python -m vccp check-data --config configs/server.yaml \
-    --set data_root=$DATA_FINAL --run-name drill
-  rm -rf $DATA_FINAL runs/drill                        # once it reads "same" and passes
-  ```
+Both `data_prep` scripts process every `context_*.h5ad` in the release
+directory. Leftover validation files beside the final ones would become
+contexts of this round, so unpack the final release into a directory of its
+own:
 
-## 1. The release
+```bash
+cd /data/share/han/VCC
+unzip -l vcc_2026_controls_final.zip            # what the release contains
+export VCC_FINAL=/data/share/han/VCC_final
+mkdir -p $VCC_FINAL && unzip -n -q vcc_2026_controls_final.zip -d $VCC_FINAL
+ls -la $VCC_FINAL                               # files at the top level?
+```
 
-- [ ] Unpack it, then check it has what the pipeline reads:
-  ```bash
-  export VCC_FINAL=/data/share/han/VCC_final            # wherever you unpacked it
-  export DATA_FINAL=/data/han/projects/VCC/data_final
-  ls $VCC_FINAL     # manifest.json  gene_names.csv  pert_counts.csv  context_*.h5ad
-  python -c "import json; m=json.load(open('$VCC_FINAL/manifest.json')); print({k: m[k] for k in m if k != 'per_context'}); print(sorted(m['per_context']))"
-  ```
-  Expect contexts D, E, F (whatever they are named, the code reads them) and
-  `cells_per_pert` from the manifest.
-- [ ] **Is the gene axis the same as the validation round's?**
-  ```bash
-  cmp -s /data/share/han/VCC/gene_names.csv $VCC_FINAL/gene_names.csv \
-    && echo "same 18,533 genes" || echo "GENE AXIS CHANGED"
-  ```
-  If it changed, nothing in the code needs editing (the axis is read from
-  the file), but the rebuild in step 2 is then required, not just prudent.
+If the zip unpacked into a subfolder, point `VCC_FINAL` at that subfolder. If
+it holds only the `context_*.h5ad` files, copy `manifest.json`,
+`gene_names.csv` and `pert_counts.csv` from the final release's download into
+`$VCC_FINAL` (not the validation ones). Then:
+
+```bash
+cd /data/han/projects/VCC
+python scripts/final_release_check.py $VCC_FINAL --validation-data /data/han/projects/VCC/data
+```
+
+- [ ] It ends `OK one clean release; the fast path applies`.
+- [ ] `partition` is the test partition, the contexts are the round's, and
+      `targets` / `cells_per_pert` match the challenge's announcement.
+- [ ] Note the targets line: how many were validation-round targets.
+- [ ] If it says the gene axis is **DIFFERENT**, the validation model cannot
+      be reused: steps 2–4 as written, then the fallback in step 5.
 
 ## 2. Rebuild the processed data for the round
 
 Every processed file speaks the round's gene axis and flags the round's
-targets (`is_challenge_pert`, `targets.csv`, the coverage tables). The
-harmonization also uses the target list to map Replogle's target labels.
-So rebuild everything into a **new** `data_root`, which leaves the
-validation-round data intact. Run from the repository checkout:
+targets; the harmonization maps Replogle's target labels with the round's
+target list, which the lookup reads. Rebuild into a **new** `data_root`,
+leaving the validation data intact.
 
 ```bash
 source scripts/server_env.sh
 cd /data/han/projects/VCC
-git checkout main && git pull origin main
+git pull origin claude/blissful-volta-lmijw9
+export DATA_FINAL=/data/han/projects/VCC/data_final
+du -sh /data/han/projects/VCC/data/processed; df -h /data/han/projects/VCC   # room for a second copy?
 
 mkdir -p $DATA_FINAL/ref
 cp /data/han/projects/VCC/data/ref/hgnc_complete_set.txt $DATA_FINAL/ref/
@@ -105,122 +93,116 @@ nice -n 10 ionice -c3 python data_prep/phase_data.py all $REF --vcc $VCC_FINAL \
 
 - [ ] Each log ends without a traceback.
 - [ ] `prep_harmonize.log` prints "challenge perturbations present: n/N" per
-      source. Note the numbers: this round's coverage of the new target
-      list by Replogle and LINCS. In the validation round, K562 genome-wide
-      held 272 of 300.
+      source. Note K562 genome-wide's: it is the lookup's coverage of the
+      round (validation: 272 of 300).
 
 ## 3. Point the config at the round
 
-- [ ] Edit the two paths at the top of `configs/server_final.yaml` to
-      `$VCC_FINAL` and `$DATA_FINAL`. Change nothing else. A test fails if
-      that file differs from `configs/server.yaml` in anything but
-      `data_root`, `vcc_root` and `run_name`.
-- [ ] Commit that edit, so the run's `config.yaml` and the repository agree.
+`configs/server_final.yaml` already reads `vcc_root: /data/share/han/VCC_final`
+and `data_root: /data/han/projects/VCC/data_final`. If you used other paths,
+edit those two lines only (a test fails if anything else differs from
+`configs/server.yaml`) and commit the edit.
 
-## 4. Check before training
+## 4. Check before running
 
 ```bash
 python scripts/check_env.py --config configs/server_final.yaml
-python -m vccp check-data --config configs/server_final.yaml --seed 2
+python -m vccp check-data --config configs/server_final.yaml --seed 2 --run-name final_check
 ```
 
 - [ ] `check_env`: `vcc` and `cell-eval2` found, GPU visible, thread
       variables set.
-- [ ] `check-data`: **0 fail**. It verifies `ref/challenge_perts.txt` matches
-      `pert_counts.csv` and every gene order agrees.
-- [ ] The sizes it prints are what the release says: the new contexts, the new
-      target count × `cells_per_pert`, and 18,533 genes (or the new axis).
+- [ ] `check-data`: **0 fail**, and the contexts, target count and gene count
+      it prints are the release's.
 
 ## 5. Run
 
+**Fast path** (the gene axis is the validation model's). About 1.5–3 h:
+`phase3` minutes, `predict` up to an hour (it reads the K562 cells of the
+round's covered targets), `validate` and `package` each up to an hour
+(`vcc prep` reads the whole file; D133).
+
 ```bash
-nice -n 10 ionice -c3 python -m vccp all --config configs/server_final.yaml \
-  --seed 2 --allow-warnings 2>&1 | tee runs/final.log
+CONFIG=configs/server_final.yaml STAGES="phase3 predict sanity validate package" \
+LOOKUP_CACHE=runs/lookup_cache_final \
+  scripts/probe.sh final_l8 2 0.05 0.01 0.5 \
+    --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none
 ```
 
-Seed 2 is the seed every validation-round measurement used. The run is
-deterministic (D99, D114), so the same data gives the same submission.
-About 12 hours: Phase 2 ≈ 2.4 h, rehearsal ≈ 7 h, the rest ≈ 1.5 h.
+It copies `runs/server_shared` into `runs/final_l8` (without its predictions,
+submission, sanity reports or per-context Phase 3 records), adapts the
+round's contexts, and stops at the first failing stage. Its own lookup cache
+leaves the validation round's `runs/lookup_cache` untouched.
 
-**If time is short**, these cut it without changing the method's choices:
+**Fallback** (the gene axis changed): train on the round's data, then apply
+the same settings.
 
-| saves | how |
-|---|---|
-| ~1 h | `--set train.core_freeze_ablation=false` (an ablation arm only) |
-| ~1.5 h | `--set rehearsal.phase2_steps=4500` (the rehearsal's own arms) |
+```bash
+nice -n 10 ionice -c3 python -m vccp all --config configs/server_final.yaml \
+  --seed 2 --allow-warnings 2>&1 | tee runs/final.log          # about 12 h
+for stage in predict sanity validate package; do
+  python -m vccp $stage --config configs/server_final.yaml --seed 2 --force --allow-warnings \
+    --set predict.override_threshold=0.05 --set predict.override_scale=0.01 \
+    --set predict.override_shared_scale=0.5 \
+    --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none || break
+done
+```
 
 ## 6. Read before submitting
 
-| where | what | validation-round reference | stop if |
+All under `runs/final_l8/` (fast path) or `runs/final/` (fallback):
+
+| where | what | reference | stop if |
 |---|---|---|---|
-| `runs/final/phase2/metrics.json` | held-out `pert_mse_ratio_to_no_change` | 0.742–0.758 | above 0.85: the data rebuild is suspect |
-| `runs/final/rehearsal/summary.txt` | `objective : leaderboard (over rpe1)` | the same line | it says `no_change`: the scale could not be built |
-| same | chosen `effect_scale` / `shared_scale` | 1.0 / 2.0 | — (the grid chooses; record it) |
-| `rehearsal/report.json` → `calibration.combined` | rpe1 score at the chosen setting | −0.040 | below −0.10 |
-| `runs/final/sanity/summary.txt` | check 1 | PASS | anything but PASS (the run stops itself) |
-| same | checks 3, 4, 5 | PASS | FAIL |
-| same | checks 2, 6, 7 | WARN in every validation run | — (they read the rehearsal's K562 screen) |
-| `reports/validate.json` | our validator and `vcc prep --dry-run` | PASS | anything else |
-| final checklist | items 5 and 7 `deviation` (D91), item 12 `deviation` if a shared scale was chosen (D117), **0 missing** | the same | a `missing`, or item 13 not `done` |
+| `probe.log` | every stage ran; last lines list `submission/` | — | a traceback |
+| `phase3/adapt_<ctx>.json` | one per round context; `loss_after` ≤ `loss_before` | the validation run's | a context missing |
+| `predictions/model/index.json` → `generator` | threshold 0.05, effect 0.01, shared 0.5 | L8 | anything else |
+| same → `lookup` | scale 1.0, shrinkage none, `n_covered` / `n_uncovered` | 272 / 28 of 300 | `null` (lookup off) |
+| `sanity/summary.txt` | checks 1–5 | PASS | FAIL in 1, 3, 4 or 5 |
+| same | checks 6, 7 | WARN in every run (they read the K562 rehearsal) | — |
+| `reports/validate.json` | `ok`, and `requires.contexts` = the manifest's | true | false, or the wrong contexts |
+| `submission/package.json` | `ok`, `seconds` | true | false (package by hand, §8) |
 
-Print the rehearsal numbers in one go:
-
-```bash
-python - <<'PY'
-import json
-c = json.load(open("runs/final/rehearsal/report.json"))["calibration"]
-print("objective:", c["objective_used"], "| fitted on:", c["fitted_on"])
-print("chosen:", c["settings"])
-for r in sorted(c["combined"], key=lambda r: -(r["mean"] if r["mean"] is not None else -9))[:6]:
-    print(f"  effect {r['effect_scale']}  shared {r['shared_scale']}  rpe1 {r['mean']:+.4f}")
-PY
-```
-
-Optional, and informative for the write-up: how the predictions are built.
+The predictions should look like L8's:
 
 ```bash
-python scripts/compare_predictions.py runs/server_shared runs/final
+python scripts/compare_predictions.py runs/probe_l8 runs/final_l8
 ```
 
-The `shared_share` and `target_corr` columns should look like
-`server_shared`'s, the validation-round run that scored −0.032. Different
-contexts will move them somewhat. A `target_corr` near 1.0 means every
-target got nearly the same prediction.
+New contexts move the numbers; a `target_corr` near 1.0 would mean every
+target got the same prediction.
 
-## 7. Package and submit
-
-`all` already wrote `runs/final/submission/prediction.vcc` when `vcc` is on
-the PATH (checklist item 13). Otherwise:
+## 7. Submit
 
 ```bash
-python -m vccp package --config configs/server_final.yaml --seed 2 --force
-ls -l runs/final/submission/          # the .vcc must be newer than prediction.h5ad
-vcc submit runs/final/submission/prediction.vcc -m "final: shared 2 / specific 1, rpe1-calibrated" --wait
+ls -l runs/final_l8/submission/      # the .vcc must be newer than prediction.h5ad
+vcc submit runs/final_l8/submission/prediction.vcc \
+  -m "final T1: L8 recipe (shared 0.5, raw K562 lookup 1.0), seed 2" --wait
 ```
+
+- [ ] The result reads the **test** partition and the round's panel, not
+      `val`.
 
 ## 8. If something goes wrong
 
-* **A stage fails.** `all` is resumable: fix the cause and rerun the same
-  command. Finished stages are skipped. Rerun one stage with
-  `python -m vccp <stage> --config configs/server_final.yaml --seed 2 --force`.
-* **The rehearsal cannot build the leaderboard scale** (the objective reads
-  `no_change`). Use the setting the validation leaderboard confirmed instead
-  of the grid's choice, and redo the last stages:
-  ```bash
-  for stage in predict sanity validate package; do
-    python -m vccp $stage --config configs/server_final.yaml --seed 2 --force --allow-warnings \
-      --set predict.override_threshold=0.05 --set predict.override_scale=1.0 \
-      --set predict.override_shared_scale=2.0 || break
-  done
-  ```
-  The log says "generator settings overridden", and the prediction index
-  records what was used.
-* **Out of GPU memory.** The error names the key to lower
-  (`train.output_genes_per_step` first).
+* **A stage fails.** Fix the cause and rerun the same probe command: it
+  copies the parent again and reruns every stage, deterministically.
+* **`vcc prep` stops at its limit** (`submission.vcc_timeout_minutes`, 240):
+  the log prints the exact command; run it by hand after deleting any
+  `prediction.vcc` beside the submission.
+* **Out of GPU memory in `phase3`.** The error names the key to lower.
 
-## 9. Record it
+## 9. After the first upload
 
-- [ ] A `DECISIONS.md` entry for the final run: the data-prep coverage
-      numbers, check-data sizes, Phase 2's held-out ratio, the chosen
-      setting and its rpe1 score, the sanity summary, the checklist, and the
-      leaderboard result when it comes.
+The first test upload is the validation-best recipe. After it, only changes
+the validation round supported, one at a time, each paired against T1 with
+the same seed. The nearest alternatives were all worse on validation: shared
+1.0 (L7, −0.0083), shared 0.25 (L9, −0.0073), lookup 1.5 (L5, at shared 2.0).
+Seed noise is about 0.002 overall (P0); the leaderboard of a new round may
+rescale that.
+
+## 10. Record it
+
+A `DECISIONS.md` entry: the release check's output, the coverage line of
+`prep_harmonize.log`, check-data's sizes, the lookup's coverage, the sanity
+summary, `validate.json`, and the test leaderboard's result.

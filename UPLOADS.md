@@ -36,6 +36,8 @@ Anchor set for every validation upload so far:
 | L7 | `runs/probe_l7` | L6 | shared 1.5 → 1.0 | 0.05 / 0.01 / 1.0 | 1.0, none | +0.0286 | +0.1572 | 0 | +0.0120 | −0.0231 | +0.0444 | −0.0187 | D131 |
 | L8 | `runs/probe_l8` | L7 | shared 1.0 → 0.5 | 0.05 / 0.01 / 0.5 | 1.0, none | **+0.0369** | +0.2393 | 0 | +0.0276 | −0.0677 | +0.0464 | −0.0242 | D134 |
 | D2 | `runs/probe_d2` | L7 | lookup soft-SNR τ = 4, same scale | 0.05 / 0.01 / 1.0 | 1.0, snr τ=4 | +0.0074 | +0.0974 | 0 | +0.0333 | −0.0870 | +0.0329 | −0.0321 | D135 |
+| L9 | `runs/probe_l9` | L8 | shared 0.5 → 0.25 | 0.05 / 0.01 / 0.25 | 1.0, none | +0.0296 | +0.2972 | 0 | +0.0306 | −0.1753 | +0.0515 | −0.0264 | D136 |
+| L10 | `runs/probe_l10` | L8 | shared 0.5 → 0 | 0.05 / 0.01 / 0 | 1.0, none | +0.0282 | +0.3246 | 0 | +0.0278 | −0.2203 | +0.0642 | −0.0272 | D136 |
 
 The probes P0–L4 were built by `scripts/probe.sh` (commit `aca4f08`; `fc03171`
 changed documents only) from the parent run `runs/server_shared`, at generator
@@ -44,7 +46,8 @@ one change named. The lookup reads K562 genome-wide only (272 of 300 targets;
 table `runs/lookup_cache`, D126). "Effect 0.01" stands for "the model's
 specific part off": `shared_scale` needs a positive effect scale, and at 0.01
 the 0.05 threshold no longer removes anything either (D125). **L4 is the
-parent of L5 and L6; L6 of D1 and L7; L7 of L8 and D2; L8 of everything after.**
+parent of L5 and L6; L6 of D1 and L7; L7 of L8 and D2; L8 of L9 and L10. **L8 (+0.0369) is the validation-best
+recipe and the final round's first upload (FINAL_ROUND.md, D136).**
 Ranks are not comparable across days: L8 scored higher than L7 and ranked
 lower (845 against 836), because the leaderboard moved in between.
 L5 and L6 ran on code at `c105982` or later; the raw lookup is bit-identical
@@ -56,13 +59,13 @@ by more than twice that, about 0.004 overall (REDESIGN.md §5.1 rule 2).
 
 ### Planned, hypotheses written before the upload
 
-| upload | command | parent | the one change | hypothesis, expected sign | adopt if |
+| upload | command | parent | the one change | hypothesis | adopt if |
 |---|---|---|---|---|---|
-| L9 | `scripts/probe.sh probe_l9 2 0.05 0.01 0.25 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L8 | shared 0.5 → 0.25 | Three steps so far: +0.0091, +0.0097, +0.0083, with fid's loss accelerating (−0.012, −0.016, −0.045) and nmae's gain fading (+0.042, +0.032, +0.016). pds +0.03 to +0.07, fid −0.02 to −0.05, nmae 0 to +0.01, jac −0.003 to −0.006. Overall −0.003 to +0.006: near the turn. (D134) | > +0.004 |
-| L10 | `scripts/probe.sh probe_l10 2 0.05 0.01 0 --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none` | L8 | shared 0.5 → 0 (the model contributes only 1% of its own deviation: lookup and knockdown prior alone) | The end of the curve, and what the model's shared part is worth at all. pds +0.06 to +0.14, fid −0.05 to −0.12 (no shared calls), nmae −0.02 to +0.01 (the truth's shared-shift genes get nothing), jac −0.005 to −0.015. Overall −0.01 to +0.008. (D134) | > +0.004 |
+| T1 (test round) | FINAL_ROUND.md step 5 (`scripts/probe.sh final_l8 ...` with `CONFIG=configs/server_final.yaml`) | — | the L8 recipe on the final release | The first test upload is the validation-best recipe, not an experiment. Its score is the reference every later test upload is paired against. | — |
 
-L5–L8, D1 and D2 were planned here before their uploads; D129 and D131–D135
-check them against the results. D2's first attempt stopped at packaging
+L5–L10, D1 and D2 were planned here before their uploads; D129 and
+D131–D136 check them against the results. Both L9 and L10 report rank 943:
+the rank shown is the team's, set by its best entry, not this entry's. D2's first attempt stopped at packaging
 (D133: `vcc prep` timed out after an hour); its validated `prediction.h5ad`
 is packaged by hand and uploaded as planned, unchanged.
 

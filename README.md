@@ -670,13 +670,25 @@ output_root: /data/han/projects/VCC/runs
 run_name: final
 ```
 
-Then:
+Then, once the release is unpacked into a directory of its own and the
+processed data rebuilt (FINAL_ROUND.md steps 1–2):
 
 ```bash
+python scripts/final_release_check.py /data/share/han/VCC_final \
+    --validation-data /data/han/projects/VCC/data
 python scripts/check_env.py --config configs/server_final.yaml
-python -m vccp check-data --config configs/server_final.yaml
-nice -n 10 ionice -c3 python -m vccp all --config configs/server_final.yaml
+python -m vccp check-data --config configs/server_final.yaml --seed 2 --run-name final_check
+CONFIG=configs/server_final.yaml STAGES="phase3 predict sanity validate package" \
+LOOKUP_CACHE=runs/lookup_cache_final \
+  scripts/probe.sh final_l8 2 0.05 0.01 0.5 \
+    --set predict.lookup_scale=1.0 --set predict.lookup_shrinkage=none
 ```
+
+That is the validation-best recipe (L8, +0.0369; D136): the validation run's
+model, adapted to the round's contexts, with its target-specific part off,
+its shared part at 0.5 and the raw K562 lookup at 1.0. A full `all` is
+needed only if the round's gene axis differs from the validation round's
+(FINAL_ROUND.md step 5, fallback).
 
 Nothing in the code names a context, a target or a count: contexts come from
 `manifest.json` and the control files, perturbations from `pert_counts.csv`,
